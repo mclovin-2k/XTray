@@ -1,5 +1,5 @@
 #include "logs.h"
-#include "process.h"
+#include "xray_process.h"
 #include "settings.h"
 #include "win32.h"
 

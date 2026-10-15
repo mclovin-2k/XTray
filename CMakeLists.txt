@@ -16,7 +16,7 @@ endif()
 
 add_library(XTray.Core STATIC
     src/logs.cpp
-    src/process.cpp
+    src/xray_process.cpp
     src/settings.cpp
 )
 target_include_directories(XTray.Core PUBLIC src)
