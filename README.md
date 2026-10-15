@@ -6,7 +6,7 @@ A lightweight, portable Windows tray application for managing Xray-core.
 
 The initial cloud-built executable has been downloaded and opened successfully on the user's Windows computer.
 
-The second implementation stage adds Xray start/stop/restart controls, process status icons, live output capture, source filtering, and a native settings dialog for executable/configuration paths and log retention. This stage still needs a new cloud build and runtime acceptance.
+The second implementation stage adds Xray start/stop/restart controls, process status icons, live output capture, source filtering, and a native settings dialog for executable/configuration paths and log retention. The user confirmed that the Build workflow for commit bc33c31 succeeded, including the configured automated checks and executable upload. Desktop acceptance with the user's real Xray and configuration is still pending.
 
 Tray integration, one-instance-per-directory enforcement, theme selection, and user-logon startup are planned for later stages. In this development build, closing the main window stops the managed Xray process and exits XTray.
 
