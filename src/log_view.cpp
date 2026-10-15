@@ -61,6 +61,9 @@ LogView::Anchor LogView::Capture(LONG position) const
         }
         begin += length;
     }
+    if (!lines_.empty()) {
+        return {lines_.back().line->id, static_cast<LONG>(lines_.back().display->size())};
+    }
     return {UINT64_MAX, 0};
 }
 

@@ -289,6 +289,17 @@ public:
         if (after.cpMin != selected.cpMin || after.cpMax != selected.cpMax) {
             return false;
         }
+        GETTEXTLENGTHEX length{GTL_PRECISE | GTL_NUMCHARS, 1200};
+        const LONG oldLength = static_cast<LONG>(SendMessageW(logWindow_, EM_GETTEXTLENGTHEX,
+            reinterpret_cast<WPARAM>(&length), 0));
+        CHARRANGE throughEnd{0, oldLength};
+        SendMessageW(logWindow_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&throughEnd));
+        logs_.Xray("new line while selecting\n");
+        view_->Refresh();
+        SendMessageW(logWindow_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&after));
+        if (after.cpMin != 0 || after.cpMax != oldLength) {
+            return false;
+        }
         logs_.SetLimit(1);
         logs_.Xray("last\n");
         logs_.Tray(L"最后一行");
