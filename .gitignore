@@ -1,0 +1,12 @@
+.idea
+
+# External Xray files for local runtime testing.
+/bin/
+
+# Local application data and cache.
+/data/
+/cache/
+
+# Local build output.
+/build/
+/XTray.exe

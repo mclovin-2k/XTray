@@ -1,0 +1,90 @@
+name: Build
+
+on:
+  push:
+    paths:
+      - "src/**"
+      - "resources/**"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - ".github/workflows/build.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "resources/**"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - ".github/workflows/build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  windows-x64:
+    name: Windows x64 Release
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Record build environment
+        run: |
+          Write-Output "Runner image: $env:ImageOS $env:ImageVersion"
+          cmake --version
+          gh --version
+          $taskVswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $taskVisualStudio = & $taskVswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or -not $taskVisualStudio) {
+            throw "A supported MSVC installation was not found."
+          }
+          $taskVisualStudio | Select-Object displayName, installationVersion, installationPath | Format-List
+
+      - name: Configure
+        run: cmake --preset windows-x64
+
+      - name: Build
+        run: cmake --build --preset release --parallel
+
+      - name: Test window startup
+        run: ctest --preset release
+
+      - name: Verify executable and static runtime
+        run: |
+          $taskCompiler = (Get-Content build/xtray-compiler-path.txt -Raw).Trim()
+          if (-not $taskCompiler) {
+            throw "The configured C++ compiler path is missing."
+          }
+          $taskDumpbin = Join-Path (Split-Path $taskCompiler) "dumpbin.exe"
+          $taskHeaders = & $taskDumpbin /headers build/Release/XTray.exe
+          if ($LASTEXITCODE -ne 0 -or ($taskHeaders -join "\n") -notmatch '8664 machine \(x64\)') {
+            throw "The artifact is not an x64 executable."
+          }
+          if (($taskHeaders -join "\n") -notmatch '2 subsystem \(Windows GUI\)') {
+            throw "The artifact is not a Windows GUI executable."
+          }
+          $taskDependencies = & $taskDumpbin /dependents build/Release/XTray.exe
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to inspect executable dependencies."
+          }
+          $taskDependencies | Write-Output
+          if (($taskDependencies -join "\n") -match '(?i)\b(?:(?:VCRUNTIME|MSVCP|MSVCR|CONCRT|VCCORLIB)\d\w*|ucrtbased?|api-ms-win-crt-[\w-]+)\.dll\b') {
+            throw "The artifact depends on a separately installed C++ runtime."
+          }
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v7
+        with:
+          name: XTray-windows-x64
+          path: build/Release/XTray.exe
+          if-no-files-found: error
