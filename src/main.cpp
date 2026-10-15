@@ -97,6 +97,9 @@ public:
     bool Initialize(HWND window)
     {
         window_ = window;
+        if (smokeTest_) {
+            std::fwprintf(stderr, L"Smoke: creating controls.\n");
+        }
         dpi_ = GetDpiForWindow(window);
         const auto child = [this](DWORD extended, const wchar_t* type, const wchar_t* title,
             DWORD style, int id = 0) {
@@ -131,6 +134,9 @@ public:
         logWindow_ = child(WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
             ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_NOHIDESEL | WS_VSCROLL | WS_TABSTOP);
         view_ = std::make_unique<LogView>(logWindow_, logs_);
+        if (smokeTest_) {
+            std::fwprintf(stderr, L"Smoke: configuring fonts and icons.\n");
+        }
         SetFontsAndIcons();
         if (!smokeTest_) {
             const auto loaded = LoadSettings(root_);
@@ -146,6 +152,7 @@ public:
             : L"设置尚未成功加载，当前不能运行 Xray；请在“设置”中重新填写并保存。");
         UpdatePaths();
         Layout();
+        ready_ = true;
         Refresh();
         if (SetTimer(window_, 1, 100, nullptr) == 0) {
             throw std::runtime_error("Cannot start the UI refresh timer.");
@@ -188,11 +195,16 @@ public:
     void DpiChanged(UINT dpi)
     {
         dpi_ = dpi;
-        SetFontsAndIcons();
+        if (ready_) {
+            SetFontsAndIcons();
+        }
     }
 
     void Refresh()
     {
+        if (!ready_) {
+            return;
+        }
         const auto state = process_.State();
         const DWORD pid = process_.Pid();
         const bool running = pid != 0;
@@ -220,6 +232,14 @@ public:
 
     void Command(int id, int notification)
     {
+        const bool button = notification == BN_CLICKED &&
+            (id == Run || id == Stop || id == Restart || id == SettingsButton ||
+                id == OpenFile || id == OpenFileDirectory || id == OpenDirectory);
+        const bool selection = notification == CBN_SELCHANGE && (id == FileList || id == Filter);
+        // Native controls notify their parent during creation and programmatic updates.
+        if (!ready_ || (!button && !selection)) {
+            return;
+        }
         if (id == SettingsButton) {
             if (EditSettings(window_, root_, settings_, logs_)) {
                 settingsValid_ = true;
@@ -259,6 +279,7 @@ public:
 
     bool SmokeTest()
     {
+        std::fwprintf(stderr, L"Smoke: UTF-8 and incremental rendering.\n");
         logs_.Xray("test \xE4\xB8");
         view_->Refresh();
         logs_.Xray("\xAD\xE6\x96\x87\n");
@@ -269,6 +290,7 @@ public:
             text.find(L"[XTRAY] 界面自检") == std::wstring::npos) {
             return false;
         }
+        std::fwprintf(stderr, L"Smoke: source filters.\n");
         view_->SetFilter(1);
         text = WindowText(logWindow_);
         if (text.find(L"[XRAY]") != std::wstring::npos || text.find(L"[XTRAY]") == std::wstring::npos) {
@@ -280,6 +302,7 @@ public:
             return false;
         }
         view_->SetFilter(0);
+        std::fwprintf(stderr, L"Smoke: selection preservation.\n");
         CHARRANGE selected{0, 4};
         SendMessageW(logWindow_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&selected));
         logs_.Xray("next\n");
@@ -300,6 +323,7 @@ public:
         if (after.cpMin != 0 || after.cpMax != oldLength) {
             return false;
         }
+        std::fwprintf(stderr, L"Smoke: retained line limits.\n");
         logs_.SetLimit(1);
         logs_.Xray("last\n");
         logs_.Tray(L"最后一行");
@@ -431,6 +455,7 @@ private:
     bool smokeTest_;
     Settings settings_;
     bool settingsValid_ = true;
+    bool ready_ = false;
     UINT dpi_ = 96;
     HWND window_ = nullptr;
     HWND statusIcon_ = nullptr, status_ = nullptr;

@@ -263,6 +263,12 @@ void TestProcesses(const std::filesystem::path& root)
         HasText(logs, LogSource::Tray, L"至少设置") && process.Pid() == 0,
         "Empty configuration sources did not fail before launch.");
 
+    for (int retry = 0; retry < 20; ++retry) {
+        Check(process.Run(Settings{}), "A completed operation still rejects the next command.");
+        Check(WaitUntil([&] { return process.State() == ProcessState::Stopped; }),
+            "Repeated failed run did not finish.");
+    }
+
     auto missing = FakeSettings(root);
     missing.executable = L".\\missing.exe";
     process.Run(missing);

@@ -113,6 +113,10 @@ void XrayProcess::Worker()
             }
             {
                 std::lock_guard lock(mutex_);
+                // Publish completion and release the command slot under the same lock.
+                if (command) {
+                    state_ = process_ ? ProcessState::Running : ProcessState::Stopped;
+                }
                 busy_ = false;
             }
             if (process_) {
@@ -147,7 +151,6 @@ void XrayProcess::StartProcess(const Settings& settings)
     logs_.ClearXray();
     const auto fail = [this](const std::wstring& error) {
         logs_.Tray(error);
-        state_ = ProcessState::Stopped;
     };
     if (settings.configFiles.empty() && settings.configDirectory.empty()) {
         fail(L"请至少设置一个配置文件或一个配置目录。");
@@ -255,7 +258,6 @@ void XrayProcess::StartProcess(const Settings& settings)
     output_ = std::move(output);
     input.Reset();
     pid_ = information.dwProcessId;
-    state_ = ProcessState::Running;
     logs_.Tray(L"Xray 已启动，PID " + std::to_wstring(information.dwProcessId) + L"。");
 }
 
@@ -306,13 +308,15 @@ void XrayProcess::FinishProcess()
     process_.Reset();
     pid_ = 0;
     logs_.Tray(L"Xray 已退出，退出码 " + std::to_wstring(code) + L"。");
-    state_ = ProcessState::Stopped;
+    std::lock_guard lock(mutex_);
+    if (!busy_ && !pending_) {
+        state_ = ProcessState::Stopped;
+    }
 }
 
 bool XrayProcess::StopProcess()
 {
     if (!process_) {
-        state_ = ProcessState::Stopped;
         return true;
     }
     if (WaitForSingleObject(process_.Get(), 0) != WAIT_OBJECT_0) {
@@ -321,7 +325,6 @@ bool XrayProcess::StopProcess()
             const DWORD error = GetLastError();
             if (WaitForSingleObject(process_.Get(), 0) != WAIT_OBJECT_0) {
                 logs_.Tray(WindowsError(L"停止 Xray 失败", error));
-                state_ = ProcessState::Running;
                 return false;
             }
         }
@@ -330,7 +333,6 @@ bool XrayProcess::StopProcess()
             logs_.Tray(wait == WAIT_TIMEOUT
                 ? L"停止 Xray 超时，尚未确认退出；未启动新进程。"
                 : WindowsError(L"等待 Xray 退出失败"));
-            state_ = ProcessState::Running;
             return false;
         }
     }
