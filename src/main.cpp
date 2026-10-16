@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cwchar>
+#include <exception>
 #include <memory>
 #include <string_view>
 
@@ -282,6 +283,7 @@ public:
 
     void Shutdown() { process_.Shutdown(); }
     int exitCode = 0;
+    std::exception_ptr startupError;
 
     bool SmokeTest()
     {
@@ -529,7 +531,7 @@ private:
         }
         font_ = font;
         logFont_ = logFont;
-        view_->InvalidateFormat();
+        view_->InvalidateFormat(logFont_);
 
         std::array<HICON, 6> icons{};
         for (int state = 0; state < 2; ++state) {
@@ -697,6 +699,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
     } catch (const std::exception& exception) {
         std::fwprintf(stderr, L"Window operation failed: %hs\n", exception.what());
         if (message == WM_CREATE) {
+            if (app != nullptr) {
+                app->startupError = std::current_exception();
+            }
             return -1;
         }
         if (app != nullptr) {
@@ -763,6 +768,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
         const HWND window = CreateWindowExW(0, kWindowClass, L"XTray", kWindowStyle,
             workArea.left, workArea.top, width, height, nullptr, nullptr, instance, &app);
         if (window == nullptr) {
+            if (app.startupError) {
+                std::rethrow_exception(app.startupError);
+            }
             return ReportStartupError(smokeTest, WindowsError(Text(L"Cannot create the window or its controls", L"创建窗口或控件失败")));
         }
         // The hidden window is already on the target monitor, so this DPI is its actual DPI.

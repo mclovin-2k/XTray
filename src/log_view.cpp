@@ -59,27 +59,28 @@ void LogView::Clear()
     Refresh(true);
 }
 
-void LogView::InvalidateFormat()
+void LogView::InvalidateFormat(HFONT font)
 {
     formatAll_ = true;
     revision_ = UINT64_MAX;
-    const auto fail = [] {
-        throw std::runtime_error(Text("Cannot measure log source labels.", "无法测量日志来源标签。"));
+    const auto fail = [](const char* operation) {
+        throw std::runtime_error(std::string(Text("Cannot measure log source labels (", "无法测量日志来源标签（")) +
+            operation + Text(").", "）。"));
     };
     HDC device = GetDC(window_);
-    const auto font = reinterpret_cast<HFONT>(SendMessageW(window_, WM_GETFONT, 0, 0));
     LOGFONTW description{};
-    if (device == nullptr || GetObjectW(font, sizeof(description), &description) == 0) {
-        if (device != nullptr) {
-            ReleaseDC(window_, device);
-        }
-        fail();
+    if (device == nullptr) {
+        fail("GetDC");
+    }
+    if (font == nullptr || GetObjectW(font, static_cast<int>(sizeof(description)), &description) == 0) {
+        ReleaseDC(window_, device);
+        fail("GetObjectW");
     }
     description.lfWeight = FW_BOLD;
     const HFONT bold = CreateFontIndirectW(&description);
     if (bold == nullptr) {
         ReleaseDC(window_, device);
-        fail();
+        fail("CreateFontIndirectW");
     }
     const HGDIOBJ previous = SelectObject(device, bold);
     std::array<SIZE, 2> labels{};
@@ -92,7 +93,7 @@ void LogView::InvalidateFormat()
     DeleteObject(bold);
     ReleaseDC(window_, device);
     if (!measured) {
-        fail();
+        fail("GetTextExtentPoint32W");
     }
     const int dpi = static_cast<int>(GetDpiForWindow(window_));
     for (size_t index = 0; index < labels.size(); ++index) {

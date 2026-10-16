@@ -10,7 +10,7 @@ public:
     LogView(HWND window, Logs& logs);
     void SetFilter(int filter);
     void Clear();
-    void InvalidateFormat();
+    void InvalidateFormat(HFONT font);
     void Refresh(bool latest = false);
 private:
     struct ViewLine {
