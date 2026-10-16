@@ -15,12 +15,16 @@ if(CMAKE_GENERATOR_PLATFORM AND NOT CMAKE_GENERATOR_PLATFORM STREQUAL "x64")
 endif()
 
 add_library(XTray.Core STATIC
+    src/instance.cpp
+    src/tray.cpp
     src/language.cpp
     src/logs.cpp
     src/xray_process.cpp
     src/settings.cpp
 )
 target_include_directories(XTray.Core PUBLIC src)
+# Both are Windows system libraries; no additional runtime is distributed.
+target_link_libraries(XTray.Core PUBLIC advapi32 bcrypt)
 
 add_executable(XTray WIN32
     src/main.cpp

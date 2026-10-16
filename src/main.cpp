@@ -1,3 +1,5 @@
+#include "instance.h"
+#include "tray.h"
 #include "log_view.h"
 #include "xray_process.h"
 #include "settings_dialog.h"
@@ -25,10 +27,20 @@ namespace {
 
 using namespace xtray;
 
-constexpr wchar_t kWindowClass[] = L"XTray.MainWindow";
+constexpr UINT kExitMessage = WM_APP + 43;
 constexpr DWORD kWindowStyle = WS_OVERLAPPEDWINDOW;
 enum ControlId { Run = 2001, Stop, Restart, SettingsButton, FileList, OpenFile,
-    OpenFileDirectory, OpenDirectory, Filter, ClearLogs };
+    OpenFileDirectory, OpenDirectory, Filter, ClearLogs, ShowGui, ExitApp };
+
+NOTIFYICONDATAW smokeTrayData{};
+bool smokeTrayAvailable = true;
+BOOL WINAPI SmokeNotifyIcon(DWORD operation, PNOTIFYICONDATAW data)
+{
+    if (operation == NIM_ADD || operation == NIM_MODIFY) {
+        smokeTrayData = *data;
+    }
+    return smokeTrayAvailable;
+}
 
 int ReportStartupError(bool smokeTest, const std::wstring& error)
 {
@@ -80,10 +92,15 @@ HICON StatusIcon(int size, bool running)
 class Application {
 public:
     Application(std::filesystem::path root, bool smokeTest)
-        : root_(std::move(root)), process_(root_, logs_), smokeTest_(smokeTest) {}
+        : root_(std::move(root)), process_(root_, logs_), smokeTest_(smokeTest),
+          tray_(smokeTest ? SmokeNotifyIcon : Shell_NotifyIconW) {}
     ~Application()
     {
         process_.Shutdown();
+        tray_.Remove();
+        if (IsWindow(window_)) {
+            DestroyWindow(window_);
+        }
         if (font_ != nullptr) {
             DeleteObject(font_);
         }
@@ -100,6 +117,11 @@ public:
     bool Initialize(HWND window)
     {
         window_ = window;
+        taskbarCreated_ = RegisterWindowMessageW(L"TaskbarCreated");
+        if (taskbarCreated_ == 0) {
+            throw std::runtime_error(Text("Cannot register the taskbar restart message.",
+                "无法注册任务栏重建消息。"));
+        }
         if (smokeTest_) {
             std::fwprintf(stderr, L"Smoke: creating controls.\n");
         }
@@ -230,6 +252,9 @@ public:
             SendMessageW(window_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icons_[offset + 1]));
             shownState_ = state;
             shownPid_ = pid;
+            UpdateTray();
+        } else if (!tray_.IsAdded() && GetTickCount64() >= nextTrayAttempt_) {
+            UpdateTray();
         }
         view_->Refresh();
     }
@@ -281,7 +306,97 @@ public:
         Refresh();
     }
 
-    void Shutdown() { process_.Shutdown(); }
+    void ShowMain()
+    {
+        if (exiting_ || window_ == nullptr) {
+            return;
+        }
+        ShowWindow(window_, IsIconic(window_) ? SW_RESTORE
+            : smokeTest_ ? SW_SHOWNOACTIVATE : SW_SHOW);
+        if (!smokeTest_) {
+            HWND target = window_;
+            for (;;) {
+                const HWND popup = GetLastActivePopup(target);
+                if (popup == target || popup == nullptr || !IsWindowVisible(popup)) {
+                    break;
+                }
+                target = popup;
+            }
+            SetForegroundWindow(target);
+        }
+    }
+
+    void HideMain()
+    {
+        if (!ready_ || exiting_) {
+            return;
+        }
+        if (!tray_.IsAdded()) {
+            UpdateTray();
+        }
+        if (tray_.IsAdded()) {
+            ShowWindow(window_, SW_HIDE);
+        }
+    }
+
+    void Exit()
+    {
+        if (exiting_) {
+            return;
+        }
+        exiting_ = true;
+        KillTimer(window_, 1);
+        tray_.Remove();
+        process_.Shutdown();
+        DestroyWindow(window_);
+    }
+
+    void Destroyed()
+    {
+        ready_ = false;
+        tray_.Remove();
+        window_ = nullptr;
+    }
+
+    UINT TaskbarCreatedMessage() const { return taskbarCreated_; }
+
+    void TaskbarCreated()
+    {
+        tray_.Lost();
+        if (ready_ && !exiting_) {
+            UpdateTray();
+        }
+    }
+
+    void TrayEvent(WPARAM, LPARAM event)
+    {
+        if (!ready_ || exiting_ || HIWORD(event) != kTrayIconId) {
+            return;
+        }
+        switch (LOWORD(event)) {
+        case NIN_SELECT:
+        case NIN_KEYSELECT:
+            ShowMain();
+            break;
+        case WM_CONTEXTMENU:
+            ShowTrayMenu();
+            break;
+        }
+    }
+
+    void TrayCommand(int id)
+    {
+        if (id == ShowGui) {
+            ShowMain();
+        } else if (IsWindowEnabled(window_) && !exiting_) {
+            if (id == ExitApp) {
+                Exit();
+            } else if (id == Run || id == Stop || id == Restart) {
+                Command(id, BN_CLICKED);
+            }
+        }
+    }
+
     int exitCode = 0;
     std::exception_ptr startupError;
 
@@ -342,10 +457,85 @@ public:
             text.find(L"test 中文") != std::wstring::npos) {
             return false;
         }
-        return SmokeTestUiChanges();
+        return SmokeTestUiChanges() && SmokeTestTray();
     }
 
 private:
+    void UpdateTray()
+    {
+        if (exiting_ || !ready_) {
+            return;
+        }
+        const auto state = shownState_;
+        const bool running = shownPid_ != 0 && shownPid_ != MAXDWORD;
+        const auto* status = state == ProcessState::Starting ? Text(L"Starting...", L"启动中…")
+            : state == ProcessState::Stopping ? Text(L"Stopping...", L"停止中…")
+            : running ? Text(L"Running", L"运行中") : Text(L"Stopped", L"已停止");
+        const std::wstring tooltip = std::wstring(L"XTray — ") + status + L"\n" + root_.native();
+        nextTrayAttempt_ = GetTickCount64() + 2000;
+        if (tray_.Update(window_, icons_[running ? 3 : 0], tooltip)) {
+            trayFailureReported_ = false;
+        } else {
+            if (!trayFailureReported_) {
+                logs_.Tray(Text(
+                    L"The tray icon is unavailable. The window will stay visible; XTray will retry automatically.",
+                    L"托盘图标暂不可用；窗口将保持显示，XTray 会自动重试。"));
+                trayFailureReported_ = true;
+            }
+            if (!IsWindowVisible(window_)) {
+                ShowMain();
+            }
+        }
+    }
+
+    HMENU CreateTrayMenu() const
+    {
+        const HMENU menu = CreatePopupMenu();
+        if (menu == nullptr) {
+            throw std::runtime_error(Text("Cannot create the tray menu.", "无法创建托盘菜单。"));
+        }
+        const auto state = process_.State();
+        const bool enabled = IsWindowEnabled(window_) && !exiting_;
+        const auto append = [menu](int id, const wchar_t* caption, bool available) {
+            return AppendMenuW(menu, MF_STRING | (available ? MF_ENABLED : MF_GRAYED),
+                static_cast<UINT_PTR>(id), caption) != FALSE;
+        };
+        if (!append(ShowGui, Text(L"Show GUI", L"显示 GUI"), true) ||
+            !append(Run, Text(L"Run", L"运行"), enabled && state == ProcessState::Stopped) ||
+            !append(Stop, Text(L"Stop", L"停止"), enabled && state == ProcessState::Running) ||
+            !append(Restart, Text(L"Restart", L"重启"), enabled && state == ProcessState::Running) ||
+            !append(ExitApp, Text(L"Exit", L"退出"), enabled)) {
+            DestroyMenu(menu);
+            throw std::runtime_error(Text("Cannot populate the tray menu.", "无法设置托盘菜单。"));
+        }
+        SetMenuDefaultItem(menu, ShowGui, FALSE);
+        return menu;
+    }
+
+    void ShowTrayMenu()
+    {
+        const HMENU menu = CreateTrayMenu();
+        POINT point{};
+        GetCursorPos(&point);
+        NOTIFYICONIDENTIFIER identity{};
+        identity.cbSize = sizeof(identity);
+        identity.hWnd = window_;
+        identity.uID = kTrayIconId;
+        RECT icon{};
+        if (SUCCEEDED(Shell_NotifyIconGetRect(&identity, &icon)) && !PtInRect(&icon, point)) {
+            point = {icon.left + (icon.right - icon.left) / 2, icon.bottom};
+        }
+        SetForegroundWindow(window_);
+        const int selected = static_cast<int>(TrackPopupMenuEx(menu,
+            TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON, point.x, point.y, window_, nullptr));
+        DestroyMenu(menu);
+        PostMessageW(window_, WM_NULL, 0, 0);
+        tray_.Focus();
+        if (selected != 0) {
+            TrayCommand(selected);
+        }
+    }
+
     void ApplyUiText()
     {
         updatingUi_ = true;
@@ -492,6 +682,140 @@ private:
             WindowText(clearLogs_) == L"清空日志";
     }
 
+    bool SmokeTestTray()
+    {
+        std::fwprintf(stderr, L"Smoke: tray registration and stopped menu state.\n");
+        if (!tray_.IsAdded() || smokeTrayData.hIcon != icons_[0] ||
+            std::wstring_view(smokeTrayData.szTip).find(L"已停止") == std::wstring_view::npos) {
+            return false;
+        }
+        const auto checkMenu = [this](bool running) {
+            const HMENU menu = CreateTrayMenu();
+            const bool valid = GetMenuItemCount(menu) == 5 &&
+                GetMenuItemID(menu, 0) == ShowGui && GetMenuItemID(menu, 4) == ExitApp &&
+                ((GetMenuState(menu, Run, MF_BYCOMMAND) & MF_GRAYED) == 0) != running &&
+                ((GetMenuState(menu, Stop, MF_BYCOMMAND) & MF_GRAYED) == 0) == running &&
+                ((GetMenuState(menu, Restart, MF_BYCOMMAND) & MF_GRAYED) == 0) == running;
+            DestroyMenu(menu);
+            return valid;
+        };
+        if (!checkMenu(false)) {
+            return false;
+        }
+        const auto original = settings_;
+        settings_.executable = (root_ / L"XTray.Tests.exe").native();
+        settings_.configFiles = {L".\\stream.conf"};
+        const auto wait = [this](const auto& condition) {
+            const auto deadline = GetTickCount64() + 4000;
+            do {
+                Refresh();
+                if (condition()) {
+                    return true;
+                }
+                Sleep(10);
+            } while (GetTickCount64() < deadline);
+            return false;
+        };
+        const auto hasOutput = [this](const wchar_t* marker) {
+            for (const auto& line : logs_.Snapshot().lines) {
+                if (line->source == LogSource::Xray && line->text.find(marker) != std::wstring::npos) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        std::fwprintf(stderr, L"Smoke: tray run and restart.\n");
+        TrayCommand(Run);
+        if (!wait([&] { return hasOutput(L"stream 1"); }) || !checkMenu(true) ||
+            smokeTrayData.hIcon != icons_[3]) {
+            return false;
+        }
+        const DWORD previousPid = process_.Pid();
+        Handle previous(OpenProcess(SYNCHRONIZE, FALSE, previousPid));
+        TrayCommand(Restart);
+        if (!wait([&] { return process_.State() == ProcessState::Running &&
+            process_.Pid() != previousPid && hasOutput(L"stream 1"); }) ||
+            !previous || WaitForSingleObject(previous.Get(), 0) != WAIT_OBJECT_0) {
+            return false;
+        }
+        std::fwprintf(stderr, L"Smoke: close hides, output continues, and click restores.\n");
+        const DWORD pid = process_.Pid();
+        RECT before{}, after{};
+        GetWindowRect(window_, &before);
+        TrayCommand(ShowGui);
+        SendMessageW(window_, WM_CLOSE, 0, 0);
+        if (IsWindowVisible(window_) || !wait([&] { return hasOutput(L"stream 3"); }) ||
+            process_.Pid() != pid) {
+            return false;
+        }
+        TrayEvent(0, MAKELPARAM(NIN_SELECT, kTrayIconId));
+        GetWindowRect(window_, &after);
+        if (!IsWindowVisible(window_) || !EqualRect(&before, &after) ||
+            process_.Pid() != pid) {
+            return false;
+        }
+        TaskbarCreated();
+        if (!tray_.IsAdded() || smokeTrayData.hIcon != icons_[3]) {
+            return false;
+        }
+        std::fwprintf(stderr, L"Smoke: tray outage recovery and language refresh.\n");
+        smokeTrayAvailable = false;
+        TaskbarCreated();
+        const auto trayLines = [this] {
+            const auto snapshot = logs_.Snapshot();
+            return std::count_if(snapshot.lines.begin(), snapshot.lines.end(),
+                [](const auto& line) { return line->source == LogSource::Tray; });
+        };
+        const auto failureLines = trayLines();
+        SendMessageW(window_, WM_CLOSE, 0, 0);
+        if (!IsWindowVisible(window_) || tray_.IsAdded() || trayLines() != failureLines) {
+            return false;
+        }
+        smokeTrayAvailable = true;
+        TaskbarCreated();
+        if (!tray_.IsAdded()) {
+            return false;
+        }
+        ApplyLanguage(Language::English);
+        ApplyUiText();
+        Refresh();
+        if (std::wstring_view(smokeTrayData.szTip).find(L"Running") == std::wstring_view::npos) {
+            return false;
+        }
+        EnableWindow(window_, FALSE);
+        const HMENU modalMenu = CreateTrayMenu();
+        const bool disabled = (GetMenuState(modalMenu, Run, MF_BYCOMMAND) & MF_GRAYED) != 0 &&
+            (GetMenuState(modalMenu, ExitApp, MF_BYCOMMAND) & MF_GRAYED) != 0;
+        DestroyMenu(modalMenu);
+        EnableWindow(window_, TRUE);
+        if (!disabled) {
+            return false;
+        }
+        std::fwprintf(stderr, L"Smoke: tray stop and failed run.\n");
+        TrayCommand(Stop);
+        if (!wait([&] { return process_.State() == ProcessState::Stopped; }) ||
+            smokeTrayData.hIcon != icons_[0] || !checkMenu(false)) {
+            return false;
+        }
+        settings_ = original;
+        TrayCommand(Run);
+        if (!wait([&] { return process_.State() == ProcessState::Stopped; }) ||
+            smokeTrayData.hIcon != icons_[0]) {
+            return false;
+        }
+        settings_.executable = (root_ / L"XTray.Tests.exe").native();
+        settings_.configFiles = {L".\\stream.conf"};
+        TrayCommand(Run);
+        if (!wait([&] { return process_.State() == ProcessState::Running; })) {
+            return false;
+        }
+        Handle child(OpenProcess(SYNCHRONIZE, FALSE, process_.Pid()));
+        std::fwprintf(stderr, L"Smoke: explicit exit stops the child and removes the tray icon.\n");
+        TrayCommand(ExitApp);
+        return child && WaitForSingleObject(child.Get(), 0) == WAIT_OBJECT_0 &&
+            !tray_.IsAdded() && !IsWindow(window_);
+    }
+
     int Scale(int value) const { return MulDiv(value, static_cast<int>(dpi_), 96); }
 
     void SetFontsAndIcons()
@@ -556,6 +880,10 @@ private:
         SendMessageW(statusIcon_, STM_SETICON, reinterpret_cast<WPARAM>(icons_[offset + 2]), 0);
         SendMessageW(window_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icons_[offset]));
         SendMessageW(window_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icons_[offset + 1]));
+        if (ready_) {
+            shownPid_ = MAXDWORD;
+            Refresh();
+        }
         for (const auto icon : old) {
             if (icon != nullptr) {
                 DestroyIcon(icon);
@@ -612,6 +940,11 @@ private:
     Logs logs_;
     XrayProcess process_;
     bool smokeTest_;
+    TrayIcon tray_;
+    bool exiting_ = false;
+    bool trayFailureReported_ = false;
+    UINT taskbarCreated_ = 0;
+    ULONGLONG nextTrayAttempt_ = 0;
     Settings settings_;
     bool settingsValid_ = true;
     bool ready_ = false;
@@ -661,7 +994,20 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             return 0;
         }
         if (app != nullptr) {
+            if (message == app->TaskbarCreatedMessage()) {
+                app->TaskbarCreated();
+                return 0;
+            }
             switch (message) {
+            case kShowInstanceMessage:
+                app->ShowMain();
+                return kInstanceShown;
+            case kTrayCallbackMessage:
+                app->TrayEvent(wParam, lParam);
+                return 0;
+            case kExitMessage:
+                app->Exit();
+                return 0;
             case WM_SIZE:
                 app->Layout();
                 return 0;
@@ -685,13 +1031,14 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 if (!wParam) {
                     return 0;
                 }
-                [[fallthrough]];
+                app->Exit();
+                return 0;
             case WM_CLOSE:
-                app->Shutdown();
-                DestroyWindow(window);
+                app->HideMain();
                 return 0;
             case WM_DESTROY:
                 KillTimer(window, 1);
+                app->Destroyed();
                 PostQuitMessage(app->exitCode);
                 return 0;
             }
@@ -707,7 +1054,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         if (app != nullptr) {
             app->exitCode = 1;
         }
-        PostMessageW(window, WM_CLOSE, 0, 0);
+        PostMessageW(window, kExitMessage, 0, 0);
         return 0;
     }
     return DefWindowProcW(window, message, wParam, lParam);
@@ -734,7 +1081,22 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
     } library{richEdit};
 
     try {
-        Application app(ExecutablePath().parent_path(), smokeTest);
+        const auto root = ExecutablePath().parent_path();
+        std::unique_ptr<DirectoryInstance> directory;
+        std::wstring className = L"XTray.Smoke." + std::to_wstring(GetCurrentProcessId());
+        if (!smokeTest) {
+            directory = std::make_unique<DirectoryInstance>(root);
+            if (!directory->IsPrimary()) {
+                if (directory->ActivateExisting()) {
+                    return 0;
+                }
+                return ReportStartupError(false, Text(
+                    L"This XTray directory is already in use. Its window cannot be activated; it may be starting, unresponsive, or in another user session. Use a separate directory for an independent instance.",
+                    L"此目录的 XTray 已被占用，无法唤回其窗口；它可能正在启动、未响应，或位于其他用户或登录会话。独立运行请使用其他目录。"));
+            }
+            className = directory->WindowClass();
+        }
+        Application app(root, smokeTest);
         WNDCLASSEXW windowClass{};
         windowClass.cbSize = sizeof(windowClass);
         windowClass.lpfnWndProc = WindowProcedure;
@@ -742,7 +1104,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
         windowClass.hCursor = static_cast<HCURSOR>(LoadImageW(
             nullptr, IDC_ARROW, IMAGE_CURSOR, 0, 0, LR_DEFAULTSIZE | LR_SHARED));
         windowClass.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
-        windowClass.lpszClassName = kWindowClass;
+        windowClass.lpszClassName = className.c_str();
         if (!RegisterClassExW(&windowClass)) {
             return ReportStartupError(smokeTest, WindowsError(Text(L"Cannot register the window", L"注册窗口失败")));
         }
@@ -765,7 +1127,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
         LONG height = bounds.bottom - bounds.top;
         width = (std::min)(width, workArea.right - workArea.left);
         height = (std::min)(height, workArea.bottom - workArea.top);
-        const HWND window = CreateWindowExW(0, kWindowClass, L"XTray", kWindowStyle,
+        const HWND window = CreateWindowExW(0, className.c_str(), L"XTray", kWindowStyle,
             workArea.left, workArea.top, width, height, nullptr, nullptr, instance, &app);
         if (window == nullptr) {
             if (app.startupError) {
@@ -793,13 +1155,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
             if (!app.SmokeTest()) {
                 app.exitCode = ReportStartupError(true, Text(L"The Rich Edit log UI smoke test failed.", L"Rich Edit 日志界面自检失败。"));
             }
-            if (!PostMessageW(window, WM_CLOSE, 0, 0)) {
-                app.Shutdown();
-                DestroyWindow(window);
+            if (IsWindow(window) && !PostMessageW(window, kExitMessage, 0, 0)) {
+                app.Exit();
                 return ReportStartupError(true, WindowsError(Text(L"Cannot close the test window", L"关闭测试窗口失败")));
             }
         } else {
-            ShowWindow(window, showCommand);
+            ShowWindow(window, showCommand == SW_HIDE ? SW_SHOWNORMAL : showCommand);
             UpdateWindow(window);
         }
 
@@ -811,8 +1172,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
                 DispatchMessageW(&message);
             }
         }
-        return result == -1 ? ReportStartupError(smokeTest, WindowsError(Text(L"The window message loop failed", L"窗口消息循环失败")))
-                            : static_cast<int>(message.wParam);
+        if (result == -1) {
+            return ReportStartupError(smokeTest, WindowsError(
+                Text(L"The window message loop failed", L"窗口消息循环失败")));
+        }
+        return app.exitCode != 0 ? app.exitCode : static_cast<int>(message.wParam);
     } catch (const std::exception& exception) {
         return ReportStartupError(smokeTest, Text(L"XTray could not start: ", L"XTray 启动失败：") + FromUtf8(exception.what()));
     }

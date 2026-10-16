@@ -1,3 +1,5 @@
+#include "instance.h"
+#include "tray.h"
 #include "logs.h"
 #include "xray_process.h"
 #include "settings.h"
@@ -7,6 +9,7 @@
 
 #include <chrono>
 #include <cstdio>
+#include <cwchar>
 #include <fstream>
 #include <functional>
 #include <iterator>
@@ -97,6 +100,12 @@ int FakeXray(int argc, wchar_t** argv)
     Write(output, "\xAD\xE6\x96\x87 stdout\n");
     Write(error, "stderr captured\n");
     Write(output, "partial without newline");
+    if (first.filename() == L"stream.conf") {
+        for (unsigned index = 0;; ++index) {
+            Write(output, "stream " + std::to_string(index) + "\n");
+            Sleep(20);
+        }
+    }
     Sleep(INFINITE);
     return 0;
 }
@@ -124,6 +133,203 @@ int JobOwner(const std::filesystem::path& root)
     }
     Sleep(INFINITE);
     return 0;
+}
+
+struct TrayCall {
+    DWORD operation;
+    NOTIFYICONDATAW data;
+};
+std::vector<TrayCall> trayCalls;
+DWORD failedTrayOperation = MAXDWORD;
+
+BOOL WINAPI TestNotifyIcon(DWORD operation, PNOTIFYICONDATAW data)
+{
+    trayCalls.push_back({operation, *data});
+    return operation != failedTrayOperation;
+}
+
+void TestTray()
+{
+    trayCalls.clear();
+    failedTrayOperation = MAXDWORD;
+    const auto window = reinterpret_cast<HWND>(static_cast<INT_PTR>(1));
+    const auto red = reinterpret_cast<HICON>(static_cast<INT_PTR>(2));
+    const auto green = reinterpret_cast<HICON>(static_cast<INT_PTR>(3));
+    TrayIcon tray(TestNotifyIcon);
+    Check(tray.Update(window, red, L"XTray — Stopped") && tray.IsAdded(),
+        "A tray icon could not be registered.");
+    Check(trayCalls.size() == 2 && trayCalls[0].operation == NIM_ADD &&
+        trayCalls[1].operation == NIM_SETVERSION &&
+        trayCalls[1].data.uVersion == NOTIFYICON_VERSION_4 &&
+        trayCalls[0].data.uCallbackMessage == kTrayCallbackMessage &&
+        trayCalls[0].data.uID == kTrayIconId &&
+        (trayCalls[0].data.uFlags & NIF_SHOWTIP) != 0,
+        "The tray callback, tooltip, or version contract is incorrect.");
+    Check(tray.Update(window, green, L"XTray — Running") &&
+        trayCalls.back().operation == NIM_MODIFY && trayCalls.back().data.hIcon == green &&
+        std::wstring_view(trayCalls.back().data.szTip) == L"XTray — Running",
+        "Updating tray state added a duplicate icon or kept stale content.");
+    tray.Focus();
+    Check(trayCalls.back().operation == NIM_SETFOCUS, "Tray focus was not restored.");
+    tray.Lost();
+    const auto beforeRecovery = trayCalls.size();
+    Check(tray.Update(window, green, std::wstring(300, L'x')) &&
+        trayCalls[beforeRecovery].operation == NIM_ADD &&
+        std::wcslen(trayCalls[beforeRecovery].data.szTip) == 127,
+        "Explorer recovery or tooltip truncation failed.");
+    failedTrayOperation = NIM_MODIFY;
+    const auto beforeFailure = trayCalls.size();
+    Check(tray.Update(window, red, L"已停止") &&
+        trayCalls[beforeFailure].operation == NIM_MODIFY &&
+        trayCalls[beforeFailure + 1].operation == NIM_DELETE &&
+        trayCalls[beforeFailure + 2].operation == NIM_ADD,
+        "A failed tray modification was not recovered.");
+    tray.Remove();
+    failedTrayOperation = NIM_ADD;
+    Check(!tray.Update(window, red, L"Stopped") && !tray.IsAdded(),
+        "A failed tray registration was reported as available.");
+    failedTrayOperation = NIM_SETVERSION;
+    Check(!tray.Update(window, red, L"Stopped") && !tray.IsAdded() &&
+        trayCalls.back().operation == NIM_DELETE,
+        "An icon with an unusable callback version was retained.");
+    failedTrayOperation = MAXDWORD;
+    Check(tray.Update(window, red, L"Stopped"), "Tray recovery failed after a temporary outage.");
+    tray.Remove();
+    const auto removed = trayCalls.size();
+    tray.Remove();
+    Check(trayCalls.size() == removed && trayCalls.back().operation == NIM_DELETE,
+        "Removing the tray icon is not idempotent.");
+}
+
+struct InstanceChild {
+    Handle process;
+    ~InstanceChild()
+    {
+        if (process && WaitForSingleObject(process.Get(), 0) != WAIT_OBJECT_0) {
+            TerminateProcess(process.Get(), 123);
+            WaitForSingleObject(process.Get(), 5000);
+        }
+    }
+};
+
+InstanceChild StartInstanceChild(const wchar_t* mode, const std::filesystem::path& root)
+{
+    const auto executable = ExecutablePath();
+    std::wstring command = QuoteArgument(executable.native()) + L" " + mode + L" " +
+        QuoteArgument(root.native());
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION information{};
+    Check(CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, FALSE,
+        CREATE_NO_WINDOW, nullptr, root.c_str(), &startup, &information) != FALSE,
+        "Cannot start the directory-instance test child.");
+    Handle thread(information.hThread);
+    return InstanceChild{Handle(information.hProcess)};
+}
+
+DWORD ProbeInstance(const std::filesystem::path& root)
+{
+    auto child = StartInstanceChild(L"--instance-probe", root);
+    Check(WaitForSingleObject(child.process.Get(), 5000) == WAIT_OBJECT_0,
+        "Directory-instance probe did not exit.");
+    DWORD code = MAXDWORD;
+    Check(GetExitCodeProcess(child.process.Get(), &code) != FALSE,
+        "Cannot read the directory-instance probe result.");
+    return code;
+}
+
+LRESULT CALLBACK InstanceTestWindow(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    if (message == kShowInstanceMessage) {
+        auto* received = reinterpret_cast<bool*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+        if (received != nullptr) {
+            *received = true;
+        }
+        return kInstanceShown;
+    }
+    return DefWindowProcW(window, message, wParam, lParam);
+}
+
+void TestInstances(const std::filesystem::path& root)
+{
+    const auto first = root / L"one 中文";
+    const auto other = root / L"two";
+    std::filesystem::create_directories(first);
+    std::filesystem::create_directories(other);
+    {
+        DirectoryInstance primary(first);
+        Check(primary.IsPrimary(), "The first instance could not reserve its directory.");
+        DirectoryInstance repeated(first / L".");
+        std::wstring upper = first.native();
+        CharUpperBuffW(upper.data(), static_cast<DWORD>(upper.size()));
+        DirectoryInstance alternate(upper);
+        Check(!repeated.IsPrimary() && !alternate.IsPrimary() &&
+            repeated.WindowClass() == primary.WindowClass() &&
+            alternate.WindowClass() == primary.WindowClass(),
+            "Equivalent paths created independent directory instances.");
+        DirectoryInstance independent(other);
+        Check(independent.IsPrimary() && independent.WindowClass() != primary.WindowClass(),
+            "Independent directories share an instance lock.");
+        Check(ProbeInstance(first) == 17 && ProbeInstance(other) == 17,
+            "A second process bypassed an occupied directory.");
+        const HINSTANCE module = GetModuleHandleW(nullptr);
+        WNDCLASSEXW windowClass{};
+        windowClass.cbSize = sizeof(windowClass);
+        windowClass.hInstance = module;
+        windowClass.lpfnWndProc = InstanceTestWindow;
+        windowClass.lpszClassName = primary.WindowClass().c_str();
+        Check(RegisterClassExW(&windowClass) != 0, "Cannot register the instance test window.");
+        struct WindowLifetime {
+            HWND window;
+            HINSTANCE module;
+            const wchar_t* name;
+            ~WindowLifetime()
+            {
+                if (window != nullptr) {
+                    DestroyWindow(window);
+                }
+                UnregisterClassW(name, module);
+            }
+        } lifetime{CreateWindowExW(0, windowClass.lpszClassName, L"Instance test",
+            WS_OVERLAPPED, 0, 0, 10, 10, nullptr, nullptr, module, nullptr),
+            module, windowClass.lpszClassName};
+        Check(lifetime.window != nullptr, "Cannot create the instance test window.");
+        bool received = false;
+        SetWindowLongPtrW(lifetime.window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(&received));
+        Check(repeated.ActivateExisting(0) && received,
+            "A duplicate did not activate the verified current-user window.");
+        received = false;
+        auto activation = StartInstanceChild(L"--instance-activate", first);
+        Check(WaitUntil([&] {
+            MSG message{};
+            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+            return WaitForSingleObject(activation.process.Get(), 0) == WAIT_OBJECT_0;
+        }), "The duplicate activation process did not finish.");
+        DWORD activated = MAXDWORD;
+        Check(GetExitCodeProcess(activation.process.Get(), &activated) != FALSE &&
+            activated == 18 && received, "Cross-process window activation failed.");
+    }
+    Check(ProbeInstance(first) == 0 && ProbeInstance(other) == 0,
+        "Exiting an instance left its directory reserved.");
+    const auto crash = root / L"crash";
+    std::filesystem::create_directories(crash);
+    auto child = StartInstanceChild(L"--instance-owner", crash);
+    Check(WaitUntil([&] { return std::filesystem::exists(crash / L"owner.ready"); }),
+        "The instance owner did not become ready.");
+    {
+        DirectoryInstance occupied(crash);
+        Check(!occupied.IsPrimary(), "The live owner did not reserve its directory.");
+    }
+    Check(TerminateProcess(child.process.Get(), 123) != FALSE &&
+        WaitForSingleObject(child.process.Get(), 5000) == WAIT_OBJECT_0,
+        "Cannot terminate the instance test owner.");
+    DirectoryInstance recovered(crash);
+    Check(recovered.IsPrimary(), "Abnormal exit left a stale directory lock.");
+    Check(!std::filesystem::exists(first / L"data"),
+        "Runtime instance detection unexpectedly created application data files.");
 }
 
 void TestUtf8AndLogs()
@@ -474,6 +680,22 @@ int wmain(int argc, wchar_t** argv)
         if (argc > 1 && std::wstring_view(argv[1]) == L"run") {
             return FakeXray(argc, argv);
         }
+        if (argc == 3 && (std::wstring_view(argv[1]) == L"--instance-probe" ||
+            std::wstring_view(argv[1]) == L"--instance-owner" ||
+            std::wstring_view(argv[1]) == L"--instance-activate")) {
+            DirectoryInstance instance(argv[2]);
+            if (!instance.IsPrimary()) {
+                return std::wstring_view(argv[1]) == L"--instance-activate"
+                    ? (instance.ActivateExisting() ? 18 : 19) : 17;
+            }
+            if (std::wstring_view(argv[1]) == L"--instance-owner") {
+                std::ofstream ready(std::filesystem::path(argv[2]) / L"owner.ready");
+                ready << GetCurrentProcessId();
+                ready.close();
+                Sleep(INFINITE);
+            }
+            return 0;
+        }
         if (argc == 3 && std::wstring_view(argv[1]) == L"--test-owner") {
             return JobOwner(argv[2]);
         }
@@ -481,6 +703,8 @@ int wmain(int argc, wchar_t** argv)
             (std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
         std::filesystem::create_directories(root);
         TestLanguage();
+        TestTray();
+        TestInstances(root / L"instances");
         TestUtf8AndLogs();
         TestLogClearing();
         TestArguments();

@@ -8,9 +8,9 @@ The initial cloud-built executable has been downloaded and opened successfully o
 
 The second implementation stage adds Xray start/stop/restart controls, process status icons, live output capture, source filtering, and a native settings dialog for executable/configuration paths and log retention. The user confirmed that the Build workflow for commit bc33c31 succeeded and reported no issues in an initial desktop trial.
 
-The current update adds selective log clearing, indented wrapped lines, orange XTray logs with bold source labels, a centered initial window, and English/Chinese UI selection. The user confirmed that the Build workflow for commit 498a034 succeeded, including native build/tests and artifact checks. Desktop acceptance of these UI changes is still pending.
+The current update adds selective log clearing, indented wrapped lines, orange XTray logs with bold source labels, a centered initial window, and English/Chinese UI selection. The user confirmed that the Build workflow for commit 498a034 succeeded, including native build/tests and artifact checks. The user also reported no issues in the subsequent desktop trial of these five improvements.
 
-Tray integration, one-instance-per-directory enforcement, theme selection, and user-logon startup are planned for later stages. In this development build, closing the main window stops the managed Xray process and exits XTray.
+The third implementation stage adds tray integration and one-instance-per-directory enforcement. This code is awaiting its own cloud build and desktop acceptance. Closing the main window now hides it to the tray; choose **Exit** from the tray menu to stop the managed Xray process and exit XTray. Theme selection and user-logon startup are planned for later stages.
 
 ## Project documents
 
@@ -27,9 +27,9 @@ The build environment is GitHub Actions; no local compiler installation is requi
 3. After a successful run, download **XTray-windows-x64** from **Artifacts**.
 4. Extract and run `XTray.exe`.
 
-The workflow builds an x64 Release executable with MSVC, C++20, and a static C++ runtime. It tests hidden-window log rendering and core behavior, then checks the executable's architecture, GUI subsystem, and runtime dependencies. Only `XTray.exe` is uploaded.
+The workflow builds an x64 Release executable with MSVC, C++20, and a static C++ runtime. It tests native window/log rendering, tray lifecycle with a controlled Shell backend, directory instances, and core behavior, then checks the executable's architecture, GUI subsystem, and runtime dependencies. Only `XTray.exe` is uploaded.
 
-Core tests use a dedicated test executable as a fake Xray child. They do not launch the external Xray executable, open a proxy listener, or access the network. Test executables and fixtures are not shipped.
+Native tests use a dedicated test executable as a fake Xray child. The window test briefly shows and hides its own test window to verify restoration, without registering a real tray icon on the runner. They do not launch the external Xray executable, open a proxy listener, or access the network. Test executables and fixtures are not shipped.
 
 Official version-tag releases will be added in a later implementation stage.
 
@@ -47,6 +47,22 @@ Path changes apply to the next run or restart. Settings are stored as UTF-8 in `
 Logs stay in memory. XTray and Xray each retain the configured number of recent lines, initially 5000, with bold `[XTRAY]` / `[XRAY]` labels and distinct orange/gray colors in the current light UI. Wrapped lines align with the message body; this formatting does not add spaces or line breaks to copied text. **Clear logs**, at the far right of the source-filter row, clears the selected source or both sources when **All** is selected. New output continues without restarting Xray. The next run clears only the previous Xray output. Xray errors are displayed without changing the user's configuration or automatically restarting the process.
 
 If Xray itself is configured to write log files, those files remain under Xray's own control; XTray captures its standard output and standard error.
+
+## Tray and directory instances
+
+Manual launch displays the main window and a tray icon without starting Xray. The tray and GUI share green/red status icons. The tooltip includes the instance directory to help distinguish portable copies.
+
+- Close the main window to hide it while Xray and log capture continue.
+- Click the tray icon once to show the existing window at its previous position.
+- Right-click for **Show GUI**, **Run**, **Stop**, **Restart**, and **Exit**.
+- Choose **Exit** to stop this instance's Xray and remove its tray icon. Logging off also ends the instance.
+- While Settings or its file picker is open, process controls and Exit in the tray menu are disabled; Show GUI brings the existing dialog forward.
+
+An Explorer restart re-registers the tray icon. If the tray is temporarily unavailable, XTray keeps or makes its window visible and retries; closing the window cannot leave the process inaccessible.
+
+Each resolved executable directory allows one XTray process across Windows sessions. Reopening the same directory activates its existing window only for the same user and session, without starting another Xray. A directory occupied by another user/session or an unresponsive instance produces a message. Different directories remain independent.
+
+Runtime instance identity uses the final directory path, a Windows SHA-256 hash, and a global named mutex. It creates no lock file or registration record. The added Advapi32/Bcrypt imports are Windows system libraries; users still need no separate runtime installation.
 
 ## UI language
 
