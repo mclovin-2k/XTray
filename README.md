@@ -10,7 +10,7 @@ The second implementation stage adds Xray start/stop/restart controls, process s
 
 The current update adds selective log clearing, indented wrapped lines, orange XTray logs with bold source labels, a centered initial window, and English/Chinese UI selection. The user confirmed that the Build workflow for commit 498a034 succeeded, including native build/tests and artifact checks. The user also reported no issues in the subsequent desktop trial of these five improvements.
 
-The third implementation stage adds tray integration and one-instance-per-directory enforcement. The user confirmed that the Build workflow for commit 7c1fe2e succeeded, including the native tests and artifact checks. The user also reported no issues in its desktop trial. Closing the main window now hides it to the tray; choose **Exit** from the tray menu to stop the managed Xray process and exit XTray. The fourth implementation stage adds appearance selection and live theme updates; its cloud build and desktop acceptance are pending. User-logon startup is planned for a later stage.
+The third implementation stage adds tray integration and one-instance-per-directory enforcement. The user confirmed that the Build workflow for commit 7c1fe2e succeeded, including the native tests and artifact checks. The user also reported no issues in its desktop trial. Closing the main window now hides it to the tray; choose **Exit** from the tray menu to stop the managed Xray process and exit XTray. The fourth implementation stage adds appearance selection and live theme updates. The user confirmed a successful Build for commit 4329e23 and reported no issues in its desktop trial. The fifth stage adds current-user sign-in startup; its cloud build and desktop acceptance are pending.
 
 ## Project documents
 
@@ -63,6 +63,18 @@ An Explorer restart re-registers the tray icon. If the tray is temporarily unava
 Each resolved executable directory allows one XTray process across Windows sessions. Reopening the same directory activates its existing window only for the same user and session, without starting another Xray. A directory occupied by another user/session or an unresponsive instance produces a message. Different directories remain independent.
 
 Runtime instance identity uses the final directory path, a Windows SHA-256 hash, and a global named mutex. It creates no lock file or registration record. The added Advapi32/Bcrypt imports are Windows system libraries; users still need no separate runtime installation.
+
+## Sign-in startup
+
+In **Settings**, select **Start XTray and Xray when I sign in**, then save. This registers XTray for the current Windows user; it does not start or stop the currently managed Xray. On the next sign-in, XTray displays only its tray icon and runs Xray using the saved settings. Xray startup errors remain in the current in-memory logs with a red tray icon; click the icon to inspect them. Manual launch still shows the main window without automatically running Xray.
+
+Clear the checkbox and save to remove this instance's registration. Cancel, Escape, and closing Settings discard the draft. Each time Settings opens, the checkbox reads this instance's current-user Windows Run registration rather than a saved boolean. Windows may delay startup, and system policy or an external disable in Windows startup-app controls can prevent a registered command from running; the checkbox does not override those controls.
+
+A separate portable file, `data/startup.ini`, stores a GUID and the last registered executable path. The Windows entry is named `XTray-{GUID}` and uses the quoted absolute executable path with an internal `--logon` argument. Registration uses only the current user's Run key and needs no administrator prompt, service, or scheduled task.
+
+After moving the entire directory, including `data`, open XTray manually from the new location. Startup shows as off and no registration is automatically repaired. Select it and save to update the same ID only when its old command matches the saved identity and the old executable is confirmed missing. A full copy whose original executable still exists gets a new ID when enabled, preserving the original registration. Unknown ownership, unreadable old paths, or damaged identity data produce an error instead of overwriting another entry. If the identity file was lost, XTray cannot identify or clean up its old registration.
+
+Settings and startup changes are committed together during Save. Ordinary failures restore the previous entry and identity file; a failed recovery is reported explicitly. This is not a cross-file/registry transaction that guarantees recovery from power loss. Automated startup tests use an in-memory registry backend and build-directory fixtures, so they do not register anything for the test runner. Actual Windows sign-in still requires desktop acceptance.
 
 ## Appearance
 

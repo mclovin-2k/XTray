@@ -15,6 +15,8 @@
 #include <functional>
 #include <iterator>
 
+void TestStartup(const std::filesystem::path& root);
+
 namespace {
 
 using namespace xtray;
@@ -777,6 +779,7 @@ int wmain(int argc, wchar_t** argv)
         TestLogClearing();
         TestArguments();
         TestSettings(root / L"settings");
+        TestStartup(root / L"startup");
         TestProcesses(root);
         TestAbnormalExit(root);
         std::puts("All core tests passed. No real Xray process or network listener was started.");

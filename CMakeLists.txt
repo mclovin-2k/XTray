@@ -22,10 +22,11 @@ add_library(XTray.Core STATIC
     src/logs.cpp
     src/xray_process.cpp
     src/settings.cpp
+    src/startup.cpp
 )
 target_include_directories(XTray.Core PUBLIC src)
 # These are Windows system libraries; no additional runtime is distributed.
-target_link_libraries(XTray.Core PUBLIC advapi32 bcrypt windowsapp)
+target_link_libraries(XTray.Core PUBLIC advapi32 bcrypt windowsapp ole32)
 
 add_executable(XTray WIN32
     src/main.cpp
@@ -40,7 +41,7 @@ target_link_libraries(XTray PRIVATE XTray.Core user32 gdi32 shell32 ole32 uuid c
 target_link_options(XTray PRIVATE /MANIFEST:NO)
 
 # Test helpers are built only for validation and are never included in the artifact.
-add_executable(XTray.Tests tests/core_tests.cpp)
+add_executable(XTray.Tests tests/core_tests.cpp tests/startup_tests.cpp)
 target_link_libraries(XTray.Tests PRIVATE XTray.Core shell32 user32)
 
 foreach(target XTray.Core XTray XTray.Tests)

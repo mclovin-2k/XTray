@@ -1,4 +1,5 @@
 #include "instance.h"
+#include "startup.h"
 #include "tray.h"
 #include "theme_window.h"
 #include "log_view.h"
@@ -93,7 +94,8 @@ HICON StatusIcon(int size, bool running)
 class Application {
 public:
     Application(std::filesystem::path root, bool smokeTest)
-        : root_(std::move(root)), process_(root_, logs_), smokeTest_(smokeTest),
+        : root_(std::move(root)), startup_(root_, ExecutablePath()),
+          process_(root_, logs_), smokeTest_(smokeTest),
           tray_(smokeTest ? SmokeNotifyIcon : Shell_NotifyIconW) {}
     ~Application()
     {
@@ -278,7 +280,7 @@ public:
             return;
         }
         if (id == SettingsButton) {
-            if (EditSettings(window_, root_, settings_, logs_)) {
+            if (EditSettings(window_, root_, settings_, logs_, startup_)) {
                 settingsValid_ = true;
                 ApplyUiText();
                 UpdateTheme(themeMonitor_->SystemDark());
@@ -345,6 +347,18 @@ public:
             }
             SetForegroundWindow(target);
         }
+    }
+
+    void StartFromLogon()
+    {
+        if (!ready_ || exiting_ || logonStarted_) {
+            return;
+        }
+        logonStarted_ = true;
+        HideMain();
+        logs_.Tray(Text(L"Sign-in startup: starting Xray using the saved settings.",
+            L"登录自启：按已保存的设置启动 Xray。"));
+        Command(Run, BN_CLICKED);
     }
 
     void HideMain()
@@ -480,7 +494,7 @@ public:
             text.find(L"test 中文") != std::wstring::npos) {
             return false;
         }
-        return SmokeTestUiChanges() && SmokeTestThemes() && SmokeTestTray();
+        return SmokeTestUiChanges() && SmokeTestThemes() && SmokeTestLogon() && SmokeTestTray();
     }
 
 private:
@@ -893,6 +907,95 @@ private:
         return WindowText(logWindow_) == before && logs_.Revision() == revision;
     }
 
+    bool SmokeTestLogon()
+    {
+        std::fwprintf(stderr, L"Smoke: sign-in startup failure stays in the tray.\n");
+        const auto original = settings_;
+        const bool valid = settingsValid_;
+        const auto language = CurrentLanguage();
+        const auto wait = [this](const auto& condition) {
+            const auto deadline = GetTickCount64() + 4000;
+            do {
+                Refresh();
+                if (condition()) {
+                    return true;
+                }
+                Sleep(10);
+            } while (GetTickCount64() < deadline);
+            return false;
+        };
+        settingsValid_ = false;
+        StartFromLogon();
+        if (IsWindowVisible(window_) || !tray_.IsAdded() ||
+            process_.State() != ProcessState::Stopped || smokeTrayData.hIcon != icons_[0]) {
+            return false;
+        }
+        bool hasError = false;
+        for (const auto& line : logs_.Snapshot().lines) {
+            hasError = hasError || (line->source == LogSource::Tray &&
+                line->text.find(L"尚未成功读取") != std::wstring::npos);
+        }
+        if (!hasError) {
+            return false;
+        }
+        std::fwprintf(stderr, L"Smoke: invalid sign-in configuration reports errors without a window.\n");
+        logonStarted_ = false;
+        settingsValid_ = true;
+        settings_.configFiles.clear();
+        settings_.configDirectory.clear();
+        StartFromLogon();
+        if (!wait([&] {
+            for (const auto& line : logs_.Snapshot().lines) {
+                if (line->source == LogSource::Tray &&
+                    line->text.find(L"请至少设置一个") != std::wstring::npos) {
+                    return process_.State() == ProcessState::Stopped;
+                }
+            }
+            return false;
+        }) || IsWindowVisible(window_) || smokeTrayData.hIcon != icons_[0]) {
+            return false;
+        }
+        logonStarted_ = false;
+        settings_.executable = (root_ / L"XTray.Tests.exe").native();
+        settings_.configFiles = {L".\\stream.conf"};
+        std::fwprintf(stderr, L"Smoke: sign-in starts one hidden child and captures output.\n");
+        StartFromLogon();
+        if (!wait([&] {
+            for (const auto& line : logs_.Snapshot().lines) {
+                if (line->source == LogSource::Xray &&
+                    line->text.find(L"stream 1") != std::wstring::npos) {
+                    return process_.State() == ProcessState::Running;
+                }
+            }
+            return false;
+        }) || IsWindowVisible(window_) || smokeTrayData.hIcon != icons_[3]) {
+            return false;
+        }
+        const DWORD pid = process_.Pid();
+        StartFromLogon();
+        if (process_.Pid() != pid || IsWindowVisible(window_)) {
+            return false;
+        }
+        Command(Stop, BN_CLICKED);
+        if (!wait([&] { return process_.State() == ProcessState::Stopped; })) {
+            return false;
+        }
+        settings_ = original;
+        settingsValid_ = valid;
+        logonStarted_ = false;
+        const auto fixture = root_ / (L"startup smoke " + std::to_wstring(GetCurrentProcessId()) +
+            L"-" + std::to_wstring(GetTickCount64()));
+        std::filesystem::create_directories(fixture);
+        std::fwprintf(stderr, L"Smoke: sign-in settings save, cancel, and actual registration state.\n");
+        if (!SmokeTestSettingsStartup(window_, fixture)) {
+            return false;
+        }
+        ApplyLanguage(language);
+        ApplyUiText();
+        Refresh();
+        return true;
+    }
+
     bool SmokeTestTray()
     {
         std::fwprintf(stderr, L"Smoke: tray registration and stopped menu state.\n");
@@ -1159,6 +1262,7 @@ private:
     }
 
     const std::filesystem::path root_;
+    StartupRegistration startup_;
     Logs logs_;
     XrayProcess process_;
     bool smokeTest_;
@@ -1167,6 +1271,7 @@ private:
     std::unique_ptr<ThemeMonitor> themeMonitor_;
     bool changingTheme_ = false;
     bool exiting_ = false;
+    bool logonStarted_ = false;
     bool trayFailureReported_ = false;
     UINT taskbarCreated_ = 0;
     ULONGLONG nextTrayAttempt_ = 0;
@@ -1300,6 +1405,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCommand)
 {
     const bool smokeTest = std::wstring_view(commandLine) == L"--smoke-test";
+    const bool logon = IsLogonCommandLine(commandLine);
     ApplyLanguage(Language::Automatic);
     const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     if (FAILED(com)) {
@@ -1322,6 +1428,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
         if (!smokeTest) {
             directory = std::make_unique<DirectoryInstance>(root);
             if (!directory->IsPrimary()) {
+                // Repeated sign-in startup leaves the existing instance and its window alone.
+                if (logon) {
+                    return 0;
+                }
                 if (directory->ActivateExisting()) {
                     return 0;
                 }
@@ -1394,6 +1504,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
                 app.Exit();
                 return ReportStartupError(true, WindowsError(Text(L"Cannot close the test window", L"关闭测试窗口失败")));
             }
+        } else if (logon) {
+            app.StartFromLogon();
         } else {
             ShowWindow(window, showCommand == SW_HIDE ? SW_SHOWNORMAL : showCommand);
             UpdateWindow(window);

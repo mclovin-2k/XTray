@@ -9,9 +9,12 @@
 #include <cerrno>
 #include <climits>
 #include <cstdlib>
+#include <cstdio>
 #include <cwchar>
 #include <exception>
 #include <functional>
+#include <map>
+#include <stdexcept>
 
 namespace xtray {
 namespace {
@@ -24,10 +27,93 @@ struct Context {
     const std::filesystem::path& root;
     Settings& settings;
     Logs& logs;
+    StartupRegistration& startup;
+    bool startupAvailable = false;
     ThemeWindow theme;
     std::function<void(HWND)> automation;
     std::exception_ptr error;
 };
+
+class MemoryStartupRegistry final : public StartupRegistry {
+public:
+    bool Read(const std::wstring& name, std::optional<std::wstring>& command,
+        std::wstring& error) override
+    {
+        if (failRead) {
+            error = L"Injected login-startup query failure.";
+            return false;
+        }
+        const auto found = values.find(name);
+        command = found == values.end() ? std::nullopt : std::optional<std::wstring>(found->second);
+        return true;
+    }
+
+    bool Write(const std::wstring& name, const std::optional<std::wstring>& command,
+        std::wstring&) override
+    {
+        ++writes;
+        if (command) {
+            values[name] = *command;
+        } else {
+            values.erase(name);
+        }
+        return true;
+    }
+
+    std::map<std::wstring, std::wstring> values;
+    size_t writes = 0;
+    bool failRead = false;
+};
+
+std::filesystem::path CurrentExecutable()
+{
+    std::wstring path(32768, L'\0');
+    const auto copied = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (copied == 0 || copied >= path.size()) {
+        throw std::runtime_error("Cannot locate the settings smoke-test executable.");
+    }
+    path.resize(copied);
+    return path;
+}
+
+bool CheckboxPaintMatches(HWND control, const ThemePalette& colors, bool checked, bool disabled)
+{
+    RECT bounds{};
+    GetClientRect(control, &bounds);
+    struct Canvas {
+        HDC device = CreateCompatibleDC(nullptr);
+        HBITMAP bitmap = nullptr;
+        HGDIOBJ previous = nullptr;
+        ~Canvas()
+        {
+            if (previous != nullptr) { SelectObject(device, previous); }
+            DeleteObject(bitmap);
+            DeleteDC(device);
+        }
+    } canvas;
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = bounds.right;
+    info.bmiHeader.biHeight = -bounds.bottom;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    void* pixels = nullptr;
+    canvas.bitmap = CreateDIBSection(canvas.device, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+    if (canvas.device == nullptr || canvas.bitmap == nullptr || pixels == nullptr) {
+        return false;
+    }
+    canvas.previous = SelectObject(canvas.device, canvas.bitmap);
+    SendMessageW(control, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(canvas.device), PRF_CLIENT);
+    const auto scale = [control](int value) {
+        return MulDiv(value, static_cast<int>(GetDpiForWindow(control)), 96);
+    };
+    const int left = scale(1);
+    const int top = (static_cast<int>(bounds.bottom) - scale(13)) / 2;
+    return GetPixel(canvas.device, bounds.right - 1, 0) == colors.window &&
+        GetPixel(canvas.device, left, top) == (disabled ? colors.disabled : colors.border) &&
+        (!checked || GetPixel(canvas.device, left + scale(5), top + scale(9)) ==
+            (disabled ? colors.disabled : colors.selectionText));
+}
 
 std::vector<std::wstring> Browse(HWND owner, bool directory, bool multiple)
 {
@@ -86,6 +172,7 @@ void SetDialogLanguage(HWND dialog)
     set(IDC_LABEL_LOG_LINES, Text(L"Log lines per source:", L"每类日志保留行数："));
     set(IDC_LABEL_LANGUAGE, Text(L"Language:", L"语言："));
     set(IDC_LABEL_THEME, Text(L"Appearance:", L"外观："));
+    set(IDC_LOGON_STARTUP, Text(L"Start XTray and Xray when I sign in", L"登录后自动启动 XTray 和 Xray"));
     set(IDC_BROWSE_EXECUTABLE, Text(L"Browse...", L"浏览…"));
     set(IDC_ADD_FILES, Text(L"Add files...", L"添加文件…"));
     set(IDC_BROWSE_DIRECTORY, Text(L"Browse...", L"浏览…"));
@@ -133,6 +220,15 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         }
         SetDlgItemTextW(dialog, IDC_CONFIG_FILES, files.c_str());
         SetDlgItemTextW(dialog, IDC_LOG_LINES, std::to_wstring(context->settings.logLines).c_str());
+        const auto startup = context->startup.Query();
+        context->startupAvailable = startup.success;
+        CheckDlgButton(dialog, IDC_LOGON_STARTUP, startup.enabled ? BST_CHECKED : BST_UNCHECKED);
+        if (!startup.success) {
+            context->logs.Tray(startup.error);
+            SetDlgItemTextW(dialog, IDC_LOGON_STARTUP, Text(
+                L"Login startup unavailable (see XTray log)", L"登录自启不可用（请查看 XTray 日志）"));
+            EnableWindow(GetDlgItem(dialog, IDC_LOGON_STARTUP), FALSE);
+        }
         const auto* owner = ThemeWindow::From(GetWindow(dialog, GW_OWNER));
         context->theme.Apply(owner != nullptr && owner->Colors().dark, true);
         if (context->automation) {
@@ -215,7 +311,11 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         }
         draft.logLines = static_cast<size_t>(limit);
         std::wstring error;
-        if (!SaveSettings(context->root, draft, error)) {
+        const bool startupEnabled = IsDlgButtonChecked(dialog, IDC_LOGON_STARTUP) == BST_CHECKED;
+        const bool saved = context->startupAvailable
+            ? context->startup.Save(draft, startupEnabled, error)
+            : SaveSettings(context->root, draft, error);
+        if (!saved) {
             context->logs.Tray(error);
             MessageBoxW(dialog, error.c_str(), L"XTray", MB_OK | MB_ICONERROR);
             return TRUE;
@@ -256,9 +356,10 @@ std::wstring WindowText(HWND window)
     return text;
 }
 
-bool EditSettings(HWND owner, const std::filesystem::path& root, Settings& settings, Logs& logs)
+bool EditSettings(HWND owner, const std::filesystem::path& root, Settings& settings, Logs& logs,
+    StartupRegistration& startup)
 {
-    Context context{root, settings, logs};
+    Context context{root, settings, logs, startup};
     const INT_PTR result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_SETTINGS),
         owner, SettingsProcedure, reinterpret_cast<LPARAM>(&context));
     if (result == -1) {
@@ -283,9 +384,11 @@ bool SmokeTestSettingsTheme(HWND owner, const std::filesystem::path& root)
     Settings settings;
     settings.theme = ThemeMode::Light;
     Logs logs;
+    MemoryStartupRegistry registry;
+    StartupRegistration startup(root, CurrentExecutable(), &registry);
     bool passed = true;
     for (int action = 0; action < 4; ++action) {
-        Context context{root, settings, logs};
+        Context context{root, settings, logs, startup};
         context.automation = [&](HWND window) {
             const auto expected = action == 3 ? ThemeMode::Dark : ThemeMode::Light;
             passed = passed && SendDlgItemMessageW(window, IDC_THEME, CB_GETCURSEL, 0, 0) ==
@@ -331,6 +434,86 @@ bool SmokeTestSettingsTheme(HWND owner, const std::filesystem::path& root)
     }
     const auto saved = LoadSettings(root);
     return saved.success && saved.settings.theme == ThemeMode::Dark;
+}
+
+bool SmokeTestSettingsStartup(HWND owner, const std::filesystem::path& root)
+{
+    std::fwprintf(stderr, L"Smoke: login-startup draft, save, reopen, and themed native checkbox.\n");
+    Settings settings;
+    settings.language = CurrentLanguage();
+    Logs logs;
+    MemoryStartupRegistry registry;
+    StartupRegistration startup(root, CurrentExecutable(), &registry);
+    bool passed = true;
+    for (int action = 0; action < 4; ++action) {
+        Context context{root, settings, logs, startup};
+        context.automation = [&](HWND window) {
+            const bool initiallyEnabled = action == 2;
+            const HWND checkbox = GetDlgItem(window, IDC_LOGON_STARTUP);
+            passed = passed && context.startupAvailable && IsWindowEnabled(checkbox) &&
+                (IsDlgButtonChecked(window, IDC_LOGON_STARTUP) == BST_CHECKED) == initiallyEnabled;
+            if (action != 3) {
+                SendMessageW(checkbox, BM_CLICK, 0, 0);
+                const bool checked = !initiallyEnabled;
+                passed = passed &&
+                    (IsDlgButtonChecked(window, IDC_LOGON_STARTUP) == BST_CHECKED) == checked;
+                for (const bool dark : {false, true}) {
+                    context.theme.Apply(dark, true);
+                    passed = passed &&
+                        (IsDlgButtonChecked(window, IDC_LOGON_STARTUP) == BST_CHECKED) == checked &&
+                        CheckboxPaintMatches(checkbox, context.theme.Colors(), checked, false);
+                    EnableWindow(checkbox, FALSE);
+                    passed = passed && CheckboxPaintMatches(checkbox, context.theme.Colors(), checked, true);
+                    EnableWindow(checkbox, TRUE);
+                }
+                if (action == 0) {
+                    SetFocus(checkbox);
+                    SendMessageW(checkbox, WM_KEYDOWN, VK_SPACE, 0);
+                    SendMessageW(checkbox, WM_KEYUP, VK_SPACE, 0);
+                    passed = passed && IsDlgButtonChecked(window, IDC_LOGON_STARTUP) == BST_UNCHECKED;
+                    SendMessageW(checkbox, BM_CLICK, 0, 0);
+                }
+            } else {
+                SendMessageW(checkbox, BM_CLICK, 0, 0);
+            }
+            SendMessageW(window, action == 3 ? WM_CLOSE : WM_COMMAND,
+                action == 0 ? IDCANCEL : IDOK, 0);
+        };
+        const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_SETTINGS),
+            owner, SettingsProcedure, reinterpret_cast<LPARAM>(&context));
+        if (context.error || !passed || result != (action == 0 || action == 3 ? IDCANCEL : IDOK) ||
+            registry.writes != static_cast<size_t>(action == 0 ? 0 : action == 1 ? 1 : 2)) {
+            return false;
+        }
+        const auto status = startup.Query();
+        if (!status.success || status.enabled != (action == 1)) {
+            return false;
+        }
+        if (action == 0 && (std::filesystem::exists(root / L"data" / L"settings.ini") ||
+            std::filesystem::exists(root / L"data" / L"startup.ini"))) {
+            return false;
+        }
+    }
+
+    std::fwprintf(stderr, L"Smoke: unavailable login startup preserves registration and permits ordinary settings.\n");
+    registry.failRead = true;
+    const auto before = registry.values;
+    Context context{root, settings, logs, startup};
+    context.automation = [&](HWND window) {
+        passed = passed && !context.startupAvailable &&
+            !IsWindowEnabled(GetDlgItem(window, IDC_LOGON_STARTUP));
+        SetDlgItemTextW(window, IDC_LOG_LINES, L"733");
+        SendMessageW(window, WM_COMMAND, IDOK, 0);
+    };
+    const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_SETTINGS),
+        owner, SettingsProcedure, reinterpret_cast<LPARAM>(&context));
+    const auto saved = LoadSettings(root);
+    bool reported = false;
+    for (const auto& line : logs.Snapshot().lines) {
+        reported = reported || line->text.find(L"Injected login-startup query failure.") != std::wstring::npos;
+    }
+    return result == IDOK && !context.error && passed && reported && saved.success &&
+        saved.settings.logLines == 733 && registry.writes == 2 && registry.values == before;
 }
 
 } // namespace xtray

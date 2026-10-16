@@ -260,15 +260,42 @@ void ThemeWindow::PaintControl(HWND control, HDC device)
         RECT screen{};
         GetWindowRect(control, &screen);
         const bool hot = PtInRect(&screen, cursor) != FALSE && !disabled;
-        Fill(device, bounds, (state & BST_PUSHED) != 0 ? colors_.pressed
-            : hot ? colors_.hot : colors_.button);
-        const bool primary = (GetWindowLongPtrW(control, GWL_STYLE) & BS_TYPEMASK) == BS_DEFPUSHBUTTON;
-        Frame(device, bounds, focused || primary ? colors_.selection : colors_.border);
+        const auto type = GetWindowLongPtrW(control, GWL_STYLE) & BS_TYPEMASK;
+        const bool checkbox = type == BS_AUTOCHECKBOX || type == BS_CHECKBOX;
+        if (checkbox) {
+            Fill(device, bounds, colors_.window);
+            const LONG side = Scale(control, 13);
+            RECT box{bounds.left + Scale(control, 1), bounds.top +
+                (bounds.bottom - bounds.top - side) / 2, 0, 0};
+            box.right = box.left + side;
+            box.bottom = box.top + side;
+            const bool checked = SendMessageW(control, BM_GETCHECK, 0, 0) == BST_CHECKED;
+            Fill(device, box, checked && !disabled ? colors_.selection
+                : (state & BST_PUSHED) != 0 ? colors_.pressed : hot ? colors_.hot : colors_.surface);
+            Frame(device, box, disabled ? colors_.disabled : colors_.border);
+            if (checked) {
+                SelectObject(device, GetStockObject(DC_PEN));
+                SetDCPenColor(device, disabled ? colors_.disabled : colors_.selectionText);
+                for (int offset = 0; offset < (std::max)(1, Scale(control, 2)); ++offset) {
+                    POINT tick[] = {
+                        {box.left + Scale(control, 3), box.top + Scale(control, 6) + offset},
+                        {box.left + Scale(control, 5), box.top + Scale(control, 9) + offset},
+                        {box.left + Scale(control, 10), box.top + Scale(control, 3) + offset}};
+                    Polyline(device, tick, static_cast<int>(std::size(tick)));
+                }
+            }
+            bounds.left = box.right + Scale(control, 5);
+        } else {
+            Fill(device, bounds, (state & BST_PUSHED) != 0 ? colors_.pressed
+                : hot ? colors_.hot : colors_.button);
+            Frame(device, bounds, focused || type == BS_DEFPUSHBUTTON
+                ? colors_.selection : colors_.border);
+        }
         const int length = GetWindowTextLengthW(control);
         text.resize(static_cast<size_t>(length) + 1);
         text.resize(static_cast<size_t>(GetWindowTextW(control, text.data(), length + 1)));
         DrawTextW(device, text.c_str(), static_cast<int>(text.size()), &bounds,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+            (checkbox ? DT_LEFT : DT_CENTER) | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
                 ((SendMessageW(control, WM_QUERYUISTATE, 0, 0) & UISF_HIDEACCEL) != 0 ? DT_HIDEPREFIX : 0));
     } else {
         Fill(device, bounds, colors_.surface);
@@ -457,7 +484,7 @@ LRESULT CALLBACK ThemeWindow::ControlProcedure(HWND control, UINT message, WPARA
             message == WM_ENABLE || message == WM_SETFOCUS || message == WM_KILLFOCUS ||
             message == WM_SETTEXT || message == WM_SETFONT || message == WM_UPDATEUISTATE ||
             message == WM_LBUTTONDOWN || message == WM_LBUTTONUP || message == WM_KEYDOWN ||
-            message == WM_KEYUP || message == BM_SETSTATE || message == BM_SETSTYLE ||
+            message == WM_KEYUP || message == BM_SETSTATE || message == BM_SETCHECK || message == BM_SETSTYLE ||
             message == WM_CAPTURECHANGED || message == WM_CANCELMODE ||
             message == CB_SETCURSEL || message == CB_SHOWDROPDOWN || message == CB_RESETCONTENT)) {
             InvalidateRect(control, nullptr, FALSE);

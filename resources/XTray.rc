@@ -5,7 +5,7 @@
 
 1 RT_MANIFEST "XTray.manifest"
 
-IDD_SETTINGS DIALOGEX 0, 0, 430, 286
+IDD_SETTINGS DIALOGEX 0, 0, 430, 305
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "XTray Settings"
 FONT 9, "Segoe UI"
@@ -28,9 +28,10 @@ BEGIN
     COMBOBOX IDC_LANGUAGE, 66, 210, 125, 80, CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP
     LTEXT "Appearance:", IDC_LABEL_THEME, 207, 213, 55, 12
     COMBOBOX IDC_THEME, 266, 210, 151, 80, CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP
-    LTEXT "Relative paths use the XTray.exe directory.", IDC_HINT_RELATIVE, 12, 237, 400, 12
-    LTEXT "Paths apply on the next run/restart; at least one config source is required.", IDC_HINT_APPLY, 12, 250, 405, 12
+    CONTROL "Start XTray and Xray when I sign in", IDC_LOGON_STARTUP, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 234, 405, 14
+    LTEXT "Relative paths use the XTray.exe directory.", IDC_HINT_RELATIVE, 12, 256, 400, 12
+    LTEXT "Paths apply on the next run/restart; at least one config source is required.", IDC_HINT_APPLY, 12, 269, 405, 12
 
-    DEFPUSHBUTTON "Save", IDOK, 271, 267, 70, 15
-    PUSHBUTTON "Cancel", IDCANCEL, 347, 267, 70, 15
+    DEFPUSHBUTTON "Save", IDOK, 271, 286, 70, 15
+    PUSHBUTTON "Cancel", IDCANCEL, 347, 286, 70, 15
 END
