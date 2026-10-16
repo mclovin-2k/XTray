@@ -10,7 +10,7 @@ The second implementation stage adds Xray start/stop/restart controls, process s
 
 The current update adds selective log clearing, indented wrapped lines, orange XTray logs with bold source labels, a centered initial window, and English/Chinese UI selection. The user confirmed that the Build workflow for commit 498a034 succeeded, including native build/tests and artifact checks. The user also reported no issues in the subsequent desktop trial of these five improvements.
 
-The third implementation stage adds tray integration and one-instance-per-directory enforcement. The user confirmed that the Build workflow for commit 7c1fe2e succeeded, including the native tests and artifact checks. Desktop acceptance of the tray and directory-instance behavior is still pending. Closing the main window now hides it to the tray; choose **Exit** from the tray menu to stop the managed Xray process and exit XTray. Theme selection and user-logon startup are planned for later stages.
+The third implementation stage adds tray integration and one-instance-per-directory enforcement. The user confirmed that the Build workflow for commit 7c1fe2e succeeded, including the native tests and artifact checks. The user also reported no issues in its desktop trial. Closing the main window now hides it to the tray; choose **Exit** from the tray menu to stop the managed Xray process and exit XTray. The fourth implementation stage adds appearance selection and live theme updates; its cloud build and desktop acceptance are pending. User-logon startup is planned for a later stage.
 
 ## Project documents
 
@@ -44,7 +44,7 @@ Configuration files are passed in their saved order with repeated `-config` argu
 
 Path changes apply to the next run or restart. Settings are stored as UTF-8 in `.\data\settings.ini`. Relative paths keep their original form, so portable moves do not rewrite them.
 
-Logs stay in memory. XTray and Xray each retain the configured number of recent lines, initially 5000, with bold `[XTRAY]` / `[XRAY]` labels and distinct orange/gray colors in the current light UI. Wrapped lines align with the message body; this formatting does not add spaces or line breaks to copied text. **Clear logs**, at the far right of the source-filter row, clears the selected source or both sources when **All** is selected. New output continues without restarting Xray. The next run clears only the previous Xray output. Xray errors are displayed without changing the user's configuration or automatically restarting the process.
+Logs stay in memory. XTray and Xray each retain the configured number of recent lines, initially 5000, with bold `[XTRAY]` / `[XRAY]` labels and distinct orange/gray colors in the light UI, or light orange/light gray on a dark background in the dark UI. Wrapped lines align with the message body; this formatting does not add spaces or line breaks to copied text. **Clear logs**, at the far right of the source-filter row, clears the selected source or both sources when **All** is selected. New output continues without restarting Xray. The next run clears only the previous Xray output. Xray errors are displayed without changing the user's configuration or automatically restarting the process.
 
 If Xray itself is configured to write log files, those files remain under Xray's own control; XTray captures its standard output and standard error.
 
@@ -63,6 +63,16 @@ An Explorer restart re-registers the tray icon. If the tray is temporarily unava
 Each resolved executable directory allows one XTray process across Windows sessions. Reopening the same directory activates its existing window only for the same user and session, without starting another Xray. A directory occupied by another user/session or an unresponsive instance produces a message. Different directories remain independent.
 
 Runtime instance identity uses the final directory path, a Windows SHA-256 hash, and a global named mutex. It creates no lock file or registration record. The added Advapi32/Bcrypt imports are Windows system libraries; users still need no separate runtime installation.
+
+## Appearance
+
+Settings offers **Follow system**, **Light**, and **Dark**, initially Follow system. Appearance and language share one row in the existing settings window. The appearance preference is stored in the portable settings file as the optional key `Theme=system|light|dark`; older settings without it remain valid and use Follow system.
+
+Saving applies the appearance immediately. Cancel, Escape, and closing Settings discard the draft. Theme changes preserve Xray, log content, filtering, text selection, and reading position. Explicit Light/Dark choices override the Windows app mode; Follow system updates while XTray is running, including while Settings is open.
+
+The main window, Settings, title bars, controls, tray menu, and logs use fixed palettes. Log sources retain their bold labels and use orange/gray in light mode or light orange/light gray in dark mode. Status icons remain green/red. Windows file pickers and Explorer use their own system appearance.
+
+Theme detection uses Windows UISettings and its color-change event, with Windows setting-change messages as a fallback. If theme detection is unavailable, Follow system uses the light palette. Title-bar attributes unsupported by the current OS retain the Windows appearance. All drawing and detection use public Windows SDK APIs; no external theme engine, DLL package, or runtime installer is added.
 
 ## UI language
 

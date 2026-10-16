@@ -18,22 +18,24 @@ add_library(XTray.Core STATIC
     src/instance.cpp
     src/tray.cpp
     src/language.cpp
+    src/theme.cpp
     src/logs.cpp
     src/xray_process.cpp
     src/settings.cpp
 )
 target_include_directories(XTray.Core PUBLIC src)
-# Both are Windows system libraries; no additional runtime is distributed.
-target_link_libraries(XTray.Core PUBLIC advapi32 bcrypt)
+# These are Windows system libraries; no additional runtime is distributed.
+target_link_libraries(XTray.Core PUBLIC advapi32 bcrypt windowsapp)
 
 add_executable(XTray WIN32
     src/main.cpp
     src/log_view.cpp
+    src/theme_window.cpp
     src/settings_dialog.cpp
     resources/XTray.rc
 )
 target_include_directories(XTray PRIVATE resources)
-target_link_libraries(XTray PRIVATE XTray.Core user32 gdi32 shell32 ole32 uuid)
+target_link_libraries(XTray PRIVATE XTray.Core user32 gdi32 shell32 ole32 uuid comctl32 uxtheme dwmapi)
 # The resource script embeds the manifest, so disable the linker's generated one.
 target_link_options(XTray PRIVATE /MANIFEST:NO)
 

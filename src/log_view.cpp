@@ -41,6 +41,19 @@ LogView::LogView(HWND window, Logs& logs) : window_(window), logs_(logs)
     SendMessageW(window_, EM_SETEVENTMASK, 0, ENM_SCROLL | ENM_SELCHANGE);
 }
 
+void LogView::SetTheme(const ThemePalette& palette)
+{
+    if (palette_ == palette) {
+        return;
+    }
+    palette_ = palette;
+    formatAll_ = true;
+    revision_ = UINT64_MAX;
+    SendMessageW(window_, WM_SETREDRAW, FALSE, 0);
+    SendMessageW(window_, EM_SETBKGNDCOLOR, 0, palette_.logBackground);
+    Refresh();
+}
+
 void LogView::SetFilter(int filter)
 {
     if (filter_ != filter) {
@@ -152,7 +165,7 @@ void LogView::ApplyFormat(LONG position, const ViewLine& line)
     format.cbSize = sizeof(format);
     format.dwMask = CFM_COLOR | CFM_BOLD;
     format.crTextColor = line.line->source == LogSource::Tray
-        ? RGB(180, 83, 9) : RGB(32, 32, 32);
+        ? palette_.trayLog : palette_.xrayLog;
     SendMessageW(window_, EM_SETCHARFORMAT, SCF_SELECTION, reinterpret_cast<LPARAM>(&format));
     CHARRANGE label{position, position + labelLength};
     SendMessageW(window_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&label));

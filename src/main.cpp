@@ -1,5 +1,6 @@
 #include "instance.h"
 #include "tray.h"
+#include "theme_window.h"
 #include "log_view.h"
 #include "xray_process.h"
 #include "settings_dialog.h"
@@ -96,6 +97,7 @@ public:
           tray_(smokeTest ? SmokeNotifyIcon : Shell_NotifyIconW) {}
     ~Application()
     {
+        themeMonitor_.reset();
         process_.Shutdown();
         tray_.Remove();
         if (IsWindow(window_)) {
@@ -117,6 +119,7 @@ public:
     bool Initialize(HWND window)
     {
         window_ = window;
+        theme_.Attach(window_);
         taskbarCreated_ = RegisterWindowMessageW(L"TaskbarCreated");
         if (taskbarCreated_ == 0) {
             throw std::runtime_error(Text("Cannot register the taskbar restart message.",
@@ -143,7 +146,7 @@ public:
         restart_ = child(0, L"BUTTON", L"", WS_TABSTOP, Restart);
         settingsButton_ = child(0, L"BUTTON", L"", WS_TABSTOP, SettingsButton);
         fileLabel_ = child(0, L"STATIC", L"", SS_CENTERIMAGE);
-        files_ = child(0, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, FileList);
+        files_ = child(0, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, FileList);
         openFile_ = child(0, L"BUTTON", L"", WS_TABSTOP, OpenFile);
         openFileDirectory_ = child(0, L"BUTTON", L"", WS_TABSTOP, OpenFileDirectory);
         directoryLabel_ = child(0, L"STATIC", L"", SS_CENTERIMAGE);
@@ -151,7 +154,7 @@ public:
             ES_READONLY | ES_AUTOHSCROLL | WS_TABSTOP);
         openDirectory_ = child(0, L"BUTTON", L"", WS_TABSTOP, OpenDirectory);
         filterLabel_ = child(0, L"STATIC", L"", SS_CENTERIMAGE);
-        filter_ = child(0, L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, Filter);
+        filter_ = child(0, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, Filter);
         clearLogs_ = child(0, L"BUTTON", L"", WS_TABSTOP, ClearLogs);
         logWindow_ = child(WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
             ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_NOHIDESEL | WS_VSCROLL | WS_TABSTOP);
@@ -168,8 +171,13 @@ public:
                 logs_.Tray(loaded.error);
             }
         }
+        if (smokeTest_) {
+            settings_.theme = ThemeMode::Light;
+        }
         ApplyLanguage(settings_.language);
         ApplyUiText();
+        themeMonitor_ = std::make_unique<ThemeMonitor>(window_);
+        UpdateTheme(themeMonitor_->SystemDark(), true);
         logs_.SetLimit(settings_.logLines);
         logs_.Tray(settingsValid_
             ? Text(L"XTray is ready. Configure paths in Settings, then click Run to start Xray.", L"XTray 已就绪；点击“设置”填写路径，再点击“运行”启动 Xray。")
@@ -273,6 +281,7 @@ public:
             if (EditSettings(window_, root_, settings_, logs_)) {
                 settingsValid_ = true;
                 ApplyUiText();
+                UpdateTheme(themeMonitor_->SystemDark());
                 UpdatePaths();
             }
         } else if (id == ClearLogs) {
@@ -304,6 +313,18 @@ public:
             }
         }
         Refresh();
+    }
+
+    bool ThemeMessage(UINT message, WPARAM wParam, LPARAM lParam, LRESULT& result)
+    {
+        return theme_.Handle(message, wParam, lParam, result);
+    }
+
+    void SystemThemeChanged()
+    {
+        if (ready_ && !smokeTest_ && themeMonitor_) {
+            UpdateTheme(themeMonitor_->SystemDark());
+        }
     }
 
     void ShowMain()
@@ -354,6 +375,8 @@ public:
     void Destroyed()
     {
         ready_ = false;
+        themeMonitor_.reset();
+        theme_.Detach();
         tray_.Remove();
         window_ = nullptr;
     }
@@ -457,10 +480,25 @@ public:
             text.find(L"test 中文") != std::wstring::npos) {
             return false;
         }
-        return SmokeTestUiChanges() && SmokeTestTray();
+        return SmokeTestUiChanges() && SmokeTestThemes() && SmokeTestTray();
     }
 
 private:
+    void UpdateTheme(bool systemDark, bool force = false)
+    {
+        if (changingTheme_) {
+            return;
+        }
+        changingTheme_ = true;
+        struct Reset { bool& flag; ~Reset() { flag = false; } } reset{changingTheme_};
+        const bool dark = ResolveDark(settings_.theme, systemDark);
+        theme_.Apply(dark, force);
+        if (view_) {
+            view_->SetTheme(theme_.Colors());
+        }
+        theme_.ApplyOwned(dark);
+    }
+
     void UpdateTray()
     {
         if (exiting_ || !ready_) {
@@ -496,9 +534,20 @@ private:
         }
         const auto state = process_.State();
         const bool enabled = IsWindowEnabled(window_) && !exiting_;
-        const auto append = [menu](int id, const wchar_t* caption, bool available) {
-            return AppendMenuW(menu, MF_STRING | (available ? MF_ENABLED : MF_GRAYED),
-                static_cast<UINT_PTR>(id), caption) != FALSE;
+        size_t index = 0;
+        const auto append = [this, menu, &index](int id, const wchar_t* caption, bool available) {
+            auto& accessible = menuCaptions_[index++];
+            accessible = {MSAA_MENU_SIG, static_cast<DWORD>(std::wcslen(caption)),
+                const_cast<wchar_t*>(caption)};
+            MENUITEMINFOW item{};
+            item.cbSize = sizeof(item);
+            item.fMask = MIIM_FTYPE | MIIM_STRING | MIIM_STATE | MIIM_ID | MIIM_DATA;
+            item.fType = MFT_OWNERDRAW;
+            item.fState = available ? MFS_ENABLED : MFS_DISABLED;
+            item.wID = static_cast<UINT>(id);
+            item.dwTypeData = const_cast<wchar_t*>(caption);
+            item.dwItemData = reinterpret_cast<ULONG_PTR>(&accessible);
+            return InsertMenuItemW(menu, static_cast<UINT>(GetMenuItemCount(menu)), TRUE, &item) != FALSE;
         };
         if (!append(ShowGui, Text(L"Show GUI", L"显示 GUI"), true) ||
             !append(Run, Text(L"Run", L"运行"), enabled && state == ProcessState::Stopped) ||
@@ -682,6 +731,168 @@ private:
             WindowText(clearLogs_) == L"清空日志";
     }
 
+    bool SmokeTestThemes()
+    {
+        std::fwprintf(stderr, L"Smoke: theme palettes preserve log text, filters, selection, and scroll.\n");
+        const auto original = settings_;
+        const auto language = CurrentLanguage();
+        logs_.SetLimit(200);
+        for (int index = 0; index < 80; ++index) {
+            logs_.Xray("theme output " + std::to_string(index) + "\n");
+        }
+        SendMessageW(filter_, CB_SETCURSEL, 0, 0);
+        Command(Filter, CBN_SELCHANGE);
+        SendMessageW(logWindow_, WM_VSCROLL, SB_TOP, 0);
+        CHARRANGE selected{1, 5};
+        SendMessageW(logWindow_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&selected));
+        const auto before = WindowText(logWindow_);
+        const auto revision = logs_.Revision();
+        POINT scroll{};
+        SendMessageW(logWindow_, EM_GETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&scroll));
+        const auto icon = SendMessageW(window_, WM_GETICON, ICON_SMALL, 0);
+
+        struct Canvas {
+            HDC device = CreateCompatibleDC(nullptr);
+            HBITMAP bitmap = nullptr;
+            HGDIOBJ previous = nullptr;
+            Canvas()
+            {
+                BITMAPINFO info{};
+                info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                info.bmiHeader.biWidth = 320;
+                info.bmiHeader.biHeight = -64;
+                info.bmiHeader.biPlanes = 1;
+                info.bmiHeader.biBitCount = 32;
+                void* pixels = nullptr;
+                bitmap = CreateDIBSection(device, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+                if (device != nullptr && bitmap != nullptr) {
+                    previous = SelectObject(device, bitmap);
+                }
+            }
+            ~Canvas()
+            {
+                if (previous != nullptr) { SelectObject(device, previous); }
+                if (bitmap != nullptr) { DeleteObject(bitmap); }
+                if (device != nullptr) { DeleteDC(device); }
+            }
+        } canvas;
+        if (canvas.device == nullptr || canvas.bitmap == nullptr) {
+            return false;
+        }
+        const auto labelColor = [this](const wchar_t* label, LONG length) {
+            FINDTEXTEXW find{{0, -1}, const_cast<wchar_t*>(label), {}};
+            const auto index = SendMessageW(logWindow_, EM_FINDTEXTEXW, FR_DOWN,
+                reinterpret_cast<LPARAM>(&find));
+            CHARFORMAT2W format{};
+            format.cbSize = sizeof(format);
+            if (index >= 0) {
+                CHARRANGE range{static_cast<LONG>(index), static_cast<LONG>(index) + length};
+                SendMessageW(logWindow_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&range));
+                SendMessageW(logWindow_, EM_GETCHARFORMAT, SCF_SELECTION,
+                    reinterpret_cast<LPARAM>(&format));
+            }
+            return format;
+        };
+        for (const bool dark : {true, false, true, false}) {
+            settings_.theme = dark ? ThemeMode::Dark : ThemeMode::Light;
+            UpdateTheme(!dark);
+            CHARRANGE after{};
+            POINT afterScroll{};
+            SendMessageW(logWindow_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&after));
+            SendMessageW(logWindow_, EM_GETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&afterScroll));
+            const auto palette = PaletteFor(dark);
+            if (theme_.Colors() != palette || WindowText(logWindow_) != before ||
+                logs_.Revision() != revision || SendMessageW(filter_, CB_GETCURSEL, 0, 0) != 0 ||
+                after.cpMin != selected.cpMin || after.cpMax != selected.cpMax ||
+                afterScroll.x != scroll.x || afterScroll.y != scroll.y ||
+                SendMessageW(window_, WM_GETICON, ICON_SMALL, 0) != icon) {
+                return false;
+            }
+            const auto tray = labelColor(L"[XTRAY]", 7);
+            const auto xray = labelColor(L"[XRAY]", 6);
+            if (tray.crTextColor != palette.trayLog || xray.crTextColor != palette.xrayLog ||
+                (tray.dwEffects & CFE_BOLD) == 0 || (xray.dwEffects & CFE_BOLD) == 0 ||
+                SendMessageW(logWindow_, EM_SETBKGNDCOLOR, 0, palette.logBackground) != palette.logBackground) {
+                return false;
+            }
+            SendMessageW(logWindow_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&selected));
+            SendMessageW(logWindow_, EM_SETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&scroll));
+            std::fwprintf(stderr, L"Smoke: native background, button, combo, and menu painting (%ls).\n",
+                dark ? L"dark" : L"light");
+            SendMessageW(window_, WM_ERASEBKGND, reinterpret_cast<WPARAM>(canvas.device), 0);
+            if (GetPixel(canvas.device, 2, 2) != palette.window) {
+                return false;
+            }
+            SendMessageW(run_, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(canvas.device), PRF_CLIENT);
+            const auto button = GetPixel(canvas.device, 6, 6);
+            if (button != palette.button && button != palette.hot && button != palette.pressed) {
+                return false;
+            }
+            SendMessageW(filter_, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(canvas.device), PRF_CLIENT);
+            if (GetPixel(canvas.device, 2, 2) != palette.surface) {
+                return false;
+            }
+            const HMENU menu = CreateTrayMenu();
+            MENUITEMINFOW item{};
+            item.cbSize = sizeof(item);
+            item.fMask = MIIM_DATA | MIIM_FTYPE;
+            const bool ownerDraw = GetMenuItemInfoW(menu, 0, TRUE, &item) &&
+                (item.fType & MFT_OWNERDRAW) != 0 && item.dwItemData != 0;
+            const auto* accessible = reinterpret_cast<const MSAAMENUINFO*>(item.dwItemData);
+            if (!ownerDraw || accessible->dwMSAASignature != MSAA_MENU_SIG ||
+                std::wstring_view(accessible->pszWText) != Text(L"Show GUI", L"显示 GUI")) {
+                DestroyMenu(menu);
+                return false;
+            }
+            DRAWITEMSTRUCT draw{};
+            draw.CtlType = ODT_MENU;
+            draw.hDC = canvas.device;
+            draw.rcItem = {0, 0, 200, 30};
+            draw.itemData = item.dwItemData;
+            if (ownerDraw) {
+                SendMessageW(window_, WM_DRAWITEM, 0, reinterpret_cast<LPARAM>(&draw));
+            }
+            const auto background = GetPixel(canvas.device, 2, 2);
+            draw.itemState = ODS_SELECTED;
+            if (ownerDraw) {
+                SendMessageW(window_, WM_DRAWITEM, 0, reinterpret_cast<LPARAM>(&draw));
+            }
+            const auto highlighted = GetPixel(canvas.device, 2, 2);
+            DestroyMenu(menu);
+            if (!ownerDraw || background != palette.window || highlighted != palette.selection) {
+                return false;
+            }
+        }
+        std::fwprintf(stderr, L"Smoke: follow-system updates and explicit mode overrides.\n");
+        settings_.theme = ThemeMode::System;
+        UpdateTheme(true);
+        if (!theme_.Colors().dark) {
+            return false;
+        }
+        UpdateTheme(false);
+        if (theme_.Colors().dark) {
+            return false;
+        }
+        settings_.theme = ThemeMode::Dark;
+        UpdateTheme(false);
+        if (!theme_.Colors().dark) {
+            return false;
+        }
+        std::fwprintf(stderr, L"Smoke: settings appearance draft, save, cancel, Escape, and close.\n");
+        const auto fixture = root_ / (L"theme smoke " + std::to_wstring(GetCurrentProcessId()) +
+            L"-" + std::to_wstring(GetTickCount64()));
+        std::filesystem::create_directories(fixture);
+        if (!SmokeTestSettingsTheme(window_, fixture)) {
+            return false;
+        }
+        settings_ = original;
+        ApplyLanguage(language);
+        ApplyUiText();
+        UpdateTheme(false);
+        Refresh();
+        return WindowText(logWindow_) == before && logs_.Revision() == revision;
+    }
+
     bool SmokeTestTray()
     {
         std::fwprintf(stderr, L"Smoke: tray registration and stopped menu state.\n");
@@ -730,6 +941,15 @@ private:
             smokeTrayData.hIcon != icons_[3]) {
             return false;
         }
+        const DWORD themePid = process_.Pid();
+        settings_.theme = ThemeMode::Dark;
+        UpdateTheme(false);
+        if (!wait([&] { return hasOutput(L"stream 2"); }) || process_.Pid() != themePid ||
+            !theme_.Colors().dark) {
+            return false;
+        }
+        settings_.theme = original.theme;
+        UpdateTheme(false);
         const DWORD previousPid = process_.Pid();
         Handle previous(OpenProcess(SYNCHRONIZE, FALSE, previousPid));
         TrayCommand(Restart);
@@ -855,6 +1075,7 @@ private:
         }
         font_ = font;
         logFont_ = logFont;
+        theme_.SetFont(font_);
         view_->InvalidateFormat(logFont_);
 
         std::array<HICON, 6> icons{};
@@ -881,6 +1102,7 @@ private:
         SendMessageW(window_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icons_[offset]));
         SendMessageW(window_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icons_[offset + 1]));
         if (ready_) {
+            theme_.Apply(theme_.Colors().dark, true);
             shownPid_ = MAXDWORD;
             Refresh();
         }
@@ -941,6 +1163,9 @@ private:
     XrayProcess process_;
     bool smokeTest_;
     TrayIcon tray_;
+    ThemeWindow theme_;
+    std::unique_ptr<ThemeMonitor> themeMonitor_;
+    bool changingTheme_ = false;
     bool exiting_ = false;
     bool trayFailureReported_ = false;
     UINT taskbarCreated_ = 0;
@@ -958,6 +1183,7 @@ private:
     HWND filterLabel_ = nullptr, filter_ = nullptr, clearLogs_ = nullptr, logWindow_ = nullptr;
     HFONT font_ = nullptr, logFont_ = nullptr;
     std::array<HICON, 6> icons_{};
+    mutable std::array<MSAAMENUINFO, 5> menuCaptions_{};
     std::unique_ptr<LogView> view_;
     ProcessState shownState_ = ProcessState::Stopped;
     DWORD shownPid_ = MAXDWORD;
@@ -972,6 +1198,10 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
         SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(app));
     }
     try {
+        LRESULT themed = 0;
+        if (app != nullptr && app->ThemeMessage(message, wParam, lParam, themed)) {
+            return themed;
+        }
         if (message == WM_CREATE) {
             return app->Initialize(window) ? 0 : -1;
         }
@@ -999,6 +1229,11 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 return 0;
             }
             switch (message) {
+            case kSystemThemeMessage:
+            case WM_SETTINGCHANGE:
+            case WM_THEMECHANGED:
+                app->SystemThemeChanged();
+                return 0;
             case kShowInstanceMessage:
                 app->ShowMain();
                 return kInstanceShown;

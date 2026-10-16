@@ -8,5 +8,6 @@ namespace xtray {
 
 bool EditSettings(HWND owner, const std::filesystem::path& root, Settings& settings, Logs& logs);
 std::wstring WindowText(HWND window);
+bool SmokeTestSettingsTheme(HWND owner, const std::filesystem::path& root);
 
 } // namespace xtray

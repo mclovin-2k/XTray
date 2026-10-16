@@ -1,6 +1,7 @@
 #pragma once
 
 #include "language.h"
+#include "theme.h"
 
 #include <filesystem>
 #include <string>
@@ -14,6 +15,7 @@ struct Settings {
     std::wstring configDirectory;
     size_t logLines = 5000;
     Language language = Language::Automatic;
+    ThemeMode theme = ThemeMode::System;
 };
 
 struct SettingsResult {

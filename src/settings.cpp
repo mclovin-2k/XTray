@@ -153,6 +153,18 @@ SettingsResult LoadSettings(const std::filesystem::path& root)
                 throw std::runtime_error(Text("Invalid language setting.", "无效的语言设置。"));
             }
         }
+        if (values.contains({L"XTray", L"Theme"})) {
+            const auto theme = take(L"XTray", L"Theme");
+            if (theme == L"system") {
+                settings.theme = ThemeMode::System;
+            } else if (theme == L"light") {
+                settings.theme = ThemeMode::Light;
+            } else if (theme == L"dark") {
+                settings.theme = ThemeMode::Dark;
+            } else {
+                throw std::runtime_error(Text("Invalid appearance setting.", "无效的外观设置。"));
+            }
+        }
         const size_t count = ParseNumber(take(L"XTray", L"ConfigCount"));
         if (count > values.size()) {
             throw std::runtime_error(Text("Incomplete configuration file list.", "配置文件列表不完整。"));
@@ -185,8 +197,10 @@ bool SaveSettings(const std::filesystem::path& root, const Settings& settings, s
         !IsPathValue(settings.configDirectory) || settings.logLines == 0 ||
         settings.logLines > INT_MAX ||
         (settings.language != Language::Automatic && settings.language != Language::English &&
-            settings.language != Language::Chinese)) {
-        error = Text(L"Enter an Xray executable path, a positive log limit, and a valid language. Paths cannot contain line breaks or NUL characters.", L"请填写 Xray 程序路径、有效的日志行数并选择语言。路径不能包含换行或空字符。");
+            settings.language != Language::Chinese) ||
+        (settings.theme != ThemeMode::System && settings.theme != ThemeMode::Light &&
+            settings.theme != ThemeMode::Dark)) {
+        error = Text(L"Enter an Xray executable path, a positive log limit, and valid language and appearance choices. Paths cannot contain line breaks or NUL characters.", L"请填写 Xray 程序路径、有效的日志行数并选择语言和外观。路径不能包含换行或空字符。");
         return false;
     }
     for (const auto& config : settings.configFiles) {
@@ -203,6 +217,8 @@ bool SaveSettings(const std::filesystem::path& root, const Settings& settings, s
             L"\r\nLogLines=" + std::to_wstring(settings.logLines) +
             L"\r\nLanguage=" + (settings.language == Language::Automatic ? L"auto"
                 : settings.language == Language::English ? L"en" : L"zh") +
+            L"\r\nTheme=" + (settings.theme == ThemeMode::System ? L"system"
+                : settings.theme == ThemeMode::Light ? L"light" : L"dark") +
             L"\r\nConfigCount=" + std::to_wstring(settings.configFiles.size()) +
             L"\r\n\r\n[ConfigFiles]\r\n";
         for (size_t index = 0; index < settings.configFiles.size(); ++index) {
