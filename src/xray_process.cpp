@@ -128,7 +128,7 @@ void XrayProcess::Worker()
         }
         StopProcess();
     } catch (const std::exception& exception) {
-        logs_.Tray(L"进程管理错误：" + FromUtf8(exception.what()) + L"；请退出 XTray 后重新打开。");
+        logs_.Tray(Text(L"Process management error: ", L"进程管理错误：") + FromUtf8(exception.what()) + Text(L"; exit XTray and open it again.", L"；请退出 XTray 后重新打开。"));
         std::lock_guard lock(mutex_);
         quit_ = true;
         busy_ = false;
@@ -153,24 +153,24 @@ void XrayProcess::StartProcess(const Settings& settings)
         logs_.Tray(error);
     };
     if (settings.configFiles.empty() && settings.configDirectory.empty()) {
-        fail(L"请至少设置一个配置文件或一个配置目录。");
+        fail(Text(L"Set at least one configuration file or one configuration directory.", L"请至少设置一个配置文件或一个配置目录。"));
         return;
     }
     if (settings.executable.empty()) {
-        fail(L"请设置 Xray 程序路径。");
+        fail(Text(L"Set the Xray executable path.", L"请设置 Xray 程序路径。"));
         return;
     }
 
     const auto executable = ResolvePath(root_, settings.executable);
     if (!executable.is_absolute()) {
-        fail(L"无法解析 Xray 程序路径，请使用绝对路径或相对于 XTray 目录的路径。");
+        fail(Text(L"Cannot resolve the Xray executable path. Use an absolute path or a path relative to XTray.", L"无法解析 Xray 程序路径，请使用绝对路径或相对于 XTray 目录的路径。"));
         return;
     }
     std::wstring command = QuoteArgument(executable.native()) + L" run";
     for (const auto& config : settings.configFiles) {
         const auto path = ResolvePath(root_, config);
         if (!path.is_absolute()) {
-            fail(L"无法解析配置文件路径：" + config);
+            fail(Text(L"Cannot resolve the configuration file path: ", L"无法解析配置文件路径：") + config);
             return;
         }
         command += L" -config " + QuoteArgument(path.native());
@@ -178,26 +178,26 @@ void XrayProcess::StartProcess(const Settings& settings)
     if (!settings.configDirectory.empty()) {
         const auto path = ResolvePath(root_, settings.configDirectory);
         if (!path.is_absolute()) {
-            fail(L"无法解析配置目录路径：" + settings.configDirectory);
+            fail(Text(L"Cannot resolve the configuration directory path: ", L"无法解析配置目录路径：") + settings.configDirectory);
             return;
         }
         command += L" -confdir " + QuoteArgument(path.native());
     }
     if (command.size() >= 32767) {
-        fail(L"Xray 启动命令超过 Windows 长度限制，请减少配置文件数量或缩短路径。");
+        fail(Text(L"The Xray command exceeds the Windows length limit. Use fewer configuration files or shorter paths.", L"Xray 启动命令超过 Windows 长度限制，请减少配置文件数量或缩短路径。"));
         return;
     }
 
     Handle job(CreateJobObjectW(nullptr, nullptr));
     if (!job) {
-        fail(WindowsError(L"创建 Xray Job 失败"));
+        fail(WindowsError(Text(L"Cannot create the Xray job", L"创建 Xray Job 失败")));
         return;
     }
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     if (!SetInformationJobObject(job.Get(), JobObjectExtendedLimitInformation,
         &limits, sizeof(limits))) {
-        fail(WindowsError(L"设置 Xray Job 失败"));
+        fail(WindowsError(Text(L"Cannot configure the Xray job", L"设置 Xray Job 失败")));
         return;
     }
 
@@ -205,25 +205,25 @@ void XrayProcess::StartProcess(const Settings& settings)
     HANDLE read = nullptr;
     HANDLE write = nullptr;
     if (!CreatePipe(&read, &write, &security, 0)) {
-        fail(WindowsError(L"创建输出管道失败"));
+        fail(WindowsError(Text(L"Cannot create the output pipe", L"创建输出管道失败")));
         return;
     }
     Handle output(read);
     Handle input(write);
     if (!SetHandleInformation(output.Get(), HANDLE_FLAG_INHERIT, 0)) {
-        fail(WindowsError(L"设置输出管道失败"));
+        fail(WindowsError(Text(L"Cannot configure the output pipe", L"设置输出管道失败")));
         return;
     }
     Handle nullInput(CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
         &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
     if (!nullInput) {
-        fail(WindowsError(L"创建空标准输入失败"));
+        fail(WindowsError(Text(L"Cannot create empty standard input", L"创建空标准输入失败")));
         return;
     }
 
     Attributes attributes;
     if (attributes.Get() == nullptr) {
-        fail(WindowsError(L"初始化进程属性失败"));
+        fail(WindowsError(Text(L"Cannot initialize process attributes", L"初始化进程属性失败")));
         return;
     }
     std::array<HANDLE, 2> inherited{input.Get(), nullInput.Get()};
@@ -233,7 +233,7 @@ void XrayProcess::StartProcess(const Settings& settings)
         inherited.data(), inherited.size() * sizeof(HANDLE), nullptr, nullptr) ||
         !UpdateProcThreadAttribute(attributes.Get(), 0, PROC_THREAD_ATTRIBUTE_JOB_LIST,
         &jobHandle, sizeof(jobHandle), nullptr, nullptr)) {
-        fail(WindowsError(L"设置 Xray 进程属性失败"));
+        fail(WindowsError(Text(L"Cannot configure Xray process attributes", L"设置 Xray 进程属性失败")));
         return;
     }
 
@@ -245,11 +245,11 @@ void XrayProcess::StartProcess(const Settings& settings)
     startup.StartupInfo.hStdError = input.Get();
     startup.lpAttributeList = attributes.Get();
     PROCESS_INFORMATION information{};
-    logs_.Tray(L"正在运行 Xray：" + executable.native());
+    logs_.Tray(Text(L"Starting Xray: ", L"正在运行 Xray：") + executable.native());
     if (!CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, TRUE,
         CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr, root_.c_str(),
         &startup.StartupInfo, &information)) {
-        fail(WindowsError(L"启动 Xray 失败"));
+        fail(WindowsError(Text(L"Cannot start Xray", L"启动 Xray 失败")));
         return;
     }
     Handle thread(information.hThread);
@@ -258,7 +258,7 @@ void XrayProcess::StartProcess(const Settings& settings)
     output_ = std::move(output);
     input.Reset();
     pid_ = information.dwProcessId;
-    logs_.Tray(L"Xray 已启动，PID " + std::to_wstring(information.dwProcessId) + L"。");
+    logs_.Tray(Text(L"Xray started, PID ", L"Xray 已启动，PID ") + std::to_wstring(information.dwProcessId) + Text(L".", L"。"));
 }
 
 void XrayProcess::DrainOutput()
@@ -273,7 +273,7 @@ void XrayProcess::DrainOutput()
         if (!PeekNamedPipe(output_.Get(), nullptr, 0, nullptr, &available, nullptr)) {
             const DWORD error = GetLastError();
             if (error != ERROR_BROKEN_PIPE) {
-                logs_.Tray(WindowsError(L"读取 Xray 输出管道失败", error));
+                logs_.Tray(WindowsError(Text(L"Cannot read the Xray output pipe", L"读取 Xray 输出管道失败"), error));
             }
             output_.Reset();
             return;
@@ -286,7 +286,7 @@ void XrayProcess::DrainOutput()
         if (!ReadFile(output_.Get(), buffer.data(), count, &read, nullptr) || read == 0) {
             const DWORD error = GetLastError();
             if (error != ERROR_BROKEN_PIPE) {
-                logs_.Tray(WindowsError(L"读取 Xray 输出失败", error));
+                logs_.Tray(WindowsError(Text(L"Cannot read Xray output", L"读取 Xray 输出失败"), error));
             }
             output_.Reset();
             return;
@@ -299,7 +299,7 @@ void XrayProcess::FinishProcess()
 {
     DWORD code = 0;
     if (!GetExitCodeProcess(process_.Get(), &code)) {
-        logs_.Tray(WindowsError(L"读取 Xray 退出码失败"));
+        logs_.Tray(WindowsError(Text(L"Cannot read the Xray exit code", L"读取 Xray 退出码失败")));
     }
     job_.Reset();
     DrainOutput();
@@ -307,7 +307,7 @@ void XrayProcess::FinishProcess()
     output_.Reset();
     process_.Reset();
     pid_ = 0;
-    logs_.Tray(L"Xray 已退出，退出码 " + std::to_wstring(code) + L"。");
+    logs_.Tray(Text(L"Xray exited, exit code ", L"Xray 已退出，退出码 ") + std::to_wstring(code) + Text(L".", L"。"));
     std::lock_guard lock(mutex_);
     if (!busy_ && !pending_) {
         state_ = ProcessState::Stopped;
@@ -320,19 +320,19 @@ bool XrayProcess::StopProcess()
         return true;
     }
     if (WaitForSingleObject(process_.Get(), 0) != WAIT_OBJECT_0) {
-        logs_.Tray(L"正在停止 Xray。");
+        logs_.Tray(Text(L"Stopping Xray.", L"正在停止 Xray。"));
         if (!TerminateJobObject(job_.Get(), ERROR_CANCELLED)) {
             const DWORD error = GetLastError();
             if (WaitForSingleObject(process_.Get(), 0) != WAIT_OBJECT_0) {
-                logs_.Tray(WindowsError(L"停止 Xray 失败", error));
+                logs_.Tray(WindowsError(Text(L"Cannot stop Xray", L"停止 Xray 失败"), error));
                 return false;
             }
         }
         const DWORD wait = WaitForSingleObject(process_.Get(), 5000);
         if (wait != WAIT_OBJECT_0) {
             logs_.Tray(wait == WAIT_TIMEOUT
-                ? L"停止 Xray 超时，尚未确认退出；未启动新进程。"
-                : WindowsError(L"等待 Xray 退出失败"));
+                ? Text(L"Timed out stopping Xray. Its exit was not confirmed; no replacement was started.", L"停止 Xray 超时，尚未确认退出；未启动新进程。")
+                : WindowsError(Text(L"Cannot wait for Xray to exit", L"等待 Xray 退出失败")));
             return false;
         }
     }

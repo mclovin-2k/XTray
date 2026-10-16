@@ -176,6 +176,62 @@ void TestUtf8AndLogs()
     Check(logs.Snapshot().lines.size() == 1, "Changing the log limit did not prune immediately.");
 }
 
+void TestLanguage()
+{
+    Check(ResolveLanguage(Language::Automatic, MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED))
+        == Language::Chinese, "Simplified Chinese UI was not recognized.");
+    Check(ResolveLanguage(Language::Automatic, MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_TRADITIONAL))
+        == Language::Chinese, "Traditional Chinese UI should use the Chinese translation.");
+    Check(ResolveLanguage(Language::Automatic, MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US))
+        == Language::English, "English UI was not recognized.");
+    Check(ResolveLanguage(Language::Automatic, MAKELANGID(LANG_FRENCH, SUBLANG_FRENCH))
+        == Language::English && ResolveLanguage(Language::Automatic, 0) == Language::English,
+        "Other or unavailable UI languages should fall back to English.");
+    Check(ResolveLanguage(Language::English, MAKELANGID(LANG_CHINESE, SUBLANG_CHINESE_SIMPLIFIED))
+        == Language::English && ResolveLanguage(Language::Chinese, 0) == Language::Chinese,
+        "An explicit language did not override automatic detection.");
+    ApplyLanguage(Language::Automatic);
+    Check(CurrentLanguage() == ResolveLanguage(Language::Automatic, GetUserDefaultUILanguage()),
+        "Automatic language did not use the current user's UI language.");
+    ApplyLanguage(Language::English);
+    Check(std::wstring_view(Text(L"Run", L"运行")) == L"Run" &&
+        std::string_view(Text("Run", "运行")) == "Run", "English translation selection failed.");
+    ApplyLanguage(Language::Chinese);
+    Check(std::wstring_view(Text(L"Run", L"运行")) == L"运行", "Chinese translation selection failed.");
+}
+
+void TestLogClearing()
+{
+    Logs logs(2);
+    logs.Tray(L"keep tray");
+    logs.Xray("old output\npartial \xE4\xB8");
+    const auto snapshot = logs.Snapshot();
+    logs.Clear(LogSource::Xray);
+    Check(logs.Snapshot().lines.size() == 1 && HasText(logs, LogSource::Tray, L"keep tray"),
+        "Clearing Xray also cleared XTray.");
+    Check(snapshot.lines.size() == 3 && snapshot.lines.back()->raw.ends_with("\xE4\xB8"),
+        "Clearing changed a retained snapshot.");
+    logs.Xray("\xAD after clear\n");
+    Check(HasText(logs, LogSource::Xray, L"中 after clear") &&
+        !HasText(logs, LogSource::Xray, L"old output") &&
+        !HasText(logs, LogSource::Xray, L"\uFFFD"),
+        "Clearing interrupted UTF-8 decoding or restored old output.");
+    logs.Clear(LogSource::Tray);
+    Check(logs.Snapshot().lines.size() == 1 &&
+        HasText(logs, LogSource::Xray, L"after clear"), "Clearing XTray also cleared Xray.");
+    logs.Clear();
+    Check(logs.Snapshot().lines.empty(), "Clearing all retained logs failed.");
+    logs.Tray(L"new management");
+    logs.Xray("new one\nnew two\nnew three\n");
+    Check(logs.Snapshot().lines.size() == 3 && HasText(logs, LogSource::Tray, L"new management") &&
+        !HasText(logs, LogSource::Xray, L"new one"), "Clearing stopped capture or lost the line limit.");
+    logs.Xray("\xE4\xB8");
+    logs.ClearXray();
+    logs.Xray("new run\n");
+    Check(HasText(logs, LogSource::Xray, L"new run") &&
+        !HasText(logs, LogSource::Xray, L"\uFFFD"), "A new run reused the previous UTF-8 decoder state.");
+}
+
 void TestArguments()
 {
     const std::vector<std::wstring> arguments{L"test.exe", L"", L"plain", L"a b", L"end\\",
@@ -203,19 +259,22 @@ void TestArguments()
 void TestSettings(const std::filesystem::path& root)
 {
     std::filesystem::create_directories(root);
-    Check(LoadSettings(root).success, "Missing settings should use defaults.");
+    Check(LoadSettings(root).success && LoadSettings(root).settings.language == Language::Automatic,
+        "Missing settings should use automatic language and defaults.");
     Settings settings;
     settings.executable = L"..\\bin\\xray.exe";
     settings.configFiles = {L".\\配置;=一.json", L"C:\\文件 with spaces\\二.json", L".\\配置;=一.json"};
     settings.configDirectory = L"..\\config directory\\";
     settings.logLines = 17;
+    settings.language = Language::Chinese;
     std::wstring error;
     Check(SaveSettings(root, settings, error), "Saving initial settings failed.");
     auto loaded = LoadSettings(root);
     Check(loaded.success && loaded.settings.executable == settings.executable &&
         loaded.settings.configFiles == settings.configFiles &&
         loaded.settings.configDirectory == settings.configDirectory &&
-        loaded.settings.logLines == settings.logLines, "Settings round-trip failed.");
+        loaded.settings.logLines == settings.logLines &&
+        loaded.settings.language == settings.language, "Settings round-trip failed.");
     const auto path = root / L"data" / L"settings.ini";
     std::string bytes;
     {
@@ -224,6 +283,31 @@ void TestSettings(const std::filesystem::path& root)
     }
     Check(!bytes.starts_with("\xEF\xBB\xBF") && bytes.find("\r\n") != std::string::npos,
         "Settings must be UTF-8 without BOM and use CRLF.");
+    for (const auto language : {Language::Automatic, Language::English, Language::Chinese}) {
+        auto changed = settings;
+        changed.language = language;
+        Check(SaveSettings(root, changed, error), "Saving a language preference failed.");
+        Check(LoadSettings(root).success && LoadSettings(root).settings.language == language,
+            "The saved language preference changed after loading.");
+    }
+    auto legacyBytes = bytes;
+    const auto languageLine = legacyBytes.find("Language=zh\r\n");
+    Check(languageLine != std::string::npos, "The language key was not saved.");
+    legacyBytes.erase(languageLine, std::string_view("Language=zh\r\n").size());
+    {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file << legacyBytes;
+    }
+    Check(LoadSettings(root).success && LoadSettings(root).settings.language == Language::Automatic,
+        "An existing INI without Language should remain valid and use automatic language.");
+    {
+        auto invalidLanguage = bytes;
+        invalidLanguage.replace(languageLine, std::string_view("Language=zh").size(), "Language=invalid");
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file << invalidLanguage;
+    }
+    Check(!LoadSettings(root).success, "An invalid language preference was accepted.");
+    Check(SaveSettings(root, settings, error), "Cannot restore settings after language tests.");
     {
         Handle locked(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
@@ -315,9 +399,17 @@ void TestProcesses(const std::filesystem::path& root)
     Check(old && WaitForSingleObject(old.Get(), 0) == WAIT_OBJECT_0,
         "Restart created a replacement before the old process exited.");
     Check(HasText(logs, LogSource::Tray, L"retained tray marker"), "Restart removed XTray logs.");
+    Check(WaitUntil([&] { return HasText(logs, LogSource::Xray, L"中文 stdout"); }),
+        "The restarted child did not produce output before the language switch.");
+    ApplyLanguage(Language::English);
     Check(WaitUntil([&] { return process.Stop(); }), "Stop request was rejected.");
     Check(WaitUntil([&] { return process.State() == ProcessState::Stopped; }),
         "Stop did not finish.");
+    Check(HasText(logs, LogSource::Tray, L"Stopping Xray.") &&
+        HasText(logs, LogSource::Tray, L"Xray 已启动") &&
+        HasText(logs, LogSource::Xray, L"中文 stdout"),
+        "Language switching rewrote old logs, translated Xray output, or left new logs untranslated.");
+    ApplyLanguage(Language::Chinese);
     Check(other.State() == ProcessState::Running, "Stopping one instance stopped another.");
     other.Shutdown();
 
@@ -388,7 +480,9 @@ int wmain(int argc, wchar_t** argv)
         const auto root = ExecutablePath().parent_path() / L"test data 中文" /
             (std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
         std::filesystem::create_directories(root);
+        TestLanguage();
         TestUtf8AndLogs();
+        TestLogClearing();
         TestArguments();
         TestSettings(root / L"settings");
         TestProcesses(root);

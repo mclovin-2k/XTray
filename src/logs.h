@@ -5,6 +5,7 @@
 #include <deque>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -40,6 +41,7 @@ public:
     void Xray(std::string_view bytes);
     void FinishXray();
     void ClearXray();
+    void Clear(std::optional<LogSource> source = std::nullopt);
     void SetLimit(size_t limit);
     uint64_t Revision() const;
     LogSnapshot Snapshot() const;

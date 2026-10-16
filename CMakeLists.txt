@@ -15,6 +15,7 @@ if(CMAKE_GENERATOR_PLATFORM AND NOT CMAKE_GENERATOR_PLATFORM STREQUAL "x64")
 endif()
 
 add_library(XTray.Core STATIC
+    src/language.cpp
     src/logs.cpp
     src/xray_process.cpp
     src/settings.cpp

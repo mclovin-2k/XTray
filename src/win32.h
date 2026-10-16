@@ -1,5 +1,7 @@
 #pragma once
 
+#include "language.h"
+
 #include <windows.h>
 
 #include <filesystem>
@@ -47,14 +49,14 @@ inline std::wstring WindowsError(const std::wstring& operation, DWORD error = Ge
     const DWORD size = FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER |
         FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
         nullptr, error, 0, reinterpret_cast<LPWSTR>(&message), 0, nullptr);
-    std::wstring result = operation + L"（错误 " + std::to_wstring(error) + L"）";
+    std::wstring result = operation + Text(L" (error ", L"（错误 ") + std::to_wstring(error) + Text(L")", L"）");
     if (size != 0 && message != nullptr) {
         std::wstring detail(message, size);
         LocalFree(message);
         while (!detail.empty() && (detail.back() == L'\r' || detail.back() == L'\n')) {
             detail.pop_back();
         }
-        result += L"：" + detail;
+        result += Text(L": ", L"：") + detail;
     }
     return result;
 }
@@ -65,7 +67,7 @@ inline std::filesystem::path ExecutablePath()
     for (;;) {
         const DWORD size = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
         if (size == 0) {
-            throw std::runtime_error("GetModuleFileNameW failed.");
+            throw std::runtime_error(Text("GetModuleFileNameW failed.", "GetModuleFileNameW 调用失败。"));
         }
         if (size < buffer.size()) {
             buffer.resize(size);
@@ -110,18 +112,18 @@ inline std::string ToUtf8(std::wstring_view value)
         return {};
     }
     if (value.size() > static_cast<size_t>((std::numeric_limits<int>::max)())) {
-        throw std::runtime_error("Text is too large.");
+        throw std::runtime_error(Text("Text is too large.", "文本过长。"));
     }
     const int length = static_cast<int>(value.size());
     const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS,
         value.data(), length, nullptr, 0, nullptr, nullptr);
     if (size == 0) {
-        throw std::runtime_error("Invalid UTF-16 text.");
+        throw std::runtime_error(Text("Invalid UTF-16 text.", "无效的 UTF-16 文本。"));
     }
     std::string result(static_cast<size_t>(size), '\0');
     if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, value.data(), length,
         result.data(), size, nullptr, nullptr) == 0) {
-        throw std::runtime_error("UTF-8 conversion failed.");
+        throw std::runtime_error(Text("UTF-8 conversion failed.", "UTF-8 转换失败。"));
     }
     return result;
 }
@@ -132,18 +134,18 @@ inline std::wstring FromUtf8(std::string_view value)
         return {};
     }
     if (value.size() > static_cast<size_t>((std::numeric_limits<int>::max)())) {
-        throw std::runtime_error("Text is too large.");
+        throw std::runtime_error(Text("Text is too large.", "文本过长。"));
     }
     const int length = static_cast<int>(value.size());
     const int size = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
         value.data(), length, nullptr, 0);
     if (size == 0) {
-        throw std::runtime_error("Invalid UTF-8 text.");
+        throw std::runtime_error(Text("Invalid UTF-8 text.", "无效的 UTF-8 文本。"));
     }
     std::wstring result(static_cast<size_t>(size), L'\0');
     if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), length,
         result.data(), size) == 0) {
-        throw std::runtime_error("UTF-16 conversion failed.");
+        throw std::runtime_error(Text("UTF-16 conversion failed.", "UTF-16 转换失败。"));
     }
     return result;
 }

@@ -5,28 +5,30 @@
 
 1 RT_MANIFEST "XTray.manifest"
 
-IDD_SETTINGS DIALOGEX 0, 0, 430, 260
+IDD_SETTINGS DIALOGEX 0, 0, 430, 286
 STYLE DS_SETFONT | DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "XTray 设置"
+CAPTION "XTray Settings"
 FONT 9, "Segoe UI"
 BEGIN
-    LTEXT "Xray 程序路径：", -1, 12, 12, 390, 12
+    LTEXT "Xray executable:", IDC_LABEL_EXECUTABLE, 12, 12, 390, 12
     EDITTEXT IDC_EXECUTABLE, 12, 27, 328, 15, ES_AUTOHSCROLL
-    PUSHBUTTON "浏览…", IDC_BROWSE_EXECUTABLE, 347, 27, 70, 15
+    PUSHBUTTON "Browse...", IDC_BROWSE_EXECUTABLE, 347, 27, 70, 15
 
-    LTEXT "配置文件（每行一个，按顺序加载；可留空）：", -1, 12, 51, 390, 12
+    LTEXT "Config files (one per line, in load order; optional):", IDC_LABEL_CONFIG_FILES, 12, 51, 390, 12
     EDITTEXT IDC_CONFIG_FILES, 12, 66, 328, 75, ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL
-    PUSHBUTTON "添加文件…", IDC_ADD_FILES, 347, 66, 70, 16
+    PUSHBUTTON "Add files...", IDC_ADD_FILES, 347, 66, 70, 16
 
-    LTEXT "配置目录（可留空）：", -1, 12, 149, 390, 12
+    LTEXT "Config directory (optional):", IDC_LABEL_CONFIG_DIRECTORY, 12, 149, 390, 12
     EDITTEXT IDC_CONFIG_DIRECTORY, 12, 164, 328, 15, ES_AUTOHSCROLL
-    PUSHBUTTON "浏览…", IDC_BROWSE_DIRECTORY, 347, 164, 70, 15
+    PUSHBUTTON "Browse...", IDC_BROWSE_DIRECTORY, 347, 164, 70, 15
 
-    LTEXT "每类日志保留行数：", -1, 12, 190, 108, 12
+    LTEXT "Log lines per source:", IDC_LABEL_LOG_LINES, 12, 190, 108, 12
     EDITTEXT IDC_LOG_LINES, 124, 187, 70, 15, ES_NUMBER | ES_AUTOHSCROLL
-    LTEXT "相对路径以 XTray.exe 所在目录为基准。", -1, 12, 211, 400, 12
-    LTEXT "路径下次运行或重启生效；运行前至少设置一种配置来源。", -1, 12, 224, 405, 12
+    LTEXT "Language:", IDC_LABEL_LANGUAGE, 12, 213, 108, 12
+    COMBOBOX IDC_LANGUAGE, 124, 210, 190, 80, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT "Relative paths use the XTray.exe directory.", IDC_HINT_RELATIVE, 12, 237, 400, 12
+    LTEXT "Paths apply on the next run/restart; at least one config source is required.", IDC_HINT_APPLY, 12, 250, 405, 12
 
-    DEFPUSHBUTTON "保存", IDOK, 271, 241, 70, 15
-    PUSHBUTTON "取消", IDCANCEL, 347, 241, 70, 15
+    DEFPUSHBUTTON "Save", IDOK, 271, 267, 70, 15
+    PUSHBUTTON "Cancel", IDCANCEL, 347, 267, 70, 15
 END

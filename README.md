@@ -6,7 +6,9 @@ A lightweight, portable Windows tray application for managing Xray-core.
 
 The initial cloud-built executable has been downloaded and opened successfully on the user's Windows computer.
 
-The second implementation stage adds Xray start/stop/restart controls, process status icons, live output capture, source filtering, and a native settings dialog for executable/configuration paths and log retention. The user confirmed that the Build workflow for commit bc33c31 succeeded, including the configured automated checks and executable upload. Desktop acceptance with the user's real Xray and configuration is still pending.
+The second implementation stage adds Xray start/stop/restart controls, process status icons, live output capture, source filtering, and a native settings dialog for executable/configuration paths and log retention. The user confirmed that the Build workflow for commit bc33c31 succeeded and reported no issues in an initial desktop trial.
+
+The current update adds selective log clearing, indented wrapped lines, orange XTray logs with bold source labels, a centered initial window, and English/Chinese UI selection. Its code and automated checks have been added; native build/test results and desktop acceptance of these changes are pending.
 
 Tray integration, one-instance-per-directory enforcement, theme selection, and user-logon startup are planned for later stages. In this development build, closing the main window stops the managed Xray process and exits XTray.
 
@@ -42,9 +44,17 @@ Configuration files are passed in their saved order with repeated `-config` argu
 
 Path changes apply to the next run or restart. Settings are stored as UTF-8 in `.\data\settings.ini`. Relative paths keep their original form, so portable moves do not rewrite them.
 
-Logs stay in memory. XTray and Xray each retain the configured number of recent lines, initially 5000, with `[XTRAY]` / `[XRAY]` labels and distinct colors. The next run clears only the previous Xray output. Xray errors are displayed without changing the user's configuration or automatically restarting the process.
+Logs stay in memory. XTray and Xray each retain the configured number of recent lines, initially 5000, with bold `[XTRAY]` / `[XRAY]` labels and distinct orange/gray colors in the current light UI. Wrapped lines align with the message body; this formatting does not add spaces or line breaks to copied text. **Clear logs**, at the far right of the source-filter row, clears the selected source or both sources when **All** is selected. New output continues without restarting Xray. The next run clears only the previous Xray output. Xray errors are displayed without changing the user's configuration or automatically restarting the process.
 
 If Xray itself is configured to write log files, those files remain under Xray's own control; XTray captures its standard output and standard error.
+
+## UI language
+
+Settings offers **Automatic**, **English**, and **Chinese**, initially Automatic. Automatic uses the current Windows user's display language: Chinese UI languages use Simplified Chinese, and English or any other language uses English. Explicit choices override detection.
+
+Saving applies the language immediately; Cancel keeps the active language. Both translations are embedded in the EXE. Existing XTray logs retain their original text, new management messages use the selected language, and Xray output is never translated. System file pickers and Windows error details keep the system language.
+
+The optional INI key is `Language=auto`, `Language=en`, or `Language=zh`. Existing settings without this key remain valid and use Automatic.
 
 ## Local Xray files
 

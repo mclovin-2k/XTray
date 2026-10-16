@@ -138,6 +138,18 @@ void Logs::ClearXray()
     ++revision_;
 }
 
+void Logs::Clear(std::optional<LogSource> source)
+{
+    std::lock_guard lock(mutex_);
+    for (size_t index = 0; index < buffers_.size(); ++index) {
+        if (!source || static_cast<size_t>(*source) == index) {
+            // Keep the streaming decoder intact if a UTF-8 character straddles the click.
+            buffers_[index].lines.clear();
+        }
+    }
+    ++revision_;
+}
+
 void Logs::SetLimit(size_t limit)
 {
     std::lock_guard lock(mutex_);

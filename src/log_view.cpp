@@ -1,4 +1,5 @@
 #include "log_view.h"
+#include "win32.h"
 
 #include <richedit.h>
 
@@ -51,6 +52,54 @@ void LogView::SetFilter(int filter)
     }
 }
 
+void LogView::Clear()
+{
+    logs_.Clear(filter_ == 0 ? std::nullopt
+        : std::optional{filter_ == 1 ? LogSource::Tray : LogSource::Xray});
+    Refresh(true);
+}
+
+void LogView::InvalidateFormat()
+{
+    formatAll_ = true;
+    revision_ = UINT64_MAX;
+    const auto fail = [] {
+        throw std::runtime_error(Text("Cannot measure log source labels.", "无法测量日志来源标签。"));
+    };
+    HDC device = GetDC(window_);
+    const auto font = reinterpret_cast<HFONT>(SendMessageW(window_, WM_GETFONT, 0, 0));
+    LOGFONTW description{};
+    if (device == nullptr || GetObjectW(font, sizeof(description), &description) == 0) {
+        if (device != nullptr) {
+            ReleaseDC(window_, device);
+        }
+        fail();
+    }
+    description.lfWeight = FW_BOLD;
+    const HFONT bold = CreateFontIndirectW(&description);
+    if (bold == nullptr) {
+        ReleaseDC(window_, device);
+        fail();
+    }
+    const HGDIOBJ previous = SelectObject(device, bold);
+    std::array<SIZE, 2> labels{};
+    SIZE space{};
+    bool measured = GetTextExtentPoint32W(device, L"[XTRAY]", 7, &labels[0]) != FALSE &&
+        GetTextExtentPoint32W(device, L"[XRAY]", 6, &labels[1]) != FALSE;
+    SelectObject(device, font);
+    measured = measured && GetTextExtentPoint32W(device, L" ", 1, &space) != FALSE;
+    SelectObject(device, previous);
+    DeleteObject(bold);
+    ReleaseDC(window_, device);
+    if (!measured) {
+        fail();
+    }
+    const int dpi = static_cast<int>(GetDpiForWindow(window_));
+    for (size_t index = 0; index < labels.size(); ++index) {
+        indentTwips_[index] = MulDiv(labels[index].cx + space.cx, 1440, dpi);
+    }
+}
+
 LogView::Anchor LogView::Capture(LONG position) const
 {
     LONG begin = 0;
@@ -85,16 +134,38 @@ void LogView::Replace(LONG position, LONG length, const ViewLine* line)
 {
     CHARRANGE range{position, position + length};
     SendMessageW(window_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&range));
-    if (line != nullptr) {
-        CHARFORMAT2W format{};
-        format.cbSize = sizeof(format);
-        format.dwMask = CFM_COLOR;
-        format.crTextColor = line->line->source == LogSource::Tray
-            ? RGB(0, 90, 158) : RGB(32, 32, 32);
-        SendMessageW(window_, EM_SETCHARFORMAT, SCF_SELECTION, reinterpret_cast<LPARAM>(&format));
-    }
     SendMessageW(window_, EM_REPLACESEL, FALSE,
         reinterpret_cast<LPARAM>(line == nullptr ? L"" : line->display->c_str()));
+    if (line != nullptr) {
+        ApplyFormat(position, *line);
+    }
+}
+
+void LogView::ApplyFormat(LONG position, const ViewLine& line)
+{
+    const LONG labelLength = line.line->source == LogSource::Tray ? 7 : 6;
+    // Exclude the paragraph terminator so the next paragraph keeps its own formatting.
+    CHARRANGE paragraph{position, position + static_cast<LONG>(line.display->size()) - 1};
+    SendMessageW(window_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&paragraph));
+    CHARFORMAT2W format{};
+    format.cbSize = sizeof(format);
+    format.dwMask = CFM_COLOR | CFM_BOLD;
+    format.crTextColor = line.line->source == LogSource::Tray
+        ? RGB(180, 83, 9) : RGB(32, 32, 32);
+    SendMessageW(window_, EM_SETCHARFORMAT, SCF_SELECTION, reinterpret_cast<LPARAM>(&format));
+    CHARRANGE label{position, position + labelLength};
+    SendMessageW(window_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&label));
+    format.dwMask = CFM_BOLD;
+    format.dwEffects = CFE_BOLD;
+    SendMessageW(window_, EM_SETCHARFORMAT, SCF_SELECTION, reinterpret_cast<LPARAM>(&format));
+
+    PARAFORMAT paragraphFormat{};
+    paragraphFormat.cbSize = sizeof(paragraphFormat);
+    paragraphFormat.dwMask = PFM_STARTINDENT | PFM_OFFSET;
+    paragraphFormat.dxStartIndent = 0;
+    paragraphFormat.dxOffset = indentTwips_[static_cast<size_t>(line.line->source)];
+    SendMessageW(window_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&paragraph));
+    SendMessageW(window_, EM_SETPARAFORMAT, 0, reinterpret_cast<LPARAM>(&paragraphFormat));
 }
 
 void LogView::Refresh(bool latest)
@@ -143,18 +214,27 @@ void LogView::Refresh(bool latest)
     size_t right = 0;
     LONG position = 0;
     // IDs are ordered: insert/delete only changed ranges, rather than repainting 5000 lines.
+    bool formatNext = false;
     while (left < lines_.size() || right < next.size()) {
         if (right == next.size() || (left < lines_.size() &&
             lines_[left].line->id < next[right].line->id)) {
             Replace(position, static_cast<LONG>(lines_[left].display->size()), nullptr);
+            formatNext = true;
             ++left;
         } else if (left == lines_.size() || next[right].line->id < lines_[left].line->id) {
             Replace(position, 0, &next[right]);
+            formatNext = true;
             position += static_cast<LONG>(next[right].display->size());
             ++right;
         } else {
             if (lines_[left].display != next[right].display) {
                 Replace(position, static_cast<LONG>(lines_[left].display->size()), &next[right]);
+                formatNext = true;
+            } else {
+                if (formatAll_ || formatNext) {
+                    ApplyFormat(position, next[right]);
+                }
+                formatNext = false;
             }
             position += static_cast<LONG>(next[right].display->size());
             ++left;
@@ -178,6 +258,7 @@ void LogView::Refresh(bool latest)
     }
     lines_ = std::move(next);
     revision_ = snapshot.revision;
+    formatAll_ = false;
     SendMessageW(window_, WM_SETREDRAW, TRUE, 0);
     InvalidateRect(window_, nullptr, FALSE);
 }

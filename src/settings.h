@@ -1,5 +1,7 @@
 #pragma once
 
+#include "language.h"
+
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -11,6 +13,7 @@ struct Settings {
     std::vector<std::wstring> configFiles;
     std::wstring configDirectory;
     size_t logLines = 5000;
+    Language language = Language::Automatic;
 };
 
 struct SettingsResult {
