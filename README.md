@@ -10,7 +10,7 @@ The second implementation stage adds Xray start/stop/restart controls, process s
 
 The current update adds selective log clearing, indented wrapped lines, orange XTray logs with bold source labels, a centered initial window, and English/Chinese UI selection. The user confirmed that the Build workflow for commit 498a034 succeeded, including native build/tests and artifact checks. The user also reported no issues in the subsequent desktop trial of these five improvements.
 
-The third implementation stage adds tray integration and one-instance-per-directory enforcement. This code is awaiting its own cloud build and desktop acceptance. Closing the main window now hides it to the tray; choose **Exit** from the tray menu to stop the managed Xray process and exit XTray. Theme selection and user-logon startup are planned for later stages.
+The third implementation stage adds tray integration and one-instance-per-directory enforcement. The user confirmed that the Build workflow for commit 7c1fe2e succeeded, including the native tests and artifact checks. Desktop acceptance of the tray and directory-instance behavior is still pending. Closing the main window now hides it to the tray; choose **Exit** from the tray menu to stop the managed Xray process and exit XTray. Theme selection and user-logon startup are planned for later stages.
 
 ## Project documents
 
