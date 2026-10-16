@@ -3,6 +3,7 @@
 #include "settings_dialog.h"
 #include "win32.h"
 
+#include <commdlg.h>
 #include <objbase.h>
 #include <richedit.h>
 #include <shellapi.h>
