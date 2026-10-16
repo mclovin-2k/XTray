@@ -345,7 +345,7 @@ void ThemeWindow::MeasureItem(MEASUREITEMSTRUCT& item)
         ReleaseDC(window_, device);
     }
     item.itemWidth = static_cast<UINT>(size.cx + Scale(window_, 32));
-    item.itemHeight = static_cast<UINT>((std::max)(size.cy + Scale(window_, 10), Scale(window_, 24)));
+    item.itemHeight = static_cast<UINT>((std::max<LONG>)(size.cy + Scale(window_, 10), Scale(window_, 24)));
 }
 
 void ThemeWindow::DrawItem(const DRAWITEMSTRUCT& item)
