@@ -8,7 +8,7 @@ The initial cloud-built executable has been downloaded and opened successfully o
 
 The second implementation stage adds Xray start/stop/restart controls, process status icons, live output capture, source filtering, and a native settings dialog for executable/configuration paths and log retention. The user confirmed that the Build workflow for commit bc33c31 succeeded and reported no issues in an initial desktop trial.
 
-The current update adds selective log clearing, indented wrapped lines, orange XTray logs with bold source labels, a centered initial window, and English/Chinese UI selection. Its code and automated checks have been added; native build/test results and desktop acceptance of these changes are pending.
+The current update adds selective log clearing, indented wrapped lines, orange XTray logs with bold source labels, a centered initial window, and English/Chinese UI selection. The user confirmed that the Build workflow for commit 498a034 succeeded, including native build/tests and artifact checks. Desktop acceptance of these UI changes is still pending.
 
 Tray integration, one-instance-per-directory enforcement, theme selection, and user-logon startup are planned for later stages. In this development build, closing the main window stops the managed Xray process and exits XTray.
 
