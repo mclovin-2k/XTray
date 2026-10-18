@@ -1015,9 +1015,15 @@ private:
     bool SmokeTestThemes()
     {
         std::fwprintf(stderr, L"Smoke: theme palettes preserve log text, filters, selection, and scroll.\n");
+        const auto fail = [](const wchar_t* check) {
+            std::fwprintf(stderr, L"Smoke: theme check failed: %ls.\n", check);
+            return false;
+        };
         const auto original = settings_;
         const auto language = CurrentLanguage();
+        logs_.Clear();
         logs_.SetLimit(200);
+        logs_.Tray(L"theme management marker");
         for (int index = 0; index < 80; ++index) {
             logs_.Xray("theme output " + std::to_string(index) + "\n");
         }
@@ -1058,7 +1064,7 @@ private:
             }
         } canvas;
         if (canvas.device == nullptr || canvas.bitmap == nullptr) {
-            return false;
+            return fail(L"create native painting canvas");
         }
         const auto labelColor = [this](const wchar_t* label, LONG length) {
             FINDTEXTEXW find{{0, -1}, const_cast<wchar_t*>(label), {}};
@@ -1084,21 +1090,34 @@ private:
             const auto palette = PaletteFor(dark);
             if (!IconMatches(toolIcons_[0], palette.text, Scale(20)) ||
                 !IconMatches(toolIcons_[1], palette.disabled, Scale(20))) {
-                return false;
+                return fail(L"toolbar icon tint and disabled tint");
             }
-            if (theme_.Colors() != palette || WindowText(logWindow_) != before ||
-                logs_.Revision() != revision || SendMessageW(filter_, CB_GETCURSEL, 0, 0) != 0 ||
-                after.cpMin != selected.cpMin || after.cpMax != selected.cpMax ||
-                afterScroll.x != scroll.x || afterScroll.y != scroll.y ||
-                SendMessageW(window_, WM_GETICON, ICON_SMALL, 0) != icon) {
-                return false;
+            if (theme_.Colors() != palette) {
+                return fail(L"apply requested palette");
+            }
+            if (WindowText(logWindow_) != before || logs_.Revision() != revision ||
+                SendMessageW(filter_, CB_GETCURSEL, 0, 0) != 0) {
+                return fail(L"preserve log text, revision, and filter");
+            }
+            if (after.cpMin != selected.cpMin || after.cpMax != selected.cpMax) {
+                return fail(L"preserve selected text range");
+            }
+            if (afterScroll.x != scroll.x || afterScroll.y != scroll.y) {
+                return fail(L"preserve log scroll position");
+            }
+            if (SendMessageW(window_, WM_GETICON, ICON_SMALL, 0) != icon) {
+                return fail(L"preserve status icon");
             }
             const auto tray = labelColor(L"[XTRAY]", 7);
             const auto xray = labelColor(L"[XRAY]", 6);
-            if (tray.crTextColor != palette.trayLog || xray.crTextColor != palette.xrayLog ||
-                (tray.dwEffects & CFE_BOLD) == 0 || (xray.dwEffects & CFE_BOLD) == 0 ||
-                SendMessageW(logWindow_, EM_SETBKGNDCOLOR, 0, palette.logBackground) != palette.logBackground) {
-                return false;
+            if (tray.crTextColor != palette.trayLog || (tray.dwEffects & CFE_BOLD) == 0) {
+                return fail(L"XTray log label color and boldness");
+            }
+            if (xray.crTextColor != palette.xrayLog || (xray.dwEffects & CFE_BOLD) == 0) {
+                return fail(L"Xray log label color and boldness");
+            }
+            if (SendMessageW(logWindow_, EM_SETBKGNDCOLOR, 0, palette.logBackground) != palette.logBackground) {
+                return fail(L"Rich Edit log background");
             }
             SendMessageW(logWindow_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&selected));
             SendMessageW(logWindow_, EM_SETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&scroll));
@@ -1106,16 +1125,16 @@ private:
                 dark ? L"dark" : L"light");
             SendMessageW(window_, WM_ERASEBKGND, reinterpret_cast<WPARAM>(canvas.device), 0);
             if (GetPixel(canvas.device, 2, 2) != palette.window) {
-                return false;
+                return fail(L"native window background");
             }
             SendMessageW(run_, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(canvas.device), PRF_CLIENT);
             const auto button = GetPixel(canvas.device, 6, 6);
             if (button != palette.button && button != palette.hot && button != palette.pressed) {
-                return false;
+                return fail(L"native button background");
             }
             SendMessageW(filter_, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(canvas.device), PRF_CLIENT);
             if (GetPixel(canvas.device, 2, 2) != palette.surface) {
-                return false;
+                return fail(L"native combo background");
             }
             const HMENU menu = CreateTrayMenu();
             MENUITEMINFOW item{};
@@ -1127,7 +1146,7 @@ private:
             if (!ownerDraw || accessible->dwMSAASignature != MSAA_MENU_SIG ||
                 std::wstring_view(accessible->pszWText) != Text(L"Show GUI", L"显示 GUI")) {
                 DestroyMenu(menu);
-                return false;
+                return fail(L"tray menu ownership and accessible name");
             }
             DRAWITEMSTRUCT draw{};
             draw.CtlType = ODT_MENU;
@@ -1145,37 +1164,40 @@ private:
             const auto highlighted = GetPixel(canvas.device, 2, 2);
             DestroyMenu(menu);
             if (!ownerDraw || background != palette.window || highlighted != palette.selection) {
-                return false;
+                return fail(L"tray menu background and selection colors");
             }
         }
         std::fwprintf(stderr, L"Smoke: follow-system updates and explicit mode overrides.\n");
         settings_.theme = ThemeMode::System;
         UpdateTheme(true);
         if (!theme_.Colors().dark) {
-            return false;
+            return fail(L"follow dark system mode");
         }
         UpdateTheme(false);
         if (theme_.Colors().dark) {
-            return false;
+            return fail(L"follow light system mode");
         }
         settings_.theme = ThemeMode::Dark;
         UpdateTheme(false);
         if (!theme_.Colors().dark) {
-            return false;
+            return fail(L"explicit dark mode overrides light system mode");
         }
         std::fwprintf(stderr, L"Smoke: settings appearance draft, save, cancel, Escape, and close.\n");
         const auto fixture = root_ / (L"theme smoke " + std::to_wstring(GetCurrentProcessId()) +
             L"-" + std::to_wstring(GetTickCount64()));
         std::filesystem::create_directories(fixture);
         if (!SmokeTestSettingsTheme(window_, fixture)) {
-            return false;
+            return fail(L"settings appearance save and cancel");
         }
         settings_ = original;
         ApplyLanguage(language);
         ApplyUiText();
         UpdateTheme(false);
         Refresh();
-        return WindowText(logWindow_) == before && logs_.Revision() == revision;
+        if (WindowText(logWindow_) != before || logs_.Revision() != revision) {
+            return fail(L"preserve logs after restoring appearance settings");
+        }
+        return true;
     }
 
     bool SmokeTestLogon()
@@ -1763,7 +1785,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
         }
         if (smokeTest) {
             if (!app.SmokeTest()) {
-                app.exitCode = ReportStartupError(true, Text(L"The Rich Edit log UI smoke test failed.", L"Rich Edit 日志界面自检失败。"));
+                app.exitCode = ReportStartupError(true, L"The Rich Edit log UI smoke test failed.");
             }
             if (IsWindow(window) && !PostMessageW(window, kExitMessage, 0, 0)) {
                 app.Exit();
