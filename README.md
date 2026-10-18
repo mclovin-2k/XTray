@@ -10,7 +10,7 @@ The second implementation stage adds Xray start/stop/restart controls, process s
 
 The current update adds selective log clearing, indented wrapped lines, orange XTray logs with bold source labels, a centered initial window, and English/Chinese UI selection. The user confirmed that the Build workflow for commit 498a034 succeeded, including native build/tests and artifact checks. The user also reported no issues in the subsequent desktop trial of these five improvements.
 
-The third implementation stage adds tray integration and one-instance-per-directory enforcement. The user confirmed that the Build workflow for commit 7c1fe2e succeeded, including the native tests and artifact checks. The user also reported no issues in its desktop trial. Closing the main window now hides it to the tray; choose **Exit** from the tray menu to stop the managed Xray process and exit XTray. The fourth implementation stage adds appearance selection and live theme updates. The user confirmed a successful Build for commit 4329e23 and reported no issues in its desktop trial. The fifth stage adds current-user sign-in startup; its cloud build and desktop acceptance are pending.
+The third implementation stage adds tray integration and one-instance-per-directory enforcement. The user confirmed that the Build workflow for commit 7c1fe2e succeeded, including the native tests and artifact checks. The user also reported no issues in its desktop trial. Closing the main window now hides it to the tray; choose **Exit** from the tray menu to stop the managed Xray process and exit XTray. The fourth implementation stage adds appearance selection and live theme updates. The user confirmed a successful Build for commit 4329e23 and reported no issues in its desktop trial. The fifth stage adds current-user sign-in startup. The user confirmed a successful Build for commit 50a3074 and reported no issues in its desktop trial. The current update replaces the placeholder icons with embedded SVG artwork and adds two icon-only log toolbar buttons; its cloud build and desktop acceptance are pending.
 
 ## Project documents
 
@@ -44,13 +44,15 @@ Configuration files are passed in their saved order with repeated `-config` argu
 
 Path changes apply to the next run or restart. Settings are stored as UTF-8 in `.\data\settings.ini`. Relative paths keep their original form, so portable moves do not rewrite them.
 
-Logs stay in memory. XTray and Xray each retain the configured number of recent lines, initially 5000, with bold `[XTRAY]` / `[XRAY]` labels and distinct orange/gray colors in the light UI, or light orange/light gray on a dark background in the dark UI. Wrapped lines align with the message body; this formatting does not add spaces or line breaks to copied text. **Clear logs**, at the far right of the source-filter row, clears the selected source or both sources when **All** is selected. New output continues without restarting Xray. The next run clears only the previous Xray output. Xray errors are displayed without changing the user's configuration or automatically restarting the process.
+Logs stay in memory. XTray and Xray each retain the configured number of recent lines, initially 5000, with bold `[XTRAY]` / `[XRAY]` labels and distinct orange/gray colors in the light UI, or light orange/light gray on a dark background in the dark UI. Wrapped lines align with the message body; this formatting does not add spaces or line breaks to copied text. The **Clear logs** trash-can icon, at the far right of the source-filter row, clears the selected source or both sources when **All** is selected. New output continues without restarting Xray. The next run clears only the previous Xray output. Xray errors are displayed without changing the user's configuration or automatically restarting the process.
+
+The **Scroll to end** icon immediately to the left of Clear logs cancels the log selection, jumps to the end of the selected source, and resumes automatic following. Scrolling up or selecting text pauses following as before. Both buttons have localized hover tooltips, keyboard-accessible names, and theme-dependent icon colors.
 
 If Xray itself is configured to write log files, those files remain under Xray's own control; XTray captures its standard output and standard error.
 
 ## Tray and directory instances
 
-Manual launch displays the main window and a tray icon without starting Xray. The tray and GUI share green/red status icons. The tooltip includes the instance directory to help distinguish portable copies.
+Manual launch displays the main window and a tray icon without starting Xray. The tray, GUI, title bar, and taskbar share the new XTray mark: green while running and red while stopped. The tooltip includes the instance directory to help distinguish portable copies.
 
 - Close the main window to hide it while Xray and log capture continue.
 - Click the tray icon once to show the existing window at its previous position.
@@ -75,6 +77,14 @@ A separate portable file, `data/startup.ini`, stores a GUID and the last registe
 After moving the entire directory, including `data`, open XTray manually from the new location. Startup shows as off and no registration is automatically repaired. Select it and save to update the same ID only when its old command matches the saved identity and the old executable is confirmed missing. A full copy whose original executable still exists gets a new ID when enabled, preserving the original registration. Unknown ownership, unreadable old paths, or damaged identity data produce an error instead of overwriting another entry. If the identity file was lost, XTray cannot identify or clean up its old registration.
 
 Settings and startup changes are committed together during Save. Ordinary failures restore the previous entry and identity file; a failed recovery is reported explicitly. This is not a cross-file/registry transaction that guarantees recovery from power loss. Automated startup tests use an in-memory registry backend and build-directory fixtures, so they do not register anything for the test runner. Actual Windows sign-in still requires desktop acceptance.
+
+## Icon resources
+
+The XTray mark retains the supplied Xray four-point shape with an added tray base. The editable sources in `resources/icons/` have a transparent background and a white foreground; runtime tinting changes only the fill or stroke color. The EXE file icon is yellow, while runtime state icons are green/red. The log tools use a trash can and the approved short-lines/down-arrow/end-line drawing.
+
+Windows SDK Direct2D SVG rendering supplies DPI-sized pixel icons to the native Windows icon APIs. A short-lived WARP device renders only when sizes or colors change; painting reuses the resulting handles. No external SVG file, graphics package, font icon library, or runtime installer is needed.
+
+The cloud build first compiles a native icon helper and generates a nine-size yellow ICO from the same embedded SVG. Small frames use 32-bit icon bitmaps; the 256-pixel frame uses Windows' built-in PNG encoder. The helper, ICO, and SVG files are build inputs, not additional download requirements. Only XTray.exe is uploaded.
 
 ## Appearance
 

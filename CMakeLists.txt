@@ -28,6 +28,32 @@ target_include_directories(XTray.Core PUBLIC src)
 # These are Windows system libraries; no additional runtime is distributed.
 target_link_libraries(XTray.Core PUBLIC advapi32 bcrypt windowsapp ole32)
 
+add_library(XTray.Graphics STATIC src/svg_icons.cpp)
+target_include_directories(XTray.Graphics PUBLIC src PRIVATE resources)
+target_link_libraries(XTray.Graphics PUBLIC XTray.Core d2d1 d3d11 dxgi shlwapi gdi32 user32)
+
+# This build helper uses only Windows SDK APIs and is never shipped.
+add_executable(XTray.IconBuilder tools/icon_builder.cpp resources/svg-icons.rc)
+target_include_directories(XTray.IconBuilder PRIVATE resources)
+target_link_libraries(XTray.IconBuilder PRIVATE XTray.Graphics windowscodecs uuid)
+set(XTRAY_SVG_ASSETS
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/xtray.svg"
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/clear-logs.svg"
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/scroll-to-end.svg"
+)
+set(XTRAY_GENERATED_ICON "${CMAKE_CURRENT_BINARY_DIR}/generated/XTray.ico")
+add_custom_command(OUTPUT "${XTRAY_GENERATED_ICON}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/generated"
+    COMMAND $<TARGET_FILE:XTray.IconBuilder> "${XTRAY_GENERATED_ICON}"
+    DEPENDS XTray.IconBuilder ${XTRAY_SVG_ASSETS}
+    VERBATIM
+)
+add_custom_target(XTray.IconResources DEPENDS "${XTRAY_GENERATED_ICON}")
+set_source_files_properties(resources/svg-icons.rc PROPERTIES OBJECT_DEPENDS "${XTRAY_SVG_ASSETS}")
+set_source_files_properties(resources/XTray.rc PROPERTIES
+    OBJECT_DEPENDS "${XTRAY_GENERATED_ICON};${XTRAY_SVG_ASSETS}"
+)
+
 add_executable(XTray WIN32
     src/main.cpp
     src/log_view.cpp
@@ -35,8 +61,9 @@ add_executable(XTray WIN32
     src/settings_dialog.cpp
     resources/XTray.rc
 )
-target_include_directories(XTray PRIVATE resources)
-target_link_libraries(XTray PRIVATE XTray.Core user32 gdi32 shell32 ole32 uuid comctl32 uxtheme dwmapi)
+add_dependencies(XTray XTray.IconResources)
+target_include_directories(XTray PRIVATE resources "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_link_libraries(XTray PRIVATE XTray.Core XTray.Graphics user32 gdi32 shell32 ole32 uuid comctl32 uxtheme dwmapi)
 # The resource script embeds the manifest, so disable the linker's generated one.
 target_link_options(XTray PRIVATE /MANIFEST:NO)
 
@@ -44,7 +71,7 @@ target_link_options(XTray PRIVATE /MANIFEST:NO)
 add_executable(XTray.Tests tests/core_tests.cpp tests/startup_tests.cpp)
 target_link_libraries(XTray.Tests PRIVATE XTray.Core shell32 user32)
 
-foreach(target XTray.Core XTray XTray.Tests)
+foreach(target XTray.Core XTray.Graphics XTray.IconBuilder XTray XTray.Tests)
     set_target_properties(${target} PROPERTIES
         CXX_STANDARD 20
         CXX_STANDARD_REQUIRED YES

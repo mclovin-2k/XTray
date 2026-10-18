@@ -15,6 +15,7 @@ namespace xtray {
 namespace {
 
 constexpr wchar_t kThemeProperty[] = L"XTray.ThemeWindow";
+constexpr wchar_t kDisabledIconProperty[] = L"XTray.DisabledButtonIcon";
 constexpr UINT_PTR kSubclassId = 1;
 
 struct PaintSession {
@@ -102,6 +103,20 @@ void Arrow(HDC device, const RECT& area, COLORREF color, bool down, int size)
 
 } // namespace
 
+void SetButtonIcons(HWND control, HICON normal, HICON disabled)
+{
+    if (disabled != nullptr) {
+        if (!SetPropW(control, kDisabledIconProperty, reinterpret_cast<HANDLE>(disabled))) {
+            throw std::runtime_error(ToUtf8(WindowsError(
+                Text(L"Cannot set a button icon", L"无法设置按钮图标"))));
+        }
+    } else {
+        RemovePropW(control, kDisabledIconProperty);
+    }
+    SendMessageW(control, BM_SETIMAGE, IMAGE_ICON, reinterpret_cast<LPARAM>(normal));
+    InvalidateRect(control, nullptr, FALSE);
+}
+
 ThemeWindow::~ThemeWindow()
 {
     Detach();
@@ -128,6 +143,7 @@ void ThemeWindow::Detach()
 {
     if (window_ != nullptr && From(window_) == this) {
         EnumChildWindows(window_, [](HWND control, LPARAM) -> BOOL {
+            RemovePropW(control, kDisabledIconProperty);
             RemoveWindowSubclass(control, ControlProcedure, kSubclassId);
             if (IsClass(control, L"ComboBox")) {
                 COMBOBOXINFO info{sizeof(info)};
@@ -291,12 +307,23 @@ void ThemeWindow::PaintControl(HWND control, HDC device)
             Frame(device, bounds, focused || type == BS_DEFPUSHBUTTON
                 ? colors_.selection : colors_.border);
         }
-        const int length = GetWindowTextLengthW(control);
-        text.resize(static_cast<size_t>(length) + 1);
-        text.resize(static_cast<size_t>(GetWindowTextW(control, text.data(), length + 1)));
-        DrawTextW(device, text.c_str(), static_cast<int>(text.size()), &bounds,
-            (checkbox ? DT_LEFT : DT_CENTER) | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
-                ((SendMessageW(control, WM_QUERYUISTATE, 0, 0) & UISF_HIDEACCEL) != 0 ? DT_HIDEPREFIX : 0));
+        if (!checkbox && (GetWindowLongPtrW(control, GWL_STYLE) & BS_ICON) != 0) {
+            auto icon = disabled
+                ? reinterpret_cast<HICON>(GetPropW(control, kDisabledIconProperty)) : nullptr;
+            if (icon == nullptr) {
+                icon = reinterpret_cast<HICON>(SendMessageW(control, BM_GETIMAGE, IMAGE_ICON, 0));
+            }
+            const int side = Scale(control, 20);
+            DrawIconEx(device, (static_cast<int>(bounds.right) - side) / 2,
+                (static_cast<int>(bounds.bottom) - side) / 2, icon, side, side, 0, nullptr, DI_NORMAL);
+        } else {
+            const int length = GetWindowTextLengthW(control);
+            text.resize(static_cast<size_t>(length) + 1);
+            text.resize(static_cast<size_t>(GetWindowTextW(control, text.data(), length + 1)));
+            DrawTextW(device, text.c_str(), static_cast<int>(text.size()), &bounds,
+                (checkbox ? DT_LEFT : DT_CENTER) | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                    ((SendMessageW(control, WM_QUERYUISTATE, 0, 0) & UISF_HIDEACCEL) != 0 ? DT_HIDEPREFIX : 0));
+        }
     } else {
         Fill(device, bounds, colors_.surface);
         Frame(device, bounds, focused ? colors_.selection : colors_.border);
@@ -448,6 +475,7 @@ LRESULT CALLBACK ThemeWindow::ControlProcedure(HWND control, UINT message, WPARA
 {
     auto* self = reinterpret_cast<ThemeWindow*>(parameter);
     if (message == WM_NCDESTROY) {
+        RemovePropW(control, kDisabledIconProperty);
         RemoveWindowSubclass(control, ControlProcedure, kSubclassId);
         return DefSubclassProc(control, message, wParam, lParam);
     }
@@ -484,7 +512,7 @@ LRESULT CALLBACK ThemeWindow::ControlProcedure(HWND control, UINT message, WPARA
             message == WM_ENABLE || message == WM_SETFOCUS || message == WM_KILLFOCUS ||
             message == WM_SETTEXT || message == WM_SETFONT || message == WM_UPDATEUISTATE ||
             message == WM_LBUTTONDOWN || message == WM_LBUTTONUP || message == WM_KEYDOWN ||
-            message == WM_KEYUP || message == BM_SETSTATE || message == BM_SETCHECK || message == BM_SETSTYLE ||
+            message == WM_KEYUP || message == BM_SETIMAGE || message == BM_SETSTATE || message == BM_SETCHECK || message == BM_SETSTYLE ||
             message == WM_CAPTURECHANGED || message == WM_CANCELMODE ||
             message == CB_SETCURSEL || message == CB_SHOWDROPDOWN || message == CB_RESETCONTENT)) {
             InvalidateRect(control, nullptr, FALSE);

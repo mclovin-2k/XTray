@@ -11,6 +11,7 @@ public:
     LogView(HWND window, Logs& logs);
     void SetFilter(int filter);
     void Clear();
+    void ScrollToEnd();
     void InvalidateFormat(HFONT font);
     void SetTheme(const ThemePalette& palette);
     void Refresh(bool latest = false);

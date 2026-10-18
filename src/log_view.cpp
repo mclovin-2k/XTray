@@ -72,6 +72,11 @@ void LogView::Clear()
     Refresh(true);
 }
 
+void LogView::ScrollToEnd()
+{
+    Refresh(true);
+}
+
 void LogView::InvalidateFormat(HFONT font)
 {
     formatAll_ = true;

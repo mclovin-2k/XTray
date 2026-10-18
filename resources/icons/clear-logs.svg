@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <title>Clear logs</title>
+  <g id="foreground" fill="#ffffff">
+    <path d="M9 3H15V5H20V7H4V5H9Z"/>
+    <path fill-rule="evenodd" d="M5 9H19L17.5 21H6.5ZM9 11H11V18H9ZM13 11H15V18H13Z"/>
+  </g>
+</svg>

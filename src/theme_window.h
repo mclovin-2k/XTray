@@ -7,6 +7,8 @@
 
 namespace xtray {
 
+void SetButtonIcons(HWND control, HICON normal, HICON disabled);
+
 class ThemeWindow {
 public:
     ThemeWindow() = default;

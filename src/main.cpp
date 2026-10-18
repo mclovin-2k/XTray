@@ -1,6 +1,8 @@
 #include "instance.h"
 #include "startup.h"
 #include "tray.h"
+#include "svg_icons.h"
+#include "resource.h"
 #include "theme_window.h"
 #include "log_view.h"
 #include "xray_process.h"
@@ -32,7 +34,7 @@ using namespace xtray;
 constexpr UINT kExitMessage = WM_APP + 43;
 constexpr DWORD kWindowStyle = WS_OVERLAPPEDWINDOW;
 enum ControlId { Run = 2001, Stop, Restart, SettingsButton, FileList, OpenFile,
-    OpenFileDirectory, OpenDirectory, Filter, ClearLogs, ShowGui, ExitApp };
+    OpenFileDirectory, OpenDirectory, Filter, ClearLogs, ScrollToEnd, ShowGui, ExitApp };
 
 NOTIFYICONDATAW smokeTrayData{};
 bool smokeTrayAvailable = true;
@@ -54,41 +56,71 @@ int ReportStartupError(bool smokeTest, const std::wstring& error)
     return 1;
 }
 
-HICON StatusIcon(int size, bool running)
-{
-    BITMAPINFO information{};
-    information.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    information.bmiHeader.biWidth = size;
-    information.bmiHeader.biHeight = -size;
-    information.bmiHeader.biPlanes = 1;
-    information.bmiHeader.biBitCount = 32;
-    void* data = nullptr;
-    HBITMAP color = CreateDIBSection(nullptr, &information, DIB_RGB_COLORS, &data, nullptr, 0);
-    if (color == nullptr) {
-        return nullptr;
-    }
-    auto* pixels = static_cast<DWORD*>(data);
-    const int radius = size * 2 / 5;
-    const DWORD fill = running ? 0xFF16803C : 0xFFCC3030;
-    for (int y = 0; y < size; ++y) {
-        for (int x = 0; x < size; ++x) {
-            const int dx = x - size / 2;
-            const int dy = y - size / 2;
-            pixels[y * size + x] = dx * dx + dy * dy <= radius * radius ? fill : 0;
+template<size_t Count>
+struct IconBatch {
+    std::array<HICON, Count> values{};
+    ~IconBatch()
+    {
+        for (const auto icon : values) {
+            if (icon != nullptr) {
+                DestroyIcon(icon);
+            }
         }
     }
-    const size_t maskStride = static_cast<size_t>((size + 15) / 16 * 2);
-    const std::vector<BYTE> maskBytes(maskStride * static_cast<size_t>(size), 0);
-    HBITMAP mask = CreateBitmap(size, size, 1, 1, maskBytes.data());
-    if (mask == nullptr) {
-        DeleteObject(color);
-        return nullptr;
+    std::array<HICON, Count> Release()
+    {
+        const auto result = values;
+        values.fill(nullptr);
+        return result;
     }
-    ICONINFO icon{TRUE, 0, 0, mask, color};
-    HICON result = CreateIconIndirect(&icon);
-    DeleteObject(mask);
-    DeleteObject(color);
-    return result;
+};
+
+bool IconMatches(HICON icon, COLORREF expected, int size)
+{
+    struct Bitmaps {
+        ICONINFO info{};
+        ~Bitmaps()
+        {
+            if (info.hbmColor != nullptr) { DeleteObject(info.hbmColor); }
+            if (info.hbmMask != nullptr) { DeleteObject(info.hbmMask); }
+        }
+    } bitmaps;
+    if (icon == nullptr || !GetIconInfo(icon, &bitmaps.info)) {
+        return false;
+    }
+    BITMAP description{};
+    if (GetObjectW(bitmaps.info.hbmColor, sizeof(description), &description) == 0 ||
+        description.bmWidth != size || description.bmHeight != size) {
+        return false;
+    }
+    BITMAPINFO format{};
+    format.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    format.bmiHeader.biWidth = size;
+    format.bmiHeader.biHeight = -size;
+    format.bmiHeader.biPlanes = 1;
+    format.bmiHeader.biBitCount = 32;
+    std::vector<BYTE> pixels(static_cast<size_t>(size) * static_cast<size_t>(size) * 4);
+    const HDC device = CreateCompatibleDC(nullptr);
+    if (device == nullptr) {
+        return false;
+    }
+    const int rows = GetDIBits(device, bitmaps.info.hbmColor, 0, static_cast<UINT>(size),
+        pixels.data(), &format, DIB_RGB_COLORS);
+    DeleteDC(device);
+    if (rows != size || pixels[3] != 0) {
+        return false;
+    }
+    size_t visible = 0;
+    for (size_t index = 0; index < pixels.size(); index += 4) {
+        if (pixels[index + 3] == 255) {
+            if (pixels[index] != GetBValue(expected) || pixels[index + 1] != GetGValue(expected) ||
+                pixels[index + 2] != GetRValue(expected)) {
+                return false;
+            }
+            ++visible;
+        }
+    }
+    return visible != 0;
 }
 
 class Application {
@@ -116,10 +148,19 @@ public:
                 DestroyIcon(icon);
             }
         }
+        for (const auto icon : toolIcons_) {
+            if (icon != nullptr) {
+                DestroyIcon(icon);
+            }
+        }
     }
 
     bool Initialize(HWND window)
     {
+        INITCOMMONCONTROLSEX controls{sizeof(INITCOMMONCONTROLSEX), ICC_WIN95_CLASSES};
+        if (!InitCommonControlsEx(&controls)) {
+            throw std::runtime_error(Text("Cannot initialize Windows controls.", "无法初始化 Windows 控件。"));
+        }
         window_ = window;
         theme_.Attach(window_);
         taskbarCreated_ = RegisterWindowMessageW(L"TaskbarCreated");
@@ -157,7 +198,9 @@ public:
         openDirectory_ = child(0, L"BUTTON", L"", WS_TABSTOP, OpenDirectory);
         filterLabel_ = child(0, L"STATIC", L"", SS_CENTERIMAGE);
         filter_ = child(0, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, Filter);
-        clearLogs_ = child(0, L"BUTTON", L"", WS_TABSTOP, ClearLogs);
+        scrollToEnd_ = child(0, L"BUTTON", L"", WS_TABSTOP | BS_ICON, ScrollToEnd);
+        clearLogs_ = child(0, L"BUTTON", L"", WS_TABSTOP | BS_ICON, ClearLogs);
+        CreateTooltips();
         logWindow_ = child(WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
             ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_NOHIDESEL | WS_VSCROLL | WS_TABSTOP);
         view_ = std::make_unique<LogView>(logWindow_, logs_);
@@ -222,8 +265,10 @@ public:
         move(openDirectory_, logicalWidth - 128, 98, 112, 26);
         move(filterLabel_, 16, 136, 96, 26);
         move(filter_, 112, 136, 136, 180);
-        MoveWindow(clearLogs_, width - Scale(16) - Scale(112), Scale(136),
-            Scale(112), Scale(26), TRUE);
+        MoveWindow(scrollToEnd_, width - Scale(16) - Scale(72), Scale(134),
+            Scale(32), Scale(32), TRUE);
+        MoveWindow(clearLogs_, width - Scale(16) - Scale(32), Scale(134),
+            Scale(32), Scale(32), TRUE);
         MoveWindow(logWindow_, Scale(16), Scale(174), (std::max)(1, width - Scale(32)),
             (std::max)(1, static_cast<int>(client.bottom) - Scale(190)), TRUE);
     }
@@ -273,7 +318,8 @@ public:
     {
         const bool button = notification == BN_CLICKED &&
             (id == Run || id == Stop || id == Restart || id == SettingsButton ||
-                id == OpenFile || id == OpenFileDirectory || id == OpenDirectory || id == ClearLogs);
+                id == OpenFile || id == OpenFileDirectory || id == OpenDirectory ||
+                id == ClearLogs || id == ScrollToEnd);
         const bool selection = notification == CBN_SELCHANGE && (id == FileList || id == Filter);
         // Native controls notify their parent during creation and programmatic updates.
         if (!ready_ || updatingUi_ || (!button && !selection)) {
@@ -286,8 +332,13 @@ public:
                 UpdateTheme(themeMonitor_->SystemDark());
                 UpdatePaths();
             }
-        } else if (id == ClearLogs) {
-            view_->Clear();
+        } else if (id == ClearLogs || id == ScrollToEnd) {
+            SendMessageW(tooltip_, TTM_POP, 0, 0);
+            if (id == ClearLogs) {
+                view_->Clear();
+            } else {
+                view_->ScrollToEnd();
+            }
         } else if (id == Filter && notification == CBN_SELCHANGE) {
             view_->SetFilter(static_cast<int>(SendMessageW(filter_, CB_GETCURSEL, 0, 0)));
         } else if (id == FileList && notification == CBN_SELCHANGE) {
@@ -370,6 +421,7 @@ public:
             UpdateTray();
         }
         if (tray_.IsAdded()) {
+            SendMessageW(tooltip_, TTM_POP, 0, 0);
             ShowWindow(window_, SW_HIDE);
         }
     }
@@ -389,6 +441,10 @@ public:
     void Destroyed()
     {
         ready_ = false;
+        if (IsWindow(tooltip_)) {
+            DestroyWindow(tooltip_);
+        }
+        tooltip_ = nullptr;
         themeMonitor_.reset();
         theme_.Detach();
         tray_.Remove();
@@ -494,10 +550,81 @@ public:
             text.find(L"test 中文") != std::wstring::npos) {
             return false;
         }
-        return SmokeTestUiChanges() && SmokeTestThemes() && SmokeTestLogon() && SmokeTestTray();
+        return SmokeTestIconResources() && SmokeTestUiChanges() && SmokeTestLogButtons() &&
+            SmokeTestThemes() && SmokeTestLogon() && SmokeTestTray();
     }
 
 private:
+    void CreateTooltips()
+    {
+        tooltip_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE, TOOLTIPS_CLASSW, nullptr,
+            WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT,
+            CW_USEDEFAULT, CW_USEDEFAULT, window_, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (tooltip_ == nullptr) {
+            throw std::runtime_error(ToUtf8(WindowsError(
+                Text(L"Cannot create log button tooltips", L"无法创建日志按钮提示"))));
+        }
+        for (const auto control : {scrollToEnd_, clearLogs_}) {
+            TOOLINFOW tool{};
+            tool.cbSize = sizeof(tool);
+            tool.hwnd = window_;
+            tool.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+            tool.uId = reinterpret_cast<UINT_PTR>(control);
+            tool.lpszText = const_cast<wchar_t*>(L"");
+            if (!SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool))) {
+                throw std::runtime_error(Text("Cannot register log button tooltips.", "无法注册日志按钮提示。"));
+            }
+        }
+    }
+
+    void UpdateTooltips()
+    {
+        if (tooltip_ == nullptr) {
+            return;
+        }
+        for (const auto& [control, label] : std::array{
+            std::pair{scrollToEnd_, Text(L"Scroll to end", L"滚动至底部")},
+            std::pair{clearLogs_, Text(L"Clear logs", L"清空日志")}}) {
+            TOOLINFOW tool{};
+            tool.cbSize = sizeof(tool);
+            tool.hwnd = window_;
+            tool.uId = reinterpret_cast<UINT_PTR>(control);
+            tool.lpszText = const_cast<wchar_t*>(label);
+            SendMessageW(tooltip_, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tool));
+        }
+        SendMessageW(tooltip_, TTM_SETMAXTIPWIDTH, 0, Scale(400));
+    }
+
+    std::wstring TooltipText(HWND control) const
+    {
+        wchar_t text[128]{};
+        TOOLINFOW tool{};
+        tool.cbSize = sizeof(tool);
+        tool.hwnd = window_;
+        tool.uId = reinterpret_cast<UINT_PTR>(control);
+        tool.lpszText = text;
+        SendMessageW(tooltip_, TTM_GETTEXTW, std::size(text), reinterpret_cast<LPARAM>(&tool));
+        return text;
+    }
+
+    void UpdateToolIcons(SvgIconRenderer& renderer)
+    {
+        IconBatch<4> next;
+        const auto& colors = theme_.Colors();
+        next.values[0] = renderer.CreateIcon(SvgIcon::ClearLogs, Scale(20), colors.text);
+        next.values[1] = renderer.CreateIcon(SvgIcon::ClearLogs, Scale(20), colors.disabled);
+        next.values[2] = renderer.CreateIcon(SvgIcon::ScrollToEnd, Scale(20), colors.text);
+        next.values[3] = renderer.CreateIcon(SvgIcon::ScrollToEnd, Scale(20), colors.disabled);
+        IconBatch<4> old;
+        old.values = toolIcons_;
+        toolIcons_ = next.Release();
+        SetButtonIcons(clearLogs_, toolIcons_[0], toolIcons_[1]);
+        SetButtonIcons(scrollToEnd_, toolIcons_[2], toolIcons_[3]);
+        toolIconDpi_ = dpi_;
+        toolIconColor_ = colors.text;
+        toolDisabledColor_ = colors.disabled;
+    }
+
     void UpdateTheme(bool systemDark, bool force = false)
     {
         if (changingTheme_) {
@@ -507,6 +634,11 @@ private:
         struct Reset { bool& flag; ~Reset() { flag = false; } } reset{changingTheme_};
         const bool dark = ResolveDark(settings_.theme, systemDark);
         theme_.Apply(dark, force);
+        if (clearLogs_ != nullptr && (toolIconDpi_ != dpi_ ||
+            toolIconColor_ != theme_.Colors().text || toolDisabledColor_ != theme_.Colors().disabled)) {
+            SvgIconRenderer renderer;
+            UpdateToolIcons(renderer);
+        }
         if (view_) {
             view_->SetTheme(theme_.Colors());
         }
@@ -613,7 +745,8 @@ private:
             std::pair{directoryLabel_, Text(L"Config folder:", L"配置目录：")},
             std::pair{openDirectory_, Text(L"Open folder", L"打开配置目录")},
             std::pair{filterLabel_, Text(L"Log source:", L"日志来源：")},
-            std::pair{clearLogs_, Text(L"Clear logs", L"清空日志")}
+            std::pair{clearLogs_, Text(L"Clear logs", L"清空日志")},
+            std::pair{scrollToEnd_, Text(L"Scroll to end", L"滚动至底部")}
         };
         for (const auto& [control, text] : captions) {
             SetWindowTextW(control, text);
@@ -625,14 +758,142 @@ private:
             SendMessageW(filter_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(item));
         }
         SendMessageW(filter_, CB_SETCURSEL, selected == CB_ERR ? 0 : selected, 0);
+        UpdateTooltips();
         shownPid_ = MAXDWORD;
         updatingUi_ = false;
+    }
+
+    bool SmokeTestIconResources()
+    {
+        std::fwprintf(stderr, L"Smoke: embedded yellow EXE icon and SVG tint resources.\n");
+        for (const int side : {16, 20, 24, 32, 48, 256}) {
+            IconBatch<1> loaded;
+            loaded.values[0] = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),
+                MAKEINTRESOURCEW(IDI_XTRAY), IMAGE_ICON, side, side, 0));
+            if (!IconMatches(loaded.values[0], kApplicationIconColor, side)) {
+                std::fwprintf(stderr, L"Smoke: yellow icon validation failed at %d px.\n", side);
+                return false;
+            }
+        }
+        SvgIconRenderer renderer;
+        for (const auto kind : {SvgIcon::Application, SvgIcon::ClearLogs, SvgIcon::ScrollToEnd}) {
+            for (const int side : {16, 20, 24, 32}) {
+                const auto white = renderer.Render(kind, side, RGB(255, 255, 255));
+                for (const COLORREF color : {kRunningIconColor, kStoppedIconColor}) {
+                    const auto tinted = renderer.Render(kind, side, color);
+                    size_t visible = 0;
+                    for (size_t index = 0; index < white.bgra.size(); index += 4) {
+                        const unsigned alpha = tinted.bgra[index + 3];
+                        if (alpha != white.bgra[index + 3]) {
+                            return false;
+                        }
+                        if (alpha != 0) {
+                            const std::array<unsigned, 3> channels{
+                                GetBValue(color), GetGValue(color), GetRValue(color)};
+                            for (size_t channel = 0; channel < channels.size(); ++channel) {
+                                const int expected = static_cast<int>((channels[channel] * alpha + 127U) / 255U);
+                                if (std::abs(static_cast<int>(tinted.bgra[index + channel]) - expected) > 2) {
+                                    return false;
+                                }
+                            }
+                            ++visible;
+                        }
+                    }
+                    if (visible == 0 || tinted.bgra[3] != 0) {
+                        return false;
+                    }
+                }
+            }
+        }
+        const auto logo = renderer.Render(SvgIcon::Application, 64, kRunningIconColor);
+        if (logo.bgra[(32U * 64U + 32U) * 4U + 3U] != 0 ||
+            logo.bgra[(57U * 64U + 32U) * 4U + 3U] < 250) {
+            return false;
+        }
+        const auto scroll = renderer.Render(SvgIcon::ScrollToEnd, 24, RGB(255, 255, 255));
+        for (int row = 4; row < 8; ++row) {
+            for (int column = 1; column < 11; ++column) {
+                const auto upper = static_cast<size_t>((row * 24 + column) * 4 + 3);
+                const auto lower = static_cast<size_t>(((row + 6) * 24 + column) * 4 + 3);
+                if (scroll.bgra[upper] != scroll.bgra[lower]) {
+                    return false;
+                }
+            }
+        }
+        return SendMessageW(clearLogs_, BM_GETIMAGE, IMAGE_ICON, 0) ==
+                reinterpret_cast<LRESULT>(toolIcons_[0]) &&
+            SendMessageW(scrollToEnd_, BM_GETIMAGE, IMAGE_ICON, 0) ==
+                reinterpret_cast<LRESULT>(toolIcons_[2]);
+    }
+
+    bool SmokeTestLogButtons()
+    {
+        std::fwprintf(stderr, L"Smoke: icon button tooltips and filtered scroll-to-end behavior.\n");
+        if ((GetWindowLongPtrW(clearLogs_, GWL_STYLE) & BS_ICON) == 0 ||
+            (GetWindowLongPtrW(scrollToEnd_, GWL_STYLE) & BS_ICON) == 0 ||
+            TooltipText(clearLogs_) != Text(L"Clear logs", L"清空日志") ||
+            TooltipText(scrollToEnd_) != Text(L"Scroll to end", L"滚动至底部")) {
+            return false;
+        }
+        logs_.Clear();
+        logs_.SetLimit(200);
+        for (int index = 0; index < 90; ++index) {
+            logs_.Tray(L"scroll tray " + std::to_wstring(index));
+            logs_.Xray("scroll xray " + std::to_string(index) + "\n");
+        }
+        const auto tailSelected = [this] {
+            CHARRANGE selection{};
+            SendMessageW(logWindow_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&selection));
+            GETTEXTLENGTHEX length{GTL_PRECISE | GTL_NUMCHARS, 1200};
+            const LONG end = static_cast<LONG>(SendMessageW(logWindow_, EM_GETTEXTLENGTHEX,
+                reinterpret_cast<WPARAM>(&length), 0));
+            SCROLLINFO scroll{sizeof(SCROLLINFO), SIF_RANGE | SIF_PAGE | SIF_POS};
+            return selection.cpMin == end && selection.cpMax == end &&
+                GetScrollInfo(logWindow_, SB_VERT, &scroll) &&
+                scroll.nPos + static_cast<int>(scroll.nPage) >= scroll.nMax - 1;
+        };
+        for (const int filter : {0, 1, 2}) {
+            SendMessageW(filter_, CB_SETCURSEL, filter, 0);
+            Command(Filter, CBN_SELCHANGE);
+            view_->Refresh();
+            CHARRANGE selected{0, 4};
+            SendMessageW(logWindow_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&selected));
+            SendMessageW(logWindow_, WM_VSCROLL, SB_TOP, 0);
+            const auto text = WindowText(logWindow_);
+            const auto revision = logs_.Revision();
+            Command(ScrollToEnd, BN_CLICKED);
+            if (!tailSelected() || WindowText(logWindow_) != text || logs_.Revision() != revision ||
+                SendMessageW(filter_, CB_GETCURSEL, 0, 0) != filter) {
+                return false;
+            }
+            logs_.Tray(L"follow tray");
+            logs_.Xray("follow xray\n");
+            view_->Refresh();
+            if (!tailSelected()) {
+                return false;
+            }
+            SendMessageW(logWindow_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&selected));
+            SendMessageW(logWindow_, WM_VSCROLL, SB_TOP, 0);
+            logs_.Tray(L"reading tray");
+            logs_.Xray("reading xray\n");
+            view_->Refresh();
+            CHARRANGE after{};
+            SendMessageW(logWindow_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&after));
+            if (after.cpMin != selected.cpMin || after.cpMax != selected.cpMax ||
+                SendMessageW(logWindow_, EM_GETFIRSTVISIBLELINE, 0, 0) != 0) {
+                return false;
+            }
+        }
+        SendMessageW(filter_, CB_SETCURSEL, 0, 0);
+        Command(Filter, CBN_SELCHANGE);
+        Command(ClearLogs, BN_CLICKED);
+        return true;
     }
 
     bool SmokeTestUiChanges()
     {
         std::fwprintf(stderr, L"Smoke: centered window and clear-button alignment.\n");
-        RECT bounds{}, clear{}, logBounds{};
+        RECT bounds{}, clear{}, scrollButton{}, logBounds{};
         MONITORINFO monitor{};
         monitor.cbSize = sizeof(monitor);
         GetWindowRect(window_, &bounds);
@@ -650,7 +911,10 @@ private:
                 bounds.bottom - bounds.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
             GetWindowRect(clearLogs_, &clear);
             GetWindowRect(logWindow_, &logBounds);
-            if (clear.right != logBounds.right) {
+            GetWindowRect(scrollToEnd_, &scrollButton);
+            if (clear.right != logBounds.right || clear.right - clear.left != Scale(32) ||
+                clear.bottom - clear.top != Scale(32) || scrollButton.bottom != clear.bottom ||
+                scrollButton.right + Scale(8) != clear.left) {
                 return false;
             }
         }
@@ -727,6 +991,7 @@ private:
         ApplyUiText();
         Refresh();
         if (WindowText(run_) != L"Run" || WindowText(clearLogs_) != L"Clear logs" ||
+            TooltipText(clearLogs_) != L"Clear logs" || TooltipText(scrollToEnd_) != L"Scroll to end" ||
             WindowText(status_) != L"Stopped" || logs_.Revision() != revision ||
             SendMessageW(filter_, CB_GETCURSEL, 0, 0) != 2 ||
             WindowText(logWindow_).find(L"[XTRAY]") != std::wstring::npos) {
@@ -742,7 +1007,8 @@ private:
         ApplyUiText();
         Refresh();
         return retained && translated && WindowText(run_) == L"运行" &&
-            WindowText(clearLogs_) == L"清空日志";
+            WindowText(clearLogs_) == L"清空日志" && TooltipText(clearLogs_) == L"清空日志" &&
+            TooltipText(scrollToEnd_) == L"滚动至底部";
     }
 
     bool SmokeTestThemes()
@@ -815,6 +1081,10 @@ private:
             SendMessageW(logWindow_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&after));
             SendMessageW(logWindow_, EM_GETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&afterScroll));
             const auto palette = PaletteFor(dark);
+            if (!IconMatches(toolIcons_[0], palette.text, Scale(20)) ||
+                !IconMatches(toolIcons_[1], palette.disabled, Scale(20))) {
+                return false;
+            }
             if (theme_.Colors() != palette || WindowText(logWindow_) != before ||
                 logs_.Revision() != revision || SendMessageW(filter_, CB_GETCURSEL, 0, 0) != 0 ||
                 after.cpMin != selected.cpMin || after.cpMax != selected.cpMax ||
@@ -1165,7 +1435,7 @@ private:
         }
         const std::array controls{status_, run_, stop_, restart_, settingsButton_, fileLabel_,
             files_, openFile_, openFileDirectory_, directoryLabel_, directory_, openDirectory_,
-            filterLabel_, filter_, clearLogs_};
+            filterLabel_, filter_, scrollToEnd_, clearLogs_};
         for (const auto control : controls) {
             SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         }
@@ -1180,26 +1450,21 @@ private:
         logFont_ = logFont;
         theme_.SetFont(font_);
         view_->InvalidateFormat(logFont_);
+        UpdateTooltips();
 
-        std::array<HICON, 6> icons{};
+        SvgIconRenderer renderer;
+        IconBatch<6> next;
         for (int state = 0; state < 2; ++state) {
             const auto index = static_cast<size_t>(state * 3);
-            icons[index] = StatusIcon(Scale(16), state != 0);
-            icons[index + 1] = StatusIcon(Scale(32), state != 0);
-            icons[index + 2] = StatusIcon(Scale(24), state != 0);
+            const COLORREF color = state != 0 ? kRunningIconColor : kStoppedIconColor;
+            next.values[index] = renderer.CreateIcon(SvgIcon::Application, Scale(16), color);
+            next.values[index + 1] = renderer.CreateIcon(SvgIcon::Application, Scale(32), color);
+            next.values[index + 2] = renderer.CreateIcon(SvgIcon::Application, Scale(24), color);
         }
-        for (const auto icon : icons) {
-            if (icon == nullptr) {
-                for (const auto created : icons) {
-                    if (created != nullptr) {
-                        DestroyIcon(created);
-                    }
-                }
-                throw std::runtime_error(Text("Cannot create state icons.", "无法创建状态图标。"));
-            }
-        }
-        const auto old = icons_;
-        icons_ = icons;
+        UpdateToolIcons(renderer);
+        IconBatch<6> old;
+        old.values = icons_;
+        icons_ = next.Release();
         const size_t offset = process_.Pid() != 0 ? 3 : 0;
         SendMessageW(statusIcon_, STM_SETICON, reinterpret_cast<WPARAM>(icons_[offset + 2]), 0);
         SendMessageW(window_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icons_[offset]));
@@ -1208,11 +1473,6 @@ private:
             theme_.Apply(theme_.Colors().dark, true);
             shownPid_ = MAXDWORD;
             Refresh();
-        }
-        for (const auto icon : old) {
-            if (icon != nullptr) {
-                DestroyIcon(icon);
-            }
         }
     }
 
@@ -1285,9 +1545,13 @@ private:
     HWND run_ = nullptr, stop_ = nullptr, restart_ = nullptr, settingsButton_ = nullptr;
     HWND fileLabel_ = nullptr, files_ = nullptr, openFile_ = nullptr, openFileDirectory_ = nullptr;
     HWND directoryLabel_ = nullptr, directory_ = nullptr, openDirectory_ = nullptr;
-    HWND filterLabel_ = nullptr, filter_ = nullptr, clearLogs_ = nullptr, logWindow_ = nullptr;
+    HWND filterLabel_ = nullptr, filter_ = nullptr, scrollToEnd_ = nullptr, clearLogs_ = nullptr;
+    HWND logWindow_ = nullptr, tooltip_ = nullptr;
     HFONT font_ = nullptr, logFont_ = nullptr;
     std::array<HICON, 6> icons_{};
+    std::array<HICON, 4> toolIcons_{};
+    UINT toolIconDpi_ = 0;
+    COLORREF toolIconColor_ = CLR_INVALID, toolDisabledColor_ = CLR_INVALID;
     mutable std::array<MSAAMENUINFO, 5> menuCaptions_{};
     std::unique_ptr<LogView> view_;
     ProcessState shownState_ = ProcessState::Stopped;
