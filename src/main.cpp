@@ -564,9 +564,10 @@ private:
             throw std::runtime_error(ToUtf8(WindowsError(
                 Text(L"Cannot create log button tooltips", L"无法创建日志按钮提示"))));
         }
+        // Without a Common Controls v6 manifest, TOOLINFO must exclude the v6-only field.
         for (const auto control : {scrollToEnd_, clearLogs_}) {
             TOOLINFOW tool{};
-            tool.cbSize = sizeof(tool);
+            tool.cbSize = TTTOOLINFOW_V2_SIZE;
             tool.hwnd = window_;
             tool.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
             tool.uId = reinterpret_cast<UINT_PTR>(control);
@@ -586,7 +587,7 @@ private:
             std::pair{scrollToEnd_, Text(L"Scroll to end", L"滚动至底部")},
             std::pair{clearLogs_, Text(L"Clear logs", L"清空日志")}}) {
             TOOLINFOW tool{};
-            tool.cbSize = sizeof(tool);
+            tool.cbSize = TTTOOLINFOW_V2_SIZE;
             tool.hwnd = window_;
             tool.uId = reinterpret_cast<UINT_PTR>(control);
             tool.lpszText = const_cast<wchar_t*>(label);
@@ -599,7 +600,7 @@ private:
     {
         wchar_t text[128]{};
         TOOLINFOW tool{};
-        tool.cbSize = sizeof(tool);
+        tool.cbSize = TTTOOLINFOW_V2_SIZE;
         tool.hwnd = window_;
         tool.uId = reinterpret_cast<UINT_PTR>(control);
         tool.lpszText = text;
