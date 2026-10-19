@@ -25,8 +25,6 @@ XTray 是一个 Windows x64 单 EXE 程序，无需安装，也无需额外安�
 - [下载 XTray](https://github.com/mclovin-2k/XTray/releases)：在 **Assets** 中选择 **XTray.exe**。
 - [下载 Xray-core](https://github.com/XTLS/Xray-core/releases)：选择与你的系统兼容的 Windows 软件包（x86 或 x64）。
 
-XTray 的首个正式版本尚未发布。正式 EXE 下载将提供在 Releases 页面。
-
 ## 快速开始
 
 1. 将 `XTray.exe` 放在当前 Windows 账户具有写入权限的文件夹中。

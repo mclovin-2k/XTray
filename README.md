@@ -37,9 +37,6 @@ with different listening ports. Each copy manages one Xray process.
 - [Download XTray](https://github.com/mclovin-2k/XTray/releases): choose **XTray.exe** under **Assets**.
 - [Download Xray-core](https://github.com/XTLS/Xray-core/releases): choose a Windows package compatible with your system (x86 or x64).
 
-The first XTray release has not been published yet. Official EXE downloads will
-appear on the Releases page.
-
 ## Quick start
 
 1. Place `XTray.exe` in a folder where your Windows account can write files.
