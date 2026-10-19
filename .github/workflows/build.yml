@@ -2,6 +2,8 @@ name: Build
 
 on:
   push:
+    branches: ["**"]
+    tags: ["v*"]
     paths:
       - "src/**"
       - "resources/**"
@@ -26,7 +28,7 @@ permissions:
 
 concurrency:
   group: build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 defaults:
   run:
@@ -37,6 +39,9 @@ jobs:
     name: Windows x64 Release
     runs-on: windows-2025-vs2026
     timeout-minutes: 20
+    outputs:
+      commit: ${{ steps.artifact.outputs.commit }}
+      sha256: ${{ steps.artifact.outputs.sha256 }}
 
     steps:
       - name: Check out source
@@ -57,13 +62,25 @@ jobs:
       - name: Configure
         run: cmake --preset windows-x64
 
+      - name: Validate project version and release tag
+        run: |
+          $taskTag = ''
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            $taskTag = $env:GITHUB_REF_NAME
+          }
+          & ./tools/ci/validate-version.ps1 -VersionFile build/xtray-version.txt -Tag $taskTag -NotesDirectory docs/releases
+
+      - name: Test release validation and failure recovery
+        run: ./tests/release_tests.ps1
+
       - name: Build
         run: cmake --build --preset release --parallel
 
       - name: Test window, logs, settings, and process lifecycle
         run: ctest --preset release
 
-      - name: Verify executable and static runtime
+      - name: Verify executable, version, and static runtime
+        id: artifact
         run: |
           $taskCompiler = (Get-Content build/xtray-compiler-path.txt -Raw).Trim()
           if (-not $taskCompiler) {
@@ -85,6 +102,23 @@ jobs:
           if (($taskDependencies -join "\n") -match '(?i)\b(?:(?:VCRUNTIME|MSVCP|MSVCR|CONCRT|VCCORLIB)\d\w*|ucrtbased?|api-ms-win-crt-[\w-]+)\.dll\b') {
             throw "The artifact depends on a separately installed C++ runtime."
           }
+          $taskVersion = (Get-Content build/xtray-version.txt -Raw).Trim()
+          $taskInfo = [Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path build/Release/XTray.exe).Path)
+          if ($taskInfo.FileVersion -cne "$taskVersion.0" -or
+              $taskInfo.ProductVersion -cne $taskVersion -or
+              $taskInfo.ProductName -cne 'XTray' -or
+              $taskInfo.OriginalFilename -cne 'XTray.exe' -or
+              $taskInfo.FileDescription -cne 'XTray - Xray-core tray manager') {
+            throw "The executable version resource is missing or does not match the project version."
+          }
+          $taskCommit = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0 -or $taskCommit -notmatch '^[0-9a-f]{40}$') {
+            throw "Unable to identify the built commit."
+          }
+          $taskSha256 = (Get-FileHash build/Release/XTray.exe -Algorithm SHA256).Hash
+          Write-Output "Version: $taskVersion; commit: $taskCommit; SHA-256: $taskSha256"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8 -Value "commit=$taskCommit"
+          Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8 -Value "sha256=$taskSha256"
 
       - name: Upload executable
         uses: actions/upload-artifact@v7
@@ -92,3 +126,34 @@ jobs:
           name: XTray-windows-x64
           path: build/Release/XTray.exe
           if-no-files-found: error
+
+  publish:
+    name: Publish version-tag release
+    needs: windows-x64
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out the exact built commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.windows-x64.outputs.commit }}
+          persist-credentials: false
+
+      - name: Download the tested executable
+        uses: actions/download-artifact@v8
+        with:
+          name: XTray-windows-x64
+          path: build/release
+
+      - name: Upload, verify, and publish the draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          XTRAY_RELEASE_COMMIT: ${{ needs.windows-x64.outputs.commit }}
+          XTRAY_RELEASE_SHA256: ${{ needs.windows-x64.outputs.sha256 }}
+        run: |
+          $taskNotes = Join-Path docs/releases "$($env:GITHUB_REF_NAME).md"
+          & ./tools/ci/publish-release.ps1 -Repository $env:GITHUB_REPOSITORY -Tag $env:GITHUB_REF_NAME -Commit $env:XTRAY_RELEASE_COMMIT -Executable build/release/XTray.exe -NotesFile $taskNotes -ExpectedSha256 $env:XTRAY_RELEASE_SHA256

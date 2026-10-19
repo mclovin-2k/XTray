@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 4.2)
 
-project(XTray LANGUAGES CXX RC)
+project(XTray VERSION 0.1.0 LANGUAGES CXX RC)
+configure_file(resources/version.rc.in "${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc" @ONLY)
+file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/xtray-version.txt" CONTENT "${PROJECT_VERSION}\n")
 
 if(NOT WIN32 OR NOT MSVC)
     message(FATAL_ERROR "XTray requires Windows and the Microsoft MSVC toolchain.")
@@ -60,6 +62,7 @@ add_executable(XTray WIN32
     src/theme_window.cpp
     src/settings_dialog.cpp
     resources/XTray.rc
+    "${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc"
 )
 add_dependencies(XTray XTray.IconResources)
 target_include_directories(XTray PRIVATE resources "${CMAKE_CURRENT_BINARY_DIR}/generated")

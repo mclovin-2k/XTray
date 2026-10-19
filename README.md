@@ -4,19 +4,17 @@ A lightweight, portable Windows tray application for managing Xray-core.
 
 ## Project status
 
-The initial cloud-built executable has been downloaded and opened successfully on the user's Windows computer.
+Preparing **v0.1.0**. Xray process control, logs, settings, tray integration, directory instances, appearance/language selection, sign-in startup, and embedded icons are implemented. The user confirmed that the Build for commit 736b28e succeeded and reported that the restored native controls looked better in the desktop trial.
 
-The second implementation stage adds Xray start/stop/restart controls, process status icons, live output capture, source filtering, and a native settings dialog for executable/configuration paths and log retention. The user confirmed that the Build workflow for commit bc33c31 succeeded and reported no issues in an initial desktop trial.
-
-The current update adds selective log clearing, indented wrapped lines, orange XTray logs with bold source labels, a centered initial window, and English/Chinese UI selection. The user confirmed that the Build workflow for commit 498a034 succeeded, including native build/tests and artifact checks. The user also reported no issues in the subsequent desktop trial of these five improvements.
-
-The third implementation stage adds tray integration and one-instance-per-directory enforcement. The user confirmed that the Build workflow for commit 7c1fe2e succeeded, including the native tests and artifact checks. The user also reported no issues in its desktop trial. Closing the main window now hides it to the tray; choose **Exit** from the tray menu to stop the managed Xray process and exit XTray. The fourth implementation stage adds appearance selection and live theme updates. The user confirmed a successful Build for commit 4329e23 and reported no issues in its desktop trial. The fifth stage adds current-user sign-in startup. The user confirmed a successful Build for commit 50a3074 and reported no issues in its desktop trial. The current update replaces the placeholder icons with embedded SVG artwork and adds two icon-only log toolbar buttons; its cloud build and desktop acceptance are pending.
+Version resources and version-tag publishing are now implemented. This update still needs its cloud build and final desktop regression checks. No v0.1.0 tag or GitHub Release has been created. See the [release checklist](docs/release-checklist.md) for the remaining acceptance record.
 
 ## Project documents
 
 - [Requirements (Chinese)](docs/requirements.md)
 - [Technical plan (Chinese)](docs/technical-plan.md)
-- [Development progress and acceptance checklist (Chinese)](docs/development.md)
+- [Development progress (Chinese)](docs/development.md)
+- [Release acceptance checklist (Chinese)](docs/release-checklist.md)
+- [v0.1.0 release notes](docs/releases/v0.1.0.md)
 
 ## Build and download
 
@@ -27,11 +25,26 @@ The build environment is GitHub Actions; no local compiler installation is requi
 3. After a successful run, download **XTray-windows-x64** from **Artifacts**.
 4. Extract and run `XTray.exe`.
 
-The workflow builds an x64 Release executable with MSVC, C++20, and a static C++ runtime. It tests native window/log rendering, tray lifecycle with a controlled Shell backend, directory instances, and core behavior, then checks the executable's architecture, GUI subsystem, and runtime dependencies. Only `XTray.exe` is uploaded.
+The workflow builds an x64 Release executable with MSVC, C++20, and a static C++ runtime. It tests native window/log rendering, tray lifecycle with a controlled Shell backend, directory instances, and core behavior, then checks the executable's architecture, GUI subsystem, and runtime dependencies. Only `XTray.exe` is uploaded. Version metadata and SHA-256 are checked before upload; release-recovery tests use a simulated GitHub CLI without contacting GitHub.
 
 Native tests use a dedicated test executable as a fake Xray child. The window test briefly shows and hides its own test window to verify restoration, without registering a real tray icon on the runner. They do not launch the external Xray executable, open a proxy listener, or access the network. Test executables and fixtures are not shipped.
 
-Official version-tag releases will be added in a later implementation stage.
+## Versioned releases
+
+The project version is defined once in CMakeLists.txt. For v0.1.0, Windows file properties show product version 0.1.0 and file version 0.1.0.0. A release tag must be exactly vMAJOR.MINOR.PATCH and match that project version; each component is limited to 0–65535 for the Windows version resource.
+
+After the candidate build and [release checklist](docs/release-checklist.md) have been reviewed, the maintainer selects a tested commit and pushes its version tag. For example, replace the placeholder below with that commit:
+
+```powershell
+git tag -a v0.1.0 <validated-commit> -m "XTray v0.1.0"
+git push origin v0.1.0
+```
+
+The tag push builds that tagged source, runs the same checks, and downloads the tested artifact into a separate publishing job. Only that job receives contents-write permission through GitHub's built-in GITHUB_TOKEN; no additional personal token is configured. It checks the tag's actual commit and the EXE's SHA-256, creates or reuses an unpublished draft, uploads XTray.exe, downloads the asset to verify its hash, then publishes.
+
+An upload or verification failure leaves the draft unpublished. Use **Re-run failed jobs** on that tag's workflow after resolving the cause; retries can replace an incomplete draft asset. An already published version is rejected without replacement. Fixes to a published version use a new project version, release-notes file, and tag. Ordinary branch pushes and manual runs still produce development artifacts and do not publish a Release.
+
+Release notes live in [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md). The repository remains private, so its Releases follow the repository's access controls.
 
 ## Run Xray
 
@@ -92,7 +105,7 @@ Settings offers **Follow system**, **Light**, and **Dark**, initially Follow sys
 
 Saving applies the appearance immediately. Cancel, Escape, and closing Settings discard the draft. Theme changes preserve Xray, log content, filtering, text selection, and reading position. Explicit Light/Dark choices override the Windows app mode; Follow system updates while XTray is running, including while Settings is open.
 
-The main window, Settings, title bars, controls, tray menu, and logs use fixed palettes. Log sources retain their bold labels and use orange/gray in light mode or light orange/light gray in dark mode. Status icons remain green/red. Windows file pickers and Explorer use their own system appearance.
+Buttons, checkboxes, combo boxes, input borders, and scrollbars use native Windows drawing. The light tray menu is also native; the dark tray menu retains custom drawing. Window/log backgrounds and source formatting use the selected palette. Log labels remain bold and orange/gray in light mode or light orange/light gray in dark mode; status icons remain green/red. Windows file pickers and Explorer use their own system appearance.
 
 Theme detection uses Windows UISettings and its color-change event, with Windows setting-change messages as a fallback. If theme detection is unavailable, Follow system uses the light palette. Title-bar attributes unsupported by the current OS retain the Windows appearance. All drawing and detection use public Windows SDK APIs; no external theme engine, DLL package, or runtime installer is added.
 
