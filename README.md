@@ -90,6 +90,12 @@ sign-in startup if you use it.
 For multiple independent instances, use separate folders and Xray configurations
 with different listening ports. Each copy manages one Xray process.
 
+## Acknowledgements
+
+Thanks to the [Xray-core](https://github.com/XTLS/Xray-core) project and its
+contributors for developing, maintaining and sharing Xray-core with the
+community.
+
 ## License
 
 Copyright (C) 2026 XTray contributors.
