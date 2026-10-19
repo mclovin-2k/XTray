@@ -11,7 +11,7 @@ XTray is an independent project. Xray-core is downloaded and updated separately.
 ## Download
 
 - [Download XTray](https://github.com/mclovin-2k/XTray/releases): choose **XTray.exe** under **Assets**.
-- [Download Xray-core](https://github.com/XTLS/Xray-core/releases): choose the Windows x64 package.
+- [Download Xray-core](https://github.com/XTLS/Xray-core/releases): choose a Windows package compatible with your system (x86 or x64).
 
 The first XTray release has not been published yet. Official EXE downloads will
 appear on the Releases page.
