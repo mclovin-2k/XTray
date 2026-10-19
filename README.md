@@ -124,3 +124,23 @@ The optional INI key is `Language=auto`, `Language=en`, or `Language=zh`. Existi
 The root-level `bin/` directory contains an external Xray executable and its accompanying files for local runtime testing. It is excluded from Git tracking and is not part of XTray's build dependencies or bundled EXE.
 
 Xray-core and its configuration are provided and updated separately by the user. XTray does not generate or edit Xray configuration content.
+
+## License
+
+Copyright (C) 2026 XTray contributors.
+
+XTray's original code and associated project files are licensed under the
+[GNU General Public License, version 3 only](LICENSE)
+(`SPDX-License-Identifier: GPL-3.0-only`).
+
+When distributing a modified version of XTray, you must comply with GPLv3,
+including providing the Corresponding Source under GPLv3. Commercial use and
+distribution for a fee are permitted. The license provides no warranty.
+
+Xray-core is supplied separately and remains subject to
+[its own license](https://github.com/XTLS/Xray-core/blob/main/LICENSE).
+
+The Xray-derived artwork in
+[resources/icons/xtray.svg](resources/icons/xtray.svg), including icons generated
+from it, is excluded from the GPL grant above. Its reuse and redistribution
+permissions are being reviewed separately.
