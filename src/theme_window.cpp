@@ -261,7 +261,10 @@ bool ThemeWindow::AttachControl(HWND control)
     if (!SetWindowSubclass(control, ControlProcedure, kSubclassId, reinterpret_cast<DWORD_PTR>(this))) {
         return false;
     }
-    SetWindowTheme(control, L"", L"");
+    const bool nativeScroll = IsRichEdit(control) || IsClass(control, L"ComboLBox") ||
+        (edit && (GetWindowLongPtrW(control, GWL_STYLE) & ES_MULTILINE) != 0);
+    const wchar_t* scrollTheme = colors_.dark ? L"DarkMode_Explorer" : L"Explorer";
+    SetWindowTheme(control, nativeScroll ? scrollTheme : L"", nativeScroll ? nullptr : L"");
     const LONG_PTR extended = GetWindowLongPtrW(control, GWL_EXSTYLE);
     if ((extended & WS_EX_CLIENTEDGE) != 0) {
         SetWindowLongPtrW(control, GWL_EXSTYLE, extended & ~static_cast<LONG_PTR>(WS_EX_CLIENTEDGE));
@@ -281,7 +284,7 @@ bool ThemeWindow::AttachControl(HWND control)
                 reinterpret_cast<DWORD_PTR>(this))) {
                 return false;
             }
-            SetWindowTheme(info.hwndList, L"", L"");
+            SetWindowTheme(info.hwndList, scrollTheme, nullptr);
         }
     }
     return true;

@@ -13,6 +13,8 @@
 #include <objbase.h>
 #include <richedit.h>
 #include <shellapi.h>
+#include <uxtheme.h>
+#include <vsstyle.h>
 
 #include <algorithm>
 #include <array>
@@ -1133,6 +1135,7 @@ private:
             }
             return format;
         };
+        std::array<COLORREF, 2> scrollTrackColors{CLR_INVALID, CLR_INVALID};
         for (const bool dark : {true, false, true, false}) {
             settings_.theme = dark ? ThemeMode::Dark : ThemeMode::Light;
             UpdateTheme(!dark);
@@ -1160,6 +1163,21 @@ private:
             }
             if (SendMessageW(window_, WM_GETICON, ICON_SMALL, 0) != icon) {
                 return fail(L"preserve status icon");
+            }
+            if (IsAppThemed() && IsThemeActive()) {
+                const HTHEME scrollTheme = OpenThemeData(logWindow_, L"ScrollBar");
+                if (scrollTheme == nullptr) {
+                    return fail(L"resolve native scrollbar visual style");
+                }
+                const RECT track{0, 0, 24, 24};
+                const HRESULT drawn = DrawThemeBackground(scrollTheme, canvas.device,
+                    SBP_LOWERTRACKVERT, SCRBS_NORMAL, &track, nullptr);
+                CloseThemeData(scrollTheme);
+                const COLORREF color = GetPixel(canvas.device, 12, 12);
+                if (FAILED(drawn) || color == CLR_INVALID) {
+                    return fail(L"render native scrollbar theme swatch");
+                }
+                scrollTrackColors[dark ? 1 : 0] = color;
             }
             const auto tray = labelColor(L"[XTRAY]", 7);
             const auto xray = labelColor(L"[XRAY]", 6);
@@ -1224,6 +1242,13 @@ private:
             if (!ownerDraw || background != palette.window || highlighted != palette.selection) {
                 return fail(L"tray menu background and selection colors");
             }
+        }
+        if (scrollTrackColors[0] != CLR_INVALID && scrollTrackColors[1] != CLR_INVALID) {
+            if (scrollTrackColors[0] == scrollTrackColors[1]) {
+                return fail(L"native scrollbar colors follow light and dark modes");
+            }
+        } else {
+            std::fwprintf(stderr, L"Smoke: native scrollbar pixel check requires active Windows visual styles.\n");
         }
         std::fwprintf(stderr, L"Smoke: follow-system updates and explicit mode overrides.\n");
         settings_.theme = ThemeMode::System;
