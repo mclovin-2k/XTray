@@ -86,6 +86,7 @@ together, depending on your setup.
 - **Logs:** choose all output, XTray only or Xray only. The trash-can button clears
   the selected source; the scroll-to-end button jumps to the latest output and
   resumes following. XTray keeps logs in memory and does not save historical logs.
+  To save Xray logs to files, use [Xray's own logging configuration](https://xtls.github.io/config/log.html).
 - **Language and appearance:** Settings offers automatic, English or Chinese
   language selection, light/dark/system appearance, and a configurable log limit.
 
@@ -120,8 +121,3 @@ distribution for a fee are permitted. The license provides no warranty.
 
 Xray-core is supplied separately and remains subject to
 [its own license](https://github.com/XTLS/Xray-core/blob/main/LICENSE).
-
-The Xray-derived artwork in
-[resources/icons/xtray.svg](resources/icons/xtray.svg), including icons generated
-from it, is excluded from the GPL grant above. Its reuse and redistribution
-permissions are being reviewed separately.
