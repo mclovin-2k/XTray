@@ -2,19 +2,13 @@
 
 [English](README.md) | 简体中文
 
-一个轻量、便携的 Windows 托盘应用，用于运行 [Xray-core](https://github.com/XTLS/Xray-core)。
+XTray 是一个轻量、便携的 Windows 托盘应用，用于运行 [Xray-core](https://github.com/XTLS/Xray-core)。相比 Xray-core 自带的简陋 Windows 运行脚本，它提供了简单的窗口和托盘操作，可启动、停止、重启 Xray，查看日志和设置登录自启，全程不显示命令行窗口。
 
-通过简单的窗口或系统托盘，即可启动、停止、重启 Xray，查看日志，以及设置登录自启。XTray 运行 Xray 时不会显示命令行窗口，使用的配置文件由你自行维护。
-
-XTray 是一个独立项目。Xray-core 需要单独下载和更新。
-
-## 项目目的与适用人群
-
-Xray-core 自带的 Windows 运行脚本较为简陋。XTray 希望让 Windows 用户更方便地运行 Xray-core。
-
-XTray 尽量保持简单、轻量，功能仅限于基础运行管理。Xray-core 的配置选项和参数很多，XTray 不会为了覆盖这些选项而扩展为复杂的管理工具。
+XTray 只提供基础运行管理。Xray-core 的配置选项和参数很多，本项目不会为了覆盖这些选项而扩展为复杂的管理工具。
 
 **XTray 仅适合充分理解 Xray-core，并能够自行维护 Xray-core 配置的高级用户。**
+
+XTray 是一个独立项目。Xray-core 需要单独下载和更新。
 
 ## 便携使用
 

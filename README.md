@@ -2,25 +2,20 @@
 
 English | [简体中文](README.zh-CN.md)
 
-A lightweight, portable Windows tray app for running [Xray-core](https://github.com/XTLS/Xray-core).
+XTray is a lightweight, portable Windows tray app for
+[Xray-core](https://github.com/XTLS/Xray-core). It provides a more convenient
+alternative to Xray-core's basic bundled Windows scripts: start, stop and
+restart Xray, view logs and manage sign-in startup from a simple window or the
+system tray, without a console window.
 
-Start, stop and restart Xray, view its logs, and manage sign-in startup from a
-simple window or the system tray. XTray runs Xray without a console window and
-uses configuration files you maintain yourself.
-
-XTray is an independent project. Xray-core is downloaded and updated separately.
-
-## Purpose and audience
-
-Xray-core's bundled Windows scripts are very basic. XTray aims to make running
-Xray-core more convenient for Windows users.
-
-XTray is designed to stay simple and lightweight, with a scope limited to basic
-runtime management. Xray-core has many configuration options and parameters;
-XTray's scope will not expand into a complex management tool to cover them.
+XTray focuses on basic runtime management. Xray-core has many configuration
+options and parameters; XTray will not expand into a complex management tool
+to cover them.
 
 **XTray is intended only for advanced users who understand Xray-core well and
 can maintain their own Xray-core configurations.**
+
+XTray is an independent project. Xray-core is downloaded and updated separately.
 
 ## Portable use
 
