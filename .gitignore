@@ -7,6 +7,9 @@
 /data/
 /cache/
 
+# Local project documentation.
+/docs/
+
 # Local build output.
 /build/
 /XTray.exe

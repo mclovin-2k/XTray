@@ -7,9 +7,7 @@ $taskValidator = Join-Path $taskProject 'tools/ci/validate-version.ps1'
 $taskFixtures = Join-Path $taskProject ('build/release-tests-' + [Guid]::NewGuid().ToString('N'))
 [IO.Directory]::CreateDirectory($taskFixtures) | Out-Null
 $taskExecutable = Join-Path $taskFixtures 'XTray.exe'
-$taskNotes = Join-Path $taskFixtures 'v0.1.0.md'
 [IO.File]::WriteAllText($taskExecutable, 'A controlled build artifact; not an executable.')
-[IO.File]::WriteAllText($taskNotes, 'Controlled release notes.')
 $taskHash = (Get-FileHash -LiteralPath $taskExecutable -Algorithm SHA256).Hash
 $taskCommit = '1' * 40
 
@@ -62,6 +60,11 @@ function gh {
     switch ($taskCommand) {
         'create' {
             Assert-Test ($taskArguments -contains '--verify-tag' -and $taskArguments -contains '--draft') 'A release must start as a verified-tag draft.'
+            Assert-Test ($taskArguments -contains '--generate-notes' -and $taskArguments -notcontains '--notes-file') 'A release must use GitHub-generated notes without a local notes file.'
+            if ($taskState.CreateFailure) {
+                $global:LASTEXITCODE = 1
+                return
+            }
             $taskState.Release = 'draft'
         }
         'upload' {
@@ -92,6 +95,7 @@ function gh {
 
 $taskCases = @(
     @{ Name = 'new draft'; Changes = @{}; Error = ''; Calls = 'create,upload,download,edit' }
+    @{ Name = 'release note generation failure prevents upload'; Changes = @{ CreateFailure = $true }; Error = 'GitHub CLI failed'; Calls = 'create' }
     @{ Name = 'annotated tag'; Changes = @{ Annotated = $true }; Error = ''; Calls = 'create,upload,download,edit' }
     @{ Name = 'resume existing draft on a later page'; Changes = @{ Release = 'draft'; LaterPage = $true }; Error = ''; Calls = 'upload,download,edit' }
     @{ Name = 'published version cannot be overwritten'; Changes = @{ Release = 'published' }; Error = 'published versions are never overwritten'; Calls = '' }
@@ -109,7 +113,7 @@ try {
         $global:XTrayReleaseTestState = @{
             Commit = $taskCommit; Executable = $taskExecutable; Release = 'none'
             Annotated = $false; LaterPage = $false; MovedTag = $false; MoveAfterUpload = $false
-            Downloaded = $false; UploadFailure = $false; CorruptDownload = $false
+            Downloaded = $false; UploadFailure = $false; CorruptDownload = $false; CreateFailure = $false
             LookupFailure = $false; BadHash = $false; BadTag = $false
             Calls = [Collections.Generic.List[string]]::new()
         }
@@ -118,7 +122,7 @@ try {
         }
         $taskParameters = @{
             Repository = 'example/XTray'; Tag = 'v0.1.0'; Commit = $taskCommit
-            Executable = $taskExecutable; NotesFile = $taskNotes; ExpectedSha256 = $taskHash
+            Executable = $taskExecutable; ExpectedSha256 = $taskHash
         }
         if ($global:XTrayReleaseTestState.BadHash) { $taskParameters.ExpectedSha256 = '0' * 64 }
         if ($global:XTrayReleaseTestState.BadTag) { $taskParameters.Tag = 'v0.1.0-preview' }
@@ -139,20 +143,19 @@ try {
 
     $taskVersionFile = Join-Path $taskFixtures 'version.txt'
     $taskVersionCases = @(
-        @{ Version = '0.1.0'; Tag = 'v0.1.0'; Notes = $taskFixtures; Error = '' }
-        @{ Version = '0.1.0'; Tag = ''; Notes = ''; Error = '' }
-        @{ Version = '0.1.0'; Tag = 'v0.1.1'; Notes = $taskFixtures; Error = 'does not match' }
-        @{ Version = '0.1.0'; Tag = 'v0.1.0'; Notes = ''; Error = 'are missing' }
-        @{ Version = '01.1.0'; Tag = ''; Notes = ''; Error = 'without leading zeros' }
-        @{ Version = '1.2'; Tag = ''; Notes = ''; Error = 'without leading zeros' }
-        @{ Version = '65536.0.0'; Tag = ''; Notes = ''; Error = '0-65535' }
-        @{ Version = '999999999999999999999.0.0'; Tag = ''; Notes = ''; Error = '0-65535' }
+        @{ Version = '0.1.0'; Tag = 'v0.1.0'; Error = '' }
+        @{ Version = '0.1.0'; Tag = ''; Error = '' }
+        @{ Version = '0.1.0'; Tag = 'v0.1.1'; Error = 'does not match' }
+        @{ Version = '01.1.0'; Tag = ''; Error = 'without leading zeros' }
+        @{ Version = '1.2'; Tag = ''; Error = 'without leading zeros' }
+        @{ Version = '65536.0.0'; Tag = ''; Error = '0-65535' }
+        @{ Version = '999999999999999999999.0.0'; Tag = ''; Error = '0-65535' }
     )
     foreach ($taskCase in $taskVersionCases) {
         [IO.File]::WriteAllText($taskVersionFile, $taskCase.Version)
         $taskError = ''
         try {
-            $taskResult = & $taskValidator -VersionFile $taskVersionFile -Tag $taskCase.Tag -NotesDirectory $taskCase.Notes
+            $taskResult = & $taskValidator -VersionFile $taskVersionFile -Tag $taskCase.Tag
         } catch {
             $taskError = $_.Exception.Message
         }

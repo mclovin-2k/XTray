@@ -3,7 +3,6 @@ param(
     [Parameter(Mandatory)][string]$Tag,
     [Parameter(Mandatory)][string]$Commit,
     [Parameter(Mandatory)][string]$Executable,
-    [Parameter(Mandatory)][string]$NotesFile,
     [Parameter(Mandatory)][string]$ExpectedSha256
 )
 
@@ -16,9 +15,8 @@ if ($Repository -cnotmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$' -or
     throw 'Invalid repository, version tag, commit, or SHA-256.'
 }
 if (-not (Test-Path -LiteralPath $Executable -PathType Leaf) -or
-    [IO.Path]::GetFileName($Executable) -cne 'XTray.exe' -or
-    -not (Test-Path -LiteralPath $NotesFile -PathType Leaf)) {
-    throw 'XTray.exe and the release notes file are required.'
+    [IO.Path]::GetFileName($Executable) -cne 'XTray.exe') {
+    throw 'XTray.exe is required.'
 }
 $taskExecutable = (Resolve-Path -LiteralPath $Executable).Path
 if ((Get-FileHash -LiteralPath $taskExecutable -Algorithm SHA256).Hash -ne $ExpectedSha256) {
@@ -91,7 +89,7 @@ $taskRelease = Get-TaggedRelease
 if ($null -eq $taskRelease) {
     Invoke-GitHub @(
         'release', 'create', $Tag, '--repo', $Repository, '--verify-tag',
-        '--target', $Commit, '--draft', '--title', "XTray $Tag", '--notes-file', $NotesFile
+        '--target', $Commit, '--draft', '--title', "XTray $Tag", '--generate-notes'
     ) | Write-Host
 }
 Assert-Draft (Get-TaggedRelease)

@@ -1,7 +1,6 @@
 param(
     [Parameter(Mandatory)][string]$VersionFile,
-    [string]$Tag = '',
-    [string]$NotesDirectory = ''
+    [string]$Tag = ''
 )
 
 Set-StrictMode -Version Latest
@@ -20,9 +19,6 @@ foreach ($taskPart in $taskVersion.Split('.')) {
 if ($Tag) {
     if ($Tag -cne "v$taskVersion") {
         throw "Release tag '$Tag' does not match project version 'v$taskVersion'."
-    }
-    if (-not $NotesDirectory -or -not (Test-Path -LiteralPath (Join-Path $NotesDirectory "$Tag.md") -PathType Leaf)) {
-        throw "Release notes for '$Tag' are missing."
     }
 }
 Write-Output $taskVersion

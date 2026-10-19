@@ -68,7 +68,7 @@ jobs:
           if ($env:GITHUB_REF_TYPE -eq 'tag') {
             $taskTag = $env:GITHUB_REF_NAME
           }
-          & ./tools/ci/validate-version.ps1 -VersionFile build/xtray-version.txt -Tag $taskTag -NotesDirectory docs/releases
+          & ./tools/ci/validate-version.ps1 -VersionFile build/xtray-version.txt -Tag $taskTag
 
       - name: Test release validation and failure recovery
         run: ./tests/release_tests.ps1
@@ -155,5 +155,4 @@ jobs:
           XTRAY_RELEASE_COMMIT: ${{ needs.windows-x64.outputs.commit }}
           XTRAY_RELEASE_SHA256: ${{ needs.windows-x64.outputs.sha256 }}
         run: |
-          $taskNotes = Join-Path docs/releases "$($env:GITHUB_REF_NAME).md"
-          & ./tools/ci/publish-release.ps1 -Repository $env:GITHUB_REPOSITORY -Tag $env:GITHUB_REF_NAME -Commit $env:XTRAY_RELEASE_COMMIT -Executable build/release/XTray.exe -NotesFile $taskNotes -ExpectedSha256 $env:XTRAY_RELEASE_SHA256
+          & ./tools/ci/publish-release.ps1 -Repository $env:GITHUB_REPOSITORY -Tag $env:GITHUB_REF_NAME -Commit $env:XTRAY_RELEASE_COMMIT -Executable build/release/XTray.exe -ExpectedSha256 $env:XTRAY_RELEASE_SHA256
