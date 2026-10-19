@@ -1029,6 +1029,21 @@ private:
         }
         SendMessageW(filter_, CB_SETCURSEL, 0, 0);
         Command(Filter, CBN_SELCHANGE);
+        std::fwprintf(stderr, L"Smoke: native log scrollbar page and wheel scrolling.\n");
+        SendMessageW(logWindow_, WM_VSCROLL, SB_TOP, 0);
+        const auto topLine = SendMessageW(logWindow_, EM_GETFIRSTVISIBLELINE, 0, 0);
+        SendMessageW(logWindow_, WM_VSCROLL, SB_PAGEDOWN, 0);
+        if (SendMessageW(logWindow_, EM_GETFIRSTVISIBLELINE, 0, 0) <= topLine) {
+            return fail(L"native scrollbar page scrolling");
+        }
+        SendMessageW(logWindow_, WM_VSCROLL, SB_TOP, 0);
+        UINT wheelLines = 0;
+        if (SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &wheelLines, 0) && wheelLines != 0) {
+            SendMessageW(logWindow_, WM_MOUSEWHEEL, MAKEWPARAM(0, -WHEEL_DELTA), 0);
+            if (SendMessageW(logWindow_, EM_GETFIRSTVISIBLELINE, 0, 0) <= topLine) {
+                return fail(L"native log mouse wheel scrolling");
+            }
+        }
         SendMessageW(logWindow_, WM_VSCROLL, SB_TOP, 0);
         CHARRANGE selected{1, 5};
         SendMessageW(logWindow_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&selected));
@@ -1126,6 +1141,11 @@ private:
             SendMessageW(window_, WM_ERASEBKGND, reinterpret_cast<WPARAM>(canvas.device), 0);
             if (GetPixel(canvas.device, 2, 2) != palette.window) {
                 return fail(L"native window background");
+            }
+            for (const auto control : {run_, clearLogs_, scrollToEnd_}) {
+                if (!SmokeTestControlHover(control)) {
+                    return fail(L"button hover transitions without repeated repainting");
+                }
             }
             SendMessageW(run_, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(canvas.device), PRF_CLIENT);
             const auto button = GetPixel(canvas.device, 6, 6);

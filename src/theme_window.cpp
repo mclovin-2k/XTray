@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cwchar>
+#include <cstdio>
 #include <exception>
 #include <iterator>
 
@@ -24,6 +25,22 @@ struct PaintSession {
     HDC device;
     explicit PaintSession(HWND value) : window(value), device(BeginPaint(window, &paint)) {}
     ~PaintSession() { EndPaint(window, &paint); }
+};
+
+struct BufferedControlPaint {
+    HDC device;
+    HPAINTBUFFER buffer = nullptr;
+    BufferedControlPaint(HDC target, const RECT& bounds, bool enabled) : device(target)
+    {
+        if (enabled) {
+            HDC memory = nullptr;
+            buffer = BeginBufferedPaint(target, &bounds, BPBF_COMPATIBLEBITMAP, nullptr, &memory);
+            if (buffer != nullptr) {
+                device = memory;
+            }
+        }
+    }
+    ~BufferedControlPaint() { if (buffer != nullptr) { EndBufferedPaint(buffer, TRUE); } }
 };
 
 struct SavedDc {
@@ -117,12 +134,36 @@ void SetButtonIcons(HWND control, HICON normal, HICON disabled)
     InvalidateRect(control, nullptr, FALSE);
 }
 
+bool SmokeTestControlHover(HWND control)
+{
+    SendMessageW(control, WM_MOUSELEAVE, 0, 0);
+    ValidateRect(control, nullptr);
+    SendMessageW(control, WM_MOUSEMOVE, 0, MAKELPARAM(6, 6));
+    const bool entered = GetUpdateRect(control, nullptr, FALSE) != FALSE;
+    ValidateRect(control, nullptr);
+    SendMessageW(control, WM_MOUSEMOVE, 0, MAKELPARAM(7, 6));
+    const bool moved = GetUpdateRect(control, nullptr, FALSE) == FALSE;
+    SendMessageW(control, WM_MOUSELEAVE, 0, 0);
+    const bool left = GetUpdateRect(control, nullptr, FALSE) != FALSE;
+    ValidateRect(control, nullptr);
+    if (!entered || !moved || !left) {
+        std::fwprintf(stderr, L"Smoke: control hover failed (id=%d, enter=%d, move=%d, leave=%d).\n",
+            GetDlgCtrlID(control), entered, moved, left);
+    }
+    return entered && moved && left;
+}
+
+ThemeWindow::ThemeWindow() : bufferedPaint_(SUCCEEDED(BufferedPaintInit())) {}
+
 ThemeWindow::~ThemeWindow()
 {
     Detach();
     DeleteObject(background_);
     DeleteObject(surface_);
     DeleteObject(logBrush_);
+    if (bufferedPaint_) {
+        BufferedPaintUnInit();
+    }
 }
 
 ThemeWindow* ThemeWindow::From(HWND window)
@@ -156,6 +197,7 @@ void ThemeWindow::Detach()
         RemovePropW(window_, kThemeProperty);
     }
     window_ = nullptr;
+    hoverControl_ = nullptr;
 }
 
 bool ThemeWindow::AttachControl(HWND control)
@@ -260,9 +302,11 @@ void ThemeWindow::ApplyOwned(bool dark)
 
 void ThemeWindow::PaintControl(HWND control, HDC device)
 {
-    SavedDc saved(device);
     RECT bounds{};
     GetClientRect(control, &bounds);
+    BufferedControlPaint paint(device, bounds, bufferedPaint_);
+    device = paint.device;
+    SavedDc saved(device);
     const bool disabled = !IsWindowEnabled(control);
     const bool focused = GetFocus() == control;
     SelectObject(device, WindowFont(control, font_));
@@ -271,11 +315,7 @@ void ThemeWindow::PaintControl(HWND control, HDC device)
     std::wstring text;
     if (IsClass(control, L"Button")) {
         const auto state = SendMessageW(control, BM_GETSTATE, 0, 0);
-        POINT cursor{};
-        GetCursorPos(&cursor);
-        RECT screen{};
-        GetWindowRect(control, &screen);
-        const bool hot = PtInRect(&screen, cursor) != FALSE && !disabled;
+        const bool hot = hoverControl_ == control && !disabled;
         const auto type = GetWindowLongPtrW(control, GWL_STYLE) & BS_TYPEMASK;
         const bool checkbox = type == BS_AUTOCHECKBOX || type == BS_CHECKBOX;
         if (checkbox) {
@@ -358,27 +398,8 @@ void ThemeWindow::PaintFrame(HWND control)
         RECT window{};
         GetWindowRect(control, &window);
         const RECT bounds{0, 0, window.right - window.left, window.bottom - window.top};
+        // Native scroll bars own their painting, including updates outside WM_NCPAINT.
         Frame(device, bounds, GetFocus() == control ? colors_.selection : colors_.border);
-        SCROLLBARINFO scroll{sizeof(scroll)};
-        if (GetScrollBarInfo(control, OBJID_VSCROLL, &scroll) &&
-            (scroll.rgstate[0] & (STATE_SYSTEM_INVISIBLE | STATE_SYSTEM_OFFSCREEN)) == 0) {
-            RECT bar = scroll.rcScrollBar;
-            OffsetRect(&bar, -window.left, -window.top);
-            Fill(device, bar, colors_.surface);
-            RECT up = bar, down = bar;
-            up.bottom = up.top + scroll.dxyLineButton;
-            down.top = down.bottom - scroll.dxyLineButton;
-            const auto text = (scroll.rgstate[0] & STATE_SYSTEM_UNAVAILABLE) != 0
-                ? colors_.disabled : colors_.text;
-            Arrow(device, up, text, false, Scale(control, 3));
-            Arrow(device, down, text, true, Scale(control, 3));
-            if (scroll.xyThumbBottom > scroll.xyThumbTop &&
-                (scroll.rgstate[3] & (STATE_SYSTEM_INVISIBLE | STATE_SYSTEM_UNAVAILABLE)) == 0) {
-                RECT thumb{bar.left + Scale(control, 3), bar.top + scroll.xyThumbTop,
-                    bar.right - Scale(control, 3), bar.top + scroll.xyThumbBottom};
-                Fill(device, thumb, colors_.dark ? RGB(128, 128, 128) : RGB(168, 168, 168));
-            }
-        }
     }
     ReleaseDC(control, device);
 }
@@ -475,12 +496,19 @@ LRESULT CALLBACK ThemeWindow::ControlProcedure(HWND control, UINT message, WPARA
 {
     auto* self = reinterpret_cast<ThemeWindow*>(parameter);
     if (message == WM_NCDESTROY) {
+        if (self->hoverControl_ == control) {
+            self->hoverControl_ = nullptr;
+        }
         RemovePropW(control, kDisabledIconProperty);
         RemoveWindowSubclass(control, ControlProcedure, kSubclassId);
         return DefSubclassProc(control, message, wParam, lParam);
     }
     try {
         const bool painted = IsClass(control, L"Button") || IsClass(control, L"ComboBox");
+        if (painted && message == WM_ERASEBKGND) {
+            // PaintControl supplies the background and foreground in one buffered update.
+            return TRUE;
+        }
         if (painted && (message == WM_PAINT || message == WM_PRINTCLIENT)) {
             if (message == WM_PRINTCLIENT) {
                 self->PaintControl(control, reinterpret_cast<HDC>(wParam));
@@ -497,19 +525,36 @@ LRESULT CALLBACK ThemeWindow::ControlProcedure(HWND control, UINT message, WPARA
             self->Handle(message, wParam, lParam, color)) {
             return color;
         }
-        if (message == WM_MOUSEMOVE && painted) {
-            TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, control, 0};
-            TrackMouseEvent(&track);
+        bool hoverChanged = false;
+        if (painted && message == WM_MOUSEMOVE) {
+            RECT bounds{};
+            GetClientRect(control, &bounds);
+            const POINT point{static_cast<short>(LOWORD(lParam)), static_cast<short>(HIWORD(lParam))};
+            const HWND hovered = PtInRect(&bounds, point) ? control : nullptr;
+            if (self->hoverControl_ != hovered) {
+                const HWND previous = self->hoverControl_;
+                self->hoverControl_ = hovered;
+                if (IsWindow(previous)) {
+                    InvalidateRect(previous, nullptr, FALSE);
+                }
+                if (hovered != nullptr) {
+                    TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, control, 0};
+                    TrackMouseEvent(&track);
+                }
+                hoverChanged = true;
+            }
+        } else if (painted && (message == WM_MOUSELEAVE ||
+            (message == WM_ENABLE && wParam == FALSE)) && self->hoverControl_ == control) {
+            self->hoverControl_ = nullptr;
+            hoverChanged = true;
         }
         const auto result = DefSubclassProc(control, message, wParam, lParam);
-        if (message == WM_NCPAINT || message == WM_THEMECHANGED || message == WM_SIZE || message == WM_VSCROLL ||
-            message == WM_MOUSEWHEEL || message == WM_NCLBUTTONDOWN ||
-            message == WM_NCMOUSEMOVE || message == EM_SETSCROLLPOS ||
+        if (message == WM_NCPAINT || message == WM_THEMECHANGED || message == WM_SIZE ||
             message == WM_SETFOCUS || message == WM_KILLFOCUS) {
             self->PaintFrame(control);
         }
-        if (painted && (message == WM_MOUSEMOVE || message == WM_MOUSELEAVE ||
-            message == WM_ENABLE || message == WM_SETFOCUS || message == WM_KILLFOCUS ||
+        if (painted && (hoverChanged || message == WM_ENABLE ||
+            message == WM_SETFOCUS || message == WM_KILLFOCUS ||
             message == WM_SETTEXT || message == WM_SETFONT || message == WM_UPDATEUISTATE ||
             message == WM_LBUTTONDOWN || message == WM_LBUTTONUP || message == WM_KEYDOWN ||
             message == WM_KEYUP || message == BM_SETIMAGE || message == BM_SETSTATE || message == BM_SETCHECK || message == BM_SETSTYLE ||

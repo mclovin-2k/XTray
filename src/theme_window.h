@@ -8,10 +8,11 @@
 namespace xtray {
 
 void SetButtonIcons(HWND control, HICON normal, HICON disabled);
+bool SmokeTestControlHover(HWND control);
 
 class ThemeWindow {
 public:
-    ThemeWindow() = default;
+    ThemeWindow();
     ~ThemeWindow();
     ThemeWindow(const ThemeWindow&) = delete;
     ThemeWindow& operator=(const ThemeWindow&) = delete;
@@ -31,9 +32,11 @@ private:
     void DrawItem(const DRAWITEMSTRUCT& item);
     void MeasureItem(MEASUREITEMSTRUCT& item);
     HWND window_ = nullptr;
+    HWND hoverControl_ = nullptr;
     ThemePalette colors_ = PaletteFor(false);
     HBRUSH background_ = nullptr, surface_ = nullptr, logBrush_ = nullptr;
     HFONT font_ = nullptr;
+    bool bufferedPaint_ = false;
 };
 
 } // namespace xtray

@@ -393,6 +393,11 @@ bool SmokeTestSettingsTheme(HWND owner, const std::filesystem::path& root)
             const auto expected = action == 3 ? ThemeMode::Dark : ThemeMode::Light;
             passed = passed && SendDlgItemMessageW(window, IDC_THEME, CB_GETCURSEL, 0, 0) ==
                 static_cast<LRESULT>(expected);
+            std::fwprintf(stderr, L"Smoke: settings button and checkbox hover transitions.\n");
+            for (const int id : {IDOK, IDCANCEL, IDC_BROWSE_EXECUTABLE, IDC_ADD_FILES,
+                IDC_BROWSE_DIRECTORY, IDC_LOGON_STARTUP}) {
+                passed = SmokeTestControlHover(GetDlgItem(window, id)) && passed;
+            }
             const auto before = context.theme.Colors();
             SendDlgItemMessageW(window, IDC_THEME, CB_SETCURSEL,
                 static_cast<WPARAM>(action == 3 ? ThemeMode::System : ThemeMode::Dark), 0);
