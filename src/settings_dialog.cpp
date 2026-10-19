@@ -76,45 +76,6 @@ std::filesystem::path CurrentExecutable()
     return path;
 }
 
-bool CheckboxPaintMatches(HWND control, const ThemePalette& colors, bool checked, bool disabled)
-{
-    RECT bounds{};
-    GetClientRect(control, &bounds);
-    struct Canvas {
-        HDC device = CreateCompatibleDC(nullptr);
-        HBITMAP bitmap = nullptr;
-        HGDIOBJ previous = nullptr;
-        ~Canvas()
-        {
-            if (previous != nullptr) { SelectObject(device, previous); }
-            DeleteObject(bitmap);
-            DeleteDC(device);
-        }
-    } canvas;
-    BITMAPINFO info{};
-    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    info.bmiHeader.biWidth = bounds.right;
-    info.bmiHeader.biHeight = -bounds.bottom;
-    info.bmiHeader.biPlanes = 1;
-    info.bmiHeader.biBitCount = 32;
-    void* pixels = nullptr;
-    canvas.bitmap = CreateDIBSection(canvas.device, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
-    if (canvas.device == nullptr || canvas.bitmap == nullptr || pixels == nullptr) {
-        return false;
-    }
-    canvas.previous = SelectObject(canvas.device, canvas.bitmap);
-    SendMessageW(control, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(canvas.device), PRF_CLIENT);
-    const auto scale = [control](int value) {
-        return MulDiv(value, static_cast<int>(GetDpiForWindow(control)), 96);
-    };
-    const int left = scale(1);
-    const int top = (static_cast<int>(bounds.bottom) - scale(13)) / 2;
-    return GetPixel(canvas.device, bounds.right - 1, 0) == colors.window &&
-        GetPixel(canvas.device, left, top) == (disabled ? colors.disabled : colors.border) &&
-        (!checked || GetPixel(canvas.device, left + scale(5), top + scale(9)) ==
-            (disabled ? colors.disabled : colors.selectionText));
-}
-
 std::vector<std::wstring> Browse(HWND owner, bool directory, bool multiple)
 {
     ComPtr<IFileOpenDialog> dialog;
@@ -195,14 +156,6 @@ void SetDialogLanguage(HWND dialog)
 INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
 {
     auto* context = reinterpret_cast<Context*>(GetWindowLongPtrW(dialog, DWLP_USER));
-    if (context == nullptr && message == WM_MEASUREITEM && lParam != 0) {
-        auto& item = *reinterpret_cast<MEASUREITEMSTRUCT*>(lParam);
-        if (item.CtlType == ODT_COMBOBOX) {
-            const UINT dpi = GetDpiForWindow(dialog);
-            item.itemHeight = static_cast<UINT>(MulDiv(22, static_cast<int>(dpi == 0 ? 96 : dpi), 96));
-            return TRUE;
-        }
-    }
     if (message == WM_INITDIALOG) {
         context = reinterpret_cast<Context*>(lParam);
         SetWindowLongPtrW(dialog, DWLP_USER, lParam);
@@ -393,10 +346,10 @@ bool SmokeTestSettingsTheme(HWND owner, const std::filesystem::path& root)
             const auto expected = action == 3 ? ThemeMode::Dark : ThemeMode::Light;
             passed = passed && SendDlgItemMessageW(window, IDC_THEME, CB_GETCURSEL, 0, 0) ==
                 static_cast<LRESULT>(expected);
-            std::fwprintf(stderr, L"Smoke: settings button and checkbox hover transitions.\n");
+            std::fwprintf(stderr, L"Smoke: settings native buttons, checkbox, and combo boxes.\n");
             for (const int id : {IDOK, IDCANCEL, IDC_BROWSE_EXECUTABLE, IDC_ADD_FILES,
-                IDC_BROWSE_DIRECTORY, IDC_LOGON_STARTUP}) {
-                passed = SmokeTestControlHover(GetDlgItem(window, id)) && passed;
+                IDC_BROWSE_DIRECTORY, IDC_LOGON_STARTUP, IDC_LANGUAGE, IDC_THEME}) {
+                passed = SmokeTestNativeControl(GetDlgItem(window, id)) && passed;
             }
             const auto before = context.theme.Colors();
             SendDlgItemMessageW(window, IDC_THEME, CB_SETCURSEL,
@@ -466,9 +419,11 @@ bool SmokeTestSettingsStartup(HWND owner, const std::filesystem::path& root)
                     context.theme.Apply(dark, true);
                     passed = passed &&
                         (IsDlgButtonChecked(window, IDC_LOGON_STARTUP) == BST_CHECKED) == checked &&
-                        CheckboxPaintMatches(checkbox, context.theme.Colors(), checked, false);
+                        SmokeTestNativeControl(checkbox);
                     EnableWindow(checkbox, FALSE);
-                    passed = passed && CheckboxPaintMatches(checkbox, context.theme.Colors(), checked, true);
+                    passed = passed && !IsWindowEnabled(checkbox) &&
+                        (IsDlgButtonChecked(window, IDC_LOGON_STARTUP) == BST_CHECKED) == checked &&
+                        SmokeTestNativeControl(checkbox);
                     EnableWindow(checkbox, TRUE);
                 }
                 if (action == 0) {

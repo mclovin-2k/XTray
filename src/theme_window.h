@@ -7,12 +7,12 @@
 
 namespace xtray {
 
-void SetButtonIcons(HWND control, HICON normal, HICON disabled);
-bool SmokeTestControlHover(HWND control);
+void SetButtonIcons(HWND control, HICON normal, HICON disabled, int size);
+bool SmokeTestNativeControl(HWND control);
 
 class ThemeWindow {
 public:
-    ThemeWindow();
+    ThemeWindow() = default;
     ~ThemeWindow();
     ThemeWindow(const ThemeWindow&) = delete;
     ThemeWindow& operator=(const ThemeWindow&) = delete;
@@ -25,18 +25,14 @@ public:
     bool Handle(UINT message, WPARAM wParam, LPARAM lParam, LRESULT& result);
     static ThemeWindow* From(HWND window);
 private:
-    static LRESULT CALLBACK ControlProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
+    static LRESULT CALLBACK ColorProcedure(HWND, UINT, WPARAM, LPARAM, UINT_PTR, DWORD_PTR);
     bool AttachControl(HWND control);
-    void PaintControl(HWND control, HDC device);
-    void PaintFrame(HWND control);
     void DrawItem(const DRAWITEMSTRUCT& item);
     void MeasureItem(MEASUREITEMSTRUCT& item);
     HWND window_ = nullptr;
-    HWND hoverControl_ = nullptr;
     ThemePalette colors_ = PaletteFor(false);
     HBRUSH background_ = nullptr, surface_ = nullptr, logBrush_ = nullptr;
     HFONT font_ = nullptr;
-    bool bufferedPaint_ = false;
 };
 
 } // namespace xtray

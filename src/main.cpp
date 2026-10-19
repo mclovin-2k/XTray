@@ -191,7 +191,7 @@ public:
         restart_ = child(0, L"BUTTON", L"", WS_TABSTOP, Restart);
         settingsButton_ = child(0, L"BUTTON", L"", WS_TABSTOP, SettingsButton);
         fileLabel_ = child(0, L"STATIC", L"", SS_CENTERIMAGE);
-        files_ = child(0, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, FileList);
+        files_ = child(0, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, FileList);
         openFile_ = child(0, L"BUTTON", L"", WS_TABSTOP, OpenFile);
         openFileDirectory_ = child(0, L"BUTTON", L"", WS_TABSTOP, OpenFileDirectory);
         directoryLabel_ = child(0, L"STATIC", L"", SS_CENTERIMAGE);
@@ -199,7 +199,7 @@ public:
             ES_READONLY | ES_AUTOHSCROLL | WS_TABSTOP);
         openDirectory_ = child(0, L"BUTTON", L"", WS_TABSTOP, OpenDirectory);
         filterLabel_ = child(0, L"STATIC", L"", SS_CENTERIMAGE);
-        filter_ = child(0, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, Filter);
+        filter_ = child(0, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, Filter);
         scrollToEnd_ = child(0, L"BUTTON", L"", WS_TABSTOP | BS_ICON, ScrollToEnd);
         clearLogs_ = child(0, L"BUTTON", L"", WS_TABSTOP | BS_ICON, ClearLogs);
         CreateTooltips();
@@ -621,8 +621,8 @@ private:
         IconBatch<4> old;
         old.values = toolIcons_;
         toolIcons_ = next.Release();
-        SetButtonIcons(clearLogs_, toolIcons_[0], toolIcons_[1]);
-        SetButtonIcons(scrollToEnd_, toolIcons_[2], toolIcons_[3]);
+        SetButtonIcons(clearLogs_, toolIcons_[0], toolIcons_[1], Scale(20));
+        SetButtonIcons(scrollToEnd_, toolIcons_[2], toolIcons_[3], Scale(20));
         toolIconDpi_ = dpi_;
         toolIconColor_ = colors.text;
         toolDisabledColor_ = colors.disabled;
@@ -691,11 +691,11 @@ private:
             MENUITEMINFOW item{};
             item.cbSize = sizeof(item);
             item.fMask = MIIM_FTYPE | MIIM_STRING | MIIM_STATE | MIIM_ID | MIIM_DATA;
-            item.fType = MFT_OWNERDRAW;
+            item.fType = theme_.Colors().dark ? MFT_OWNERDRAW : MFT_STRING;
             item.fState = available ? MFS_ENABLED : MFS_DISABLED;
             item.wID = static_cast<UINT>(id);
             item.dwTypeData = const_cast<wchar_t*>(caption);
-            item.dwItemData = reinterpret_cast<ULONG_PTR>(&accessible);
+            item.dwItemData = theme_.Colors().dark ? reinterpret_cast<ULONG_PTR>(&accessible) : 0;
             return InsertMenuItemW(menu, static_cast<UINT>(GetMenuItemCount(menu)), TRUE, &item) != FALSE;
         };
         if (!append(ShowGui, Text(L"Show GUI", L"显示 GUI"), true) ||
@@ -823,10 +823,31 @@ private:
                 }
             }
         }
+        const auto nativeImages = [this](HWND control) {
+            BUTTON_IMAGELIST images{};
+            if (!SendMessageW(control, BCM_GETIMAGELIST, 0, reinterpret_cast<LPARAM>(&images)) ||
+                images.uAlign != BUTTON_IMAGELIST_ALIGN_CENTER ||
+                ImageList_GetImageCount(images.himl) != 6) {
+                return false;
+            }
+            const auto& colors = theme_.Colors();
+            for (const int state : {0, 3}) {
+                const HICON icon = ImageList_GetIcon(images.himl, state, ILD_TRANSPARENT);
+                const bool matched = IconMatches(icon, state == 3 ? colors.disabled : colors.text, Scale(20));
+                if (icon != nullptr) {
+                    DestroyIcon(icon);
+                }
+                if (!matched) {
+                    return false;
+                }
+            }
+            return true;
+        };
         return SendMessageW(clearLogs_, BM_GETIMAGE, IMAGE_ICON, 0) ==
                 reinterpret_cast<LRESULT>(toolIcons_[0]) &&
             SendMessageW(scrollToEnd_, BM_GETIMAGE, IMAGE_ICON, 0) ==
-                reinterpret_cast<LRESULT>(toolIcons_[2]);
+                reinterpret_cast<LRESULT>(toolIcons_[2]) &&
+            nativeImages(clearLogs_) && nativeImages(scrollToEnd_);
     }
 
     bool SmokeTestLogButtons()
@@ -1136,6 +1157,8 @@ private:
             return format;
         };
         std::array<COLORREF, 2> scrollTrackColors{CLR_INVALID, CLR_INVALID};
+        std::array<COLORREF, 2> buttonColors{CLR_INVALID, CLR_INVALID};
+        std::array<COLORREF, 2> comboColors{CLR_INVALID, CLR_INVALID};
         for (const bool dark : {true, false, true, false}) {
             settings_.theme = dark ? ThemeMode::Dark : ThemeMode::Light;
             UpdateTheme(!dark);
@@ -1198,54 +1221,64 @@ private:
             if (GetPixel(canvas.device, 2, 2) != palette.window) {
                 return fail(L"native window background");
             }
-            for (const auto control : {run_, clearLogs_, scrollToEnd_}) {
-                if (!SmokeTestControlHover(control)) {
-                    return fail(L"button hover appearance transitions");
+            for (const auto control : {run_, clearLogs_, scrollToEnd_, filter_, files_}) {
+                if (!SmokeTestNativeControl(control)) {
+                    return fail(L"system-rendered button and combo controls");
                 }
             }
             SendMessageW(run_, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(canvas.device), PRF_CLIENT);
-            const auto button = GetPixel(canvas.device, 6, 6);
-            if (button != palette.button && button != palette.hot && button != palette.pressed) {
-                return fail(L"native button background");
-            }
+            buttonColors[dark ? 1 : 0] = GetPixel(canvas.device, Scale(8), Scale(5));
             SendMessageW(filter_, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(canvas.device), PRF_CLIENT);
-            if (GetPixel(canvas.device, 2, 2) != palette.surface) {
-                return fail(L"native combo background");
-            }
+            comboColors[dark ? 1 : 0] = GetPixel(canvas.device, Scale(8), Scale(5));
             const HMENU menu = CreateTrayMenu();
+            wchar_t caption[64]{};
             MENUITEMINFOW item{};
             item.cbSize = sizeof(item);
-            item.fMask = MIIM_DATA | MIIM_FTYPE;
-            const bool ownerDraw = GetMenuItemInfoW(menu, 0, TRUE, &item) &&
-                (item.fType & MFT_OWNERDRAW) != 0 && item.dwItemData != 0;
-            const auto* accessible = reinterpret_cast<const MSAAMENUINFO*>(item.dwItemData);
-            if (!ownerDraw || accessible->dwMSAASignature != MSAA_MENU_SIG ||
-                std::wstring_view(accessible->pszWText) != Text(L"Show GUI", L"显示 GUI")) {
+            item.fMask = MIIM_DATA | MIIM_FTYPE | MIIM_STRING | MIIM_ID;
+            item.dwTypeData = caption;
+            item.cch = static_cast<UINT>(std::size(caption));
+            const bool read = GetMenuItemInfoW(menu, 0, TRUE, &item) != FALSE;
+            const bool ownerDraw = (item.fType & MFT_OWNERDRAW) != 0;
+            if (!read || ownerDraw != dark || item.wID != ShowGui ||
+                (!dark && std::wstring_view(caption) != Text(L"Show GUI", L"显示 GUI"))) {
                 DestroyMenu(menu);
-                return fail(L"tray menu ownership and accessible name");
+                return fail(L"native light menu and dark menu fallback");
             }
-            DRAWITEMSTRUCT draw{};
-            draw.CtlType = ODT_MENU;
-            draw.hDC = canvas.device;
-            draw.rcItem = {0, 0, 200, 30};
-            draw.itemData = item.dwItemData;
-            if (ownerDraw) {
+            if (dark) {
+                const auto* accessible = reinterpret_cast<const MSAAMENUINFO*>(item.dwItemData);
+                if (accessible == nullptr || accessible->dwMSAASignature != MSAA_MENU_SIG ||
+                    std::wstring_view(accessible->pszWText) != Text(L"Show GUI", L"显示 GUI")) {
+                    DestroyMenu(menu);
+                    return fail(L"dark menu accessible name");
+                }
+                DRAWITEMSTRUCT draw{};
+                draw.CtlType = ODT_MENU;
+                draw.hDC = canvas.device;
+                draw.rcItem = {0, 0, 200, 30};
+                draw.itemData = item.dwItemData;
                 SendMessageW(window_, WM_DRAWITEM, 0, reinterpret_cast<LPARAM>(&draw));
-            }
-            const auto background = GetPixel(canvas.device, 2, 2);
-            draw.itemState = ODS_SELECTED;
-            if (ownerDraw) {
+                const auto background = GetPixel(canvas.device, 2, 2);
+                draw.itemState = ODS_SELECTED;
                 SendMessageW(window_, WM_DRAWITEM, 0, reinterpret_cast<LPARAM>(&draw));
+                const auto highlighted = GetPixel(canvas.device, 2, 2);
+                if (background != palette.window || highlighted != palette.selection) {
+                    DestroyMenu(menu);
+                    return fail(L"dark menu background and selection colors");
+                }
+            } else if (item.dwItemData != 0) {
+                DestroyMenu(menu);
+                return fail(L"light menu uses system text and accessibility");
             }
-            const auto highlighted = GetPixel(canvas.device, 2, 2);
             DestroyMenu(menu);
-            if (!ownerDraw || background != palette.window || highlighted != palette.selection) {
-                return fail(L"tray menu background and selection colors");
-            }
         }
         if (scrollTrackColors[0] != CLR_INVALID && scrollTrackColors[1] != CLR_INVALID) {
             if (scrollTrackColors[0] == scrollTrackColors[1]) {
                 return fail(L"native scrollbar colors follow light and dark modes");
+            }
+            if (buttonColors[0] == CLR_INVALID || buttonColors[1] == CLR_INVALID ||
+                comboColors[0] == CLR_INVALID || comboColors[1] == CLR_INVALID ||
+                buttonColors[0] == buttonColors[1] || comboColors[0] == comboColors[1]) {
+                return fail(L"native button and combo light/dark colors");
             }
         } else {
             std::fwprintf(stderr, L"Smoke: native scrollbar pixel check requires active Windows visual styles.\n");

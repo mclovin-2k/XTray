@@ -2,7 +2,6 @@
 #include "win32.h"
 
 #include <dwmapi.h>
-#include <oleacc.h>
 #include <richedit.h>
 #include <uxtheme.h>
 
@@ -11,37 +10,14 @@
 #include <cstdio>
 #include <exception>
 #include <iterator>
+#include <stdexcept>
 
 namespace xtray {
 namespace {
 
 constexpr wchar_t kThemeProperty[] = L"XTray.ThemeWindow";
-constexpr wchar_t kDisabledIconProperty[] = L"XTray.DisabledButtonIcon";
-constexpr UINT_PTR kSubclassId = 1;
-
-struct PaintSession {
-    HWND window;
-    PAINTSTRUCT paint{};
-    HDC device;
-    explicit PaintSession(HWND value) : window(value), device(BeginPaint(window, &paint)) {}
-    ~PaintSession() { EndPaint(window, &paint); }
-};
-
-struct BufferedControlPaint {
-    HDC device;
-    HPAINTBUFFER buffer = nullptr;
-    BufferedControlPaint(HDC target, const RECT& bounds, bool enabled) : device(target)
-    {
-        if (enabled) {
-            HDC memory = nullptr;
-            buffer = BeginBufferedPaint(target, &bounds, BPBF_COMPATIBLEBITMAP, nullptr, &memory);
-            if (buffer != nullptr) {
-                device = memory;
-            }
-        }
-    }
-    ~BufferedControlPaint() { if (buffer != nullptr) { EndBufferedPaint(buffer, TRUE); } }
-};
+constexpr UINT_PTR kColorSubclassId = 1;
+constexpr UINT_PTR kIconListSubclassId = 2;
 
 struct SavedDc {
     HDC device;
@@ -65,32 +41,11 @@ void Fill(HDC device, const RECT& bounds, COLORREF color)
     FillRect(device, &bounds, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
 }
 
-void Frame(HDC device, const RECT& bounds, COLORREF color)
-{
-    SetDCBrushColor(device, color);
-    FrameRect(device, &bounds, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
-}
-
 HFONT WindowFont(HWND window, HFONT fallback)
 {
     const auto font = reinterpret_cast<HFONT>(SendMessageW(window, WM_GETFONT, 0, 0));
     return font != nullptr ? font : fallback != nullptr ? fallback
         : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-}
-
-std::wstring ComboText(HWND control, UINT index)
-{
-    if (index == static_cast<UINT>(-1)) {
-        return {};
-    }
-    const auto length = SendMessageW(control, CB_GETLBTEXTLEN, index, 0);
-    if (length == CB_ERR) {
-        return {};
-    }
-    std::wstring text(static_cast<size_t>(length) + 1, L'\0');
-    const auto copied = SendMessageW(control, CB_GETLBTEXT, index, reinterpret_cast<LPARAM>(text.data()));
-    text.resize(copied == CB_ERR ? 0 : static_cast<size_t>(copied));
-    return text;
 }
 
 int Scale(HWND window, int value)
@@ -105,42 +60,69 @@ const wchar_t* MenuText(ULONG_PTR data)
         ? item->pszWText : L"";
 }
 
-void Arrow(HDC device, const RECT& area, COLORREF color, bool down, int size)
+LRESULT CALLBACK IconListProcedure(HWND control, UINT message, WPARAM wParam,
+    LPARAM lParam, UINT_PTR, DWORD_PTR parameter)
 {
-    const LONG x = area.left + (area.right - area.left) / 2;
-    const LONG y = area.top + (area.bottom - area.top) / 2;
-    const LONG offset = (std::max)(1, size);
-    POINT points[] = {{x - offset, y + (down ? -offset / 2 : offset / 2)},
-        {x, y + (down ? offset / 2 : -offset / 2)},
-        {x + offset, y + (down ? -offset / 2 : offset / 2)}};
-    SelectObject(device, GetStockObject(DC_PEN));
-    SetDCPenColor(device, color);
-    Polyline(device, points, static_cast<int>(std::size(points)));
+    if (message == WM_NCDESTROY) {
+        RemoveWindowSubclass(control, IconListProcedure, kIconListSubclassId);
+        const auto result = DefSubclassProc(control, message, wParam, lParam);
+        ImageList_Destroy(reinterpret_cast<HIMAGELIST>(parameter));
+        return result;
+    }
+    return DefSubclassProc(control, message, wParam, lParam);
 }
 
 } // namespace
 
-void SetButtonIcons(HWND control, HICON normal, HICON disabled)
+void SetButtonIcons(HWND control, HICON normal, HICON disabled, int size)
 {
-    if (disabled != nullptr) {
-        if (!SetPropW(control, kDisabledIconProperty, reinterpret_cast<HANDLE>(disabled))) {
-            throw std::runtime_error(ToUtf8(WindowsError(
-                Text(L"Cannot set a button icon", L"无法设置按钮图标"))));
+    struct Images {
+        HIMAGELIST value;
+        ~Images() { if (value != nullptr) { ImageList_Destroy(value); } }
+    } images{ImageList_Create(size, size, ILC_COLOR32, 6, 0)};
+    if (images.value == nullptr) {
+        throw std::runtime_error(Text("Cannot create native button images.", "无法创建系统按钮图像。"));
+    }
+    for (const auto icon : {normal, normal, normal, disabled, normal, normal}) {
+        if (ImageList_AddIcon(images.value, icon) == -1) {
+            throw std::runtime_error(Text("Cannot add a native button image.", "无法添加系统按钮图像。"));
         }
-    } else {
-        RemovePropW(control, kDisabledIconProperty);
+    }
+    DWORD_PTR previous = 0;
+    const bool attached = GetWindowSubclass(control, IconListProcedure, kIconListSubclassId, &previous) != FALSE;
+    if (!SetWindowSubclass(control, IconListProcedure, kIconListSubclassId,
+        reinterpret_cast<DWORD_PTR>(images.value))) {
+        throw std::runtime_error(Text("Cannot attach native button images.", "无法关联系统按钮图像。"));
+    }
+    BUTTON_IMAGELIST list{images.value, {}, BUTTON_IMAGELIST_ALIGN_CENTER};
+    if (!SendMessageW(control, BCM_SETIMAGELIST, 0, reinterpret_cast<LPARAM>(&list))) {
+        if (attached) {
+            SetWindowSubclass(control, IconListProcedure, kIconListSubclassId, previous);
+        } else {
+            RemoveWindowSubclass(control, IconListProcedure, kIconListSubclassId);
+        }
+        throw std::runtime_error(Text("Cannot set native button images.", "无法设置系统按钮图像。"));
+    }
+    images.value = nullptr;
+    if (attached) {
+        ImageList_Destroy(reinterpret_cast<HIMAGELIST>(previous));
     }
     SendMessageW(control, BM_SETIMAGE, IMAGE_ICON, reinterpret_cast<LPARAM>(normal));
     InvalidateRect(control, nullptr, FALSE);
 }
 
-bool SmokeTestControlHover(HWND control)
+bool SmokeTestNativeControl(HWND control)
 {
     const auto* theme = ThemeWindow::From(GetParent(control));
+    const bool combo = IsClass(control, L"ComboBox");
+    const bool button = IsClass(control, L"Button");
+    const LONG_PTR style = GetWindowLongPtrW(control, GWL_STYLE);
     RECT bounds{};
-    if (theme == nullptr || !GetClientRect(control, &bounds) ||
-        bounds.right <= 0 || bounds.bottom <= 0) {
-        std::fwprintf(stderr, L"Smoke: invalid hover test control (id=%d).\n", GetDlgCtrlID(control));
+    if (theme == nullptr || (!combo && !button) ||
+        (button && (style & BS_TYPEMASK) == BS_OWNERDRAW) ||
+        (combo && (style & (CBS_OWNERDRAWFIXED | CBS_OWNERDRAWVARIABLE)) != 0) ||
+        !GetClientRect(control, &bounds) || bounds.right <= 0 || bounds.bottom <= 0) {
+        std::fwprintf(stderr, L"Smoke: invalid native control (id=%d).\n", GetDlgCtrlID(control));
         return false;
     }
     struct Canvas {
@@ -162,49 +144,40 @@ bool SmokeTestControlHover(HWND control)
     info.bmiHeader.biBitCount = 32;
     void* pixels = nullptr;
     canvas.bitmap = CreateDIBSection(canvas.device, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
-    if (canvas.device == nullptr || canvas.bitmap == nullptr) {
-        std::fwprintf(stderr, L"Smoke: cannot create hover test canvas.\n");
+    if (canvas.device == nullptr || canvas.bitmap == nullptr || pixels == nullptr) {
+        std::fwprintf(stderr, L"Smoke: cannot create native control canvas.\n");
         return false;
     }
     canvas.previous = SelectObject(canvas.device, canvas.bitmap);
     if (canvas.previous == nullptr || canvas.previous == HGDI_ERROR) {
         canvas.previous = nullptr;
-        std::fwprintf(stderr, L"Smoke: cannot select hover test bitmap.\n");
         return false;
     }
-    const auto& colors = theme->Colors();
-    const auto type = GetWindowLongPtrW(control, GWL_STYLE) & BS_TYPEMASK;
-    const bool checkbox = type == BS_AUTOCHECKBOX || type == BS_CHECKBOX;
-    const bool checked = checkbox && SendMessageW(control, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    const bool enabled = IsWindowEnabled(control) != FALSE;
-    const COLORREF normal = checkbox
-        ? checked && enabled ? colors.selection : colors.surface : colors.button;
-    const COLORREF hot = !enabled || checked ? normal : colors.hot;
-    const POINT sample = checkbox
-        ? POINT{Scale(control, 4), (bounds.bottom - Scale(control, 13)) / 2 + Scale(control, 2)}
-        : POINT{Scale(control, 2), Scale(control, 2)};
-    const auto color = [&] {
-        SetPixel(canvas.device, sample.x, sample.y, RGB(255, 0, 255));
+    const UINT query = combo ? CB_GETCURSEL : BM_GETCHECK;
+    const auto state = SendMessageW(control, query, 0, 0);
+    const auto draw = [&] {
+        SavedDc saved(canvas.device);
+        Fill(canvas.device, bounds, RGB(255, 0, 255));
         SendMessageW(control, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(canvas.device), PRF_CLIENT);
-        return GetPixel(canvas.device, sample.x, sample.y);
+        GdiFlush();
+        const auto* begin = static_cast<const DWORD*>(pixels);
+        const auto count = static_cast<size_t>(bounds.right) * static_cast<size_t>(bounds.bottom);
+        return std::any_of(begin, begin + count,
+            [](DWORD pixel) { return (pixel & 0x00FFFFFF) != 0x00FF00FF; });
     };
-    SendMessageW(control, WM_MOUSELEAVE, 0, 0);
-    const COLORREF before = color();
+    bool passed = draw();
     SendMessageW(control, WM_MOUSEMOVE, 0, MAKELPARAM(Scale(control, 6), Scale(control, 6)));
-    const COLORREF entered = color();
-    SendMessageW(control, WM_MOUSEMOVE, 0, MAKELPARAM(Scale(control, 7), Scale(control, 6)));
-    const COLORREF moved = color();
+    passed = draw() && passed;
     SendMessageW(control, WM_MOUSELEAVE, 0, 0);
-    const COLORREF left = color();
-    const bool passed = before == normal && entered == hot && moved == hot && left == normal;
+    passed = draw() && passed && SendMessageW(control, query, 0, 0) == state;
+    if (IsAppThemed() && IsThemeActive()) {
+        passed = GetWindowTheme(control) != nullptr && passed;
+    }
     if (!passed) {
-        std::fwprintf(stderr, L"Smoke: control hover failed (id=%d, colors=%06lX/%06lX/%06lX/%06lX, expected=%06lX/%06lX).\n",
-            GetDlgCtrlID(control), before, entered, moved, left, normal, hot);
+        std::fwprintf(stderr, L"Smoke: native control rendering failed (id=%d).\n", GetDlgCtrlID(control));
     }
     return passed;
 }
-
-ThemeWindow::ThemeWindow() : bufferedPaint_(SUCCEEDED(BufferedPaintInit())) {}
 
 ThemeWindow::~ThemeWindow()
 {
@@ -212,9 +185,6 @@ ThemeWindow::~ThemeWindow()
     DeleteObject(background_);
     DeleteObject(surface_);
     DeleteObject(logBrush_);
-    if (bufferedPaint_) {
-        BufferedPaintUnInit();
-    }
 }
 
 ThemeWindow* ThemeWindow::From(HWND window)
@@ -235,20 +205,12 @@ void ThemeWindow::Detach()
 {
     if (window_ != nullptr && From(window_) == this) {
         EnumChildWindows(window_, [](HWND control, LPARAM) -> BOOL {
-            RemovePropW(control, kDisabledIconProperty);
-            RemoveWindowSubclass(control, ControlProcedure, kSubclassId);
-            if (IsClass(control, L"ComboBox")) {
-                COMBOBOXINFO info{sizeof(info)};
-                if (GetComboBoxInfo(control, &info)) {
-                    RemoveWindowSubclass(info.hwndList, ControlProcedure, kSubclassId);
-                }
-            }
+            RemoveWindowSubclass(control, ColorProcedure, kColorSubclassId);
             return TRUE;
         }, 0);
         RemovePropW(window_, kThemeProperty);
     }
     window_ = nullptr;
-    hoverControl_ = nullptr;
 }
 
 bool ThemeWindow::AttachControl(HWND control)
@@ -258,33 +220,21 @@ bool ThemeWindow::AttachControl(HWND control)
     if (!combo && !edit && !IsClass(control, L"Button") && !IsClass(control, L"ComboLBox")) {
         return true;
     }
-    if (!SetWindowSubclass(control, ControlProcedure, kSubclassId, reinterpret_cast<DWORD_PTR>(this))) {
-        return false;
-    }
-    const bool nativeScroll = IsRichEdit(control) || IsClass(control, L"ComboLBox") ||
-        (edit && (GetWindowLongPtrW(control, GWL_STYLE) & ES_MULTILINE) != 0);
-    const wchar_t* scrollTheme = colors_.dark ? L"DarkMode_Explorer" : L"Explorer";
-    SetWindowTheme(control, nativeScroll ? scrollTheme : L"", nativeScroll ? nullptr : L"");
-    const LONG_PTR extended = GetWindowLongPtrW(control, GWL_EXSTYLE);
-    if ((extended & WS_EX_CLIENTEDGE) != 0) {
-        SetWindowLongPtrW(control, GWL_EXSTYLE, extended & ~static_cast<LONG_PTR>(WS_EX_CLIENTEDGE));
-        SetWindowLongPtrW(control, GWL_STYLE, GetWindowLongPtrW(control, GWL_STYLE) | WS_BORDER);
-        SetWindowPos(control, nullptr, 0, 0, 0, 0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-    }
+    const wchar_t* visualStyle = colors_.dark
+        ? combo ? L"DarkMode_CFD" : L"DarkMode_Explorer"
+        : L"Explorer";
+    SetWindowTheme(control, visualStyle, nullptr);
     if (IsRichEdit(control)) {
         SendMessageW(control, EM_SETBKGNDCOLOR, 0, colors_.logBackground);
     }
     if (combo) {
-        SendMessageW(control, CB_SETITEMHEIGHT, static_cast<WPARAM>(-1), Scale(control, 18));
-        SendMessageW(control, CB_SETITEMHEIGHT, 0, Scale(control, 22));
+        // Forward the native list's color query without intercepting any painting.
+        if (!SetWindowSubclass(control, ColorProcedure, kColorSubclassId, reinterpret_cast<DWORD_PTR>(this))) {
+            return false;
+        }
         COMBOBOXINFO info{sizeof(info)};
         if (GetComboBoxInfo(control, &info) && info.hwndList != nullptr) {
-            if (!SetWindowSubclass(info.hwndList, ControlProcedure, kSubclassId,
-                reinterpret_cast<DWORD_PTR>(this))) {
-                return false;
-            }
-            SetWindowTheme(info.hwndList, scrollTheme, nullptr);
+            SetWindowTheme(info.hwndList, colors_.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
         }
     }
     return true;
@@ -354,116 +304,8 @@ void ThemeWindow::ApplyOwned(bool dark)
     }
 }
 
-void ThemeWindow::PaintControl(HWND control, HDC device)
-{
-    RECT bounds{};
-    GetClientRect(control, &bounds);
-    BufferedControlPaint paint(device, bounds, bufferedPaint_);
-    device = paint.device;
-    SavedDc saved(device);
-    const bool disabled = !IsWindowEnabled(control);
-    const bool focused = GetFocus() == control;
-    SelectObject(device, WindowFont(control, font_));
-    SetBkMode(device, TRANSPARENT);
-    SetTextColor(device, disabled ? colors_.disabled : colors_.text);
-    std::wstring text;
-    if (IsClass(control, L"Button")) {
-        const auto state = SendMessageW(control, BM_GETSTATE, 0, 0);
-        const bool hot = hoverControl_ == control && !disabled;
-        const auto type = GetWindowLongPtrW(control, GWL_STYLE) & BS_TYPEMASK;
-        const bool checkbox = type == BS_AUTOCHECKBOX || type == BS_CHECKBOX;
-        if (checkbox) {
-            Fill(device, bounds, colors_.window);
-            const LONG side = Scale(control, 13);
-            RECT box{bounds.left + Scale(control, 1), bounds.top +
-                (bounds.bottom - bounds.top - side) / 2, 0, 0};
-            box.right = box.left + side;
-            box.bottom = box.top + side;
-            const bool checked = SendMessageW(control, BM_GETCHECK, 0, 0) == BST_CHECKED;
-            Fill(device, box, checked && !disabled ? colors_.selection
-                : (state & BST_PUSHED) != 0 ? colors_.pressed : hot ? colors_.hot : colors_.surface);
-            Frame(device, box, disabled ? colors_.disabled : colors_.border);
-            if (checked) {
-                SelectObject(device, GetStockObject(DC_PEN));
-                SetDCPenColor(device, disabled ? colors_.disabled : colors_.selectionText);
-                for (int offset = 0; offset < (std::max)(1, Scale(control, 2)); ++offset) {
-                    POINT tick[] = {
-                        {box.left + Scale(control, 3), box.top + Scale(control, 6) + offset},
-                        {box.left + Scale(control, 5), box.top + Scale(control, 9) + offset},
-                        {box.left + Scale(control, 10), box.top + Scale(control, 3) + offset}};
-                    Polyline(device, tick, static_cast<int>(std::size(tick)));
-                }
-            }
-            bounds.left = box.right + Scale(control, 5);
-        } else {
-            Fill(device, bounds, (state & BST_PUSHED) != 0 ? colors_.pressed
-                : hot ? colors_.hot : colors_.button);
-            Frame(device, bounds, focused || type == BS_DEFPUSHBUTTON
-                ? colors_.selection : colors_.border);
-        }
-        if (!checkbox && (GetWindowLongPtrW(control, GWL_STYLE) & BS_ICON) != 0) {
-            auto icon = disabled
-                ? reinterpret_cast<HICON>(GetPropW(control, kDisabledIconProperty)) : nullptr;
-            if (icon == nullptr) {
-                icon = reinterpret_cast<HICON>(SendMessageW(control, BM_GETIMAGE, IMAGE_ICON, 0));
-            }
-            const int side = Scale(control, 20);
-            DrawIconEx(device, (static_cast<int>(bounds.right) - side) / 2,
-                (static_cast<int>(bounds.bottom) - side) / 2, icon, side, side, 0, nullptr, DI_NORMAL);
-        } else {
-            const int length = GetWindowTextLengthW(control);
-            text.resize(static_cast<size_t>(length) + 1);
-            text.resize(static_cast<size_t>(GetWindowTextW(control, text.data(), length + 1)));
-            DrawTextW(device, text.c_str(), static_cast<int>(text.size()), &bounds,
-                (checkbox ? DT_LEFT : DT_CENTER) | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
-                    ((SendMessageW(control, WM_QUERYUISTATE, 0, 0) & UISF_HIDEACCEL) != 0 ? DT_HIDEPREFIX : 0));
-        }
-    } else {
-        Fill(device, bounds, colors_.surface);
-        Frame(device, bounds, focused ? colors_.selection : colors_.border);
-        RECT arrow = bounds;
-        arrow.left = (std::max)(LONG{0}, bounds.right - Scale(control, 22));
-        Arrow(device, arrow, disabled ? colors_.disabled : colors_.text, true, Scale(control, 4));
-        text = ComboText(control, static_cast<UINT>(SendMessageW(control, CB_GETCURSEL, 0, 0)));
-        bounds.left += Scale(control, 5);
-        bounds.right = arrow.left;
-        DrawTextW(device, text.c_str(), static_cast<int>(text.size()), &bounds,
-            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-    }
-    if (focused && !disabled &&
-        (SendMessageW(control, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS) == 0) {
-        GetClientRect(control, &bounds);
-        InflateRect(&bounds, -Scale(control, 3), -Scale(control, 3));
-        DrawFocusRect(device, &bounds);
-    }
-}
-
-void ThemeWindow::PaintFrame(HWND control)
-{
-    if (IsClass(control, L"Button") || IsClass(control, L"ComboBox")) {
-        return;
-    }
-    const HDC device = GetWindowDC(control);
-    if (device == nullptr) {
-        return;
-    }
-    {
-        SavedDc saved(device);
-        RECT window{};
-        GetWindowRect(control, &window);
-        const RECT bounds{0, 0, window.right - window.left, window.bottom - window.top};
-        // Native scroll bars own their painting, including updates outside WM_NCPAINT.
-        Frame(device, bounds, GetFocus() == control ? colors_.selection : colors_.border);
-    }
-    ReleaseDC(control, device);
-}
-
 void ThemeWindow::MeasureItem(MEASUREITEMSTRUCT& item)
 {
-    if (item.CtlType == ODT_COMBOBOX) {
-        item.itemHeight = static_cast<UINT>(Scale(window_, 22));
-        return;
-    }
     const auto* text = MenuText(item.itemData);
     HDC device = GetDC(window_);
     SIZE size{};
@@ -482,21 +324,15 @@ void ThemeWindow::DrawItem(const DRAWITEMSTRUCT& item)
     SavedDc saved(item.hDC);
     const bool disabled = (item.itemState & (ODS_DISABLED | ODS_GRAYED)) != 0;
     const bool selected = (item.itemState & ODS_SELECTED) != 0;
-    const bool edit = (item.itemState & ODS_COMBOBOXEDIT) != 0;
-    const bool highlighted = selected && !edit;
-    Fill(item.hDC, item.rcItem, highlighted ? colors_.selection
-        : item.CtlType == ODT_MENU ? colors_.window : colors_.surface);
-    SetTextColor(item.hDC, disabled ? colors_.disabled
-        : highlighted ? colors_.selectionText : colors_.text);
+    Fill(item.hDC, item.rcItem, selected ? colors_.selection : colors_.window);
+    SetTextColor(item.hDC, disabled ? colors_.disabled : selected ? colors_.selectionText : colors_.text);
     SetBkMode(item.hDC, TRANSPARENT);
-    SelectObject(item.hDC, WindowFont(item.CtlType == ODT_MENU ? window_ : item.hwndItem, font_));
-    const auto text = item.CtlType == ODT_MENU
-        ? std::wstring(MenuText(item.itemData))
-        : ComboText(item.hwndItem, item.itemID);
+    SelectObject(item.hDC, WindowFont(window_, font_));
+    const auto* text = MenuText(item.itemData);
     RECT bounds = item.rcItem;
-    bounds.left += Scale(window_, item.CtlType == ODT_MENU ? 14 : 5);
+    bounds.left += Scale(window_, 14);
     bounds.right -= Scale(window_, 5);
-    DrawTextW(item.hDC, text.c_str(), static_cast<int>(text.size()), &bounds,
+    DrawTextW(item.hDC, text, static_cast<int>(std::wcslen(text)), &bounds,
         DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     if ((item.itemState & ODS_FOCUS) != 0) {
         DrawFocusRect(item.hDC, &item.rcItem);
@@ -528,7 +364,7 @@ bool ThemeWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam, LRESULT& re
     }
     if (message == WM_MEASUREITEM) {
         auto& item = *reinterpret_cast<MEASUREITEMSTRUCT*>(lParam);
-        if ((item.CtlType == ODT_MENU && item.itemData != 0) || item.CtlType == ODT_COMBOBOX) {
+        if (item.CtlType == ODT_MENU && item.itemData != 0) {
             MeasureItem(item);
             result = TRUE;
             return true;
@@ -536,7 +372,7 @@ bool ThemeWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam, LRESULT& re
     }
     if (message == WM_DRAWITEM) {
         const auto& item = *reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
-        if ((item.CtlType == ODT_MENU && item.itemData != 0) || item.CtlType == ODT_COMBOBOX) {
+        if (item.CtlType == ODT_MENU && item.itemData != 0) {
             DrawItem(item);
             result = TRUE;
             return true;
@@ -545,81 +381,20 @@ bool ThemeWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam, LRESULT& re
     return false;
 }
 
-LRESULT CALLBACK ThemeWindow::ControlProcedure(HWND control, UINT message, WPARAM wParam,
+LRESULT CALLBACK ThemeWindow::ColorProcedure(HWND control, UINT message, WPARAM wParam,
     LPARAM lParam, UINT_PTR, DWORD_PTR parameter)
 {
-    auto* self = reinterpret_cast<ThemeWindow*>(parameter);
     if (message == WM_NCDESTROY) {
-        if (self->hoverControl_ == control) {
-            self->hoverControl_ = nullptr;
-        }
-        RemovePropW(control, kDisabledIconProperty);
-        RemoveWindowSubclass(control, ControlProcedure, kSubclassId);
+        RemoveWindowSubclass(control, ColorProcedure, kColorSubclassId);
         return DefSubclassProc(control, message, wParam, lParam);
     }
-    try {
-        const bool painted = IsClass(control, L"Button") || IsClass(control, L"ComboBox");
-        if (painted && message == WM_ERASEBKGND) {
-            // PaintControl supplies the background and foreground in one buffered update.
-            return TRUE;
-        }
-        if (painted && (message == WM_PAINT || message == WM_PRINTCLIENT)) {
-            if (message == WM_PRINTCLIENT) {
-                self->PaintControl(control, reinterpret_cast<HDC>(wParam));
-            } else {
-                PaintSession paint(control);
-                if (paint.device != nullptr) {
-                    self->PaintControl(control, paint.device);
-                }
-            }
-            return 0;
-        }
-        LRESULT color = 0;
-        if (message >= WM_CTLCOLORMSGBOX && message <= WM_CTLCOLORSTATIC &&
-            self->Handle(message, wParam, lParam, color)) {
-            return color;
-        }
-        bool hoverChanged = false;
-        if (painted && message == WM_MOUSEMOVE) {
-            RECT bounds{};
-            GetClientRect(control, &bounds);
-            const POINT point{static_cast<short>(LOWORD(lParam)), static_cast<short>(HIWORD(lParam))};
-            const HWND hovered = PtInRect(&bounds, point) ? control : nullptr;
-            if (self->hoverControl_ != hovered) {
-                const HWND previous = self->hoverControl_;
-                self->hoverControl_ = hovered;
-                if (IsWindow(previous)) {
-                    InvalidateRect(previous, nullptr, FALSE);
-                }
-                if (hovered != nullptr) {
-                    TRACKMOUSEEVENT track{sizeof(track), TME_LEAVE, control, 0};
-                    TrackMouseEvent(&track);
-                }
-                hoverChanged = true;
-            }
-        } else if (painted && (message == WM_MOUSELEAVE ||
-            (message == WM_ENABLE && wParam == FALSE)) && self->hoverControl_ == control) {
-            self->hoverControl_ = nullptr;
-            hoverChanged = true;
-        }
-        const auto result = DefSubclassProc(control, message, wParam, lParam);
-        if (message == WM_NCPAINT || message == WM_THEMECHANGED || message == WM_SIZE ||
-            message == WM_SETFOCUS || message == WM_KILLFOCUS) {
-            self->PaintFrame(control);
-        }
-        if (painted && (hoverChanged || message == WM_ENABLE ||
-            message == WM_SETFOCUS || message == WM_KILLFOCUS ||
-            message == WM_SETTEXT || message == WM_SETFONT || message == WM_UPDATEUISTATE ||
-            message == WM_LBUTTONDOWN || message == WM_LBUTTONUP || message == WM_KEYDOWN ||
-            message == WM_KEYUP || message == BM_SETIMAGE || message == BM_SETSTATE || message == BM_SETCHECK || message == BM_SETSTYLE ||
-            message == WM_CAPTURECHANGED || message == WM_CANCELMODE ||
-            message == CB_SETCURSEL || message == CB_SHOWDROPDOWN || message == CB_RESETCONTENT)) {
-            InvalidateRect(control, nullptr, FALSE);
-        }
+    auto* self = reinterpret_cast<ThemeWindow*>(parameter);
+    LRESULT result = 0;
+    if (message >= WM_CTLCOLORMSGBOX && message <= WM_CTLCOLORSTATIC &&
+        self->Handle(message, wParam, lParam, result)) {
         return result;
-    } catch (...) {
-        return DefSubclassProc(control, message, wParam, lParam);
     }
+    return DefSubclassProc(control, message, wParam, lParam);
 }
 
 } // namespace xtray
