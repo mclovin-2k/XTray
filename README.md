@@ -20,6 +20,21 @@ XTray's scope will not expand into a complex management tool to cover them.
 **XTray is intended only for advanced users who understand Xray-core well and
 can maintain their own Xray-core configurations.**
 
+## Portable use
+
+XTray is a single Windows x64 EXE that runs without installation or an extra
+runtime.
+
+Settings are stored in the `data` folder beside `XTray.exe`. For a portable setup,
+keep Xray and your configuration files inside the XTray folder and use relative
+paths. Move the whole folder, including `data`, to keep your settings.
+
+After moving the folder, open Settings from the new location and re-enable
+sign-in startup if you use it.
+
+For multiple independent instances, use separate folders and Xray configurations
+with different listening ports. Each copy manages one Xray process.
+
 ## Download
 
 - [Download XTray](https://github.com/mclovin-2k/XTray/releases): choose **XTray.exe** under **Assets**.
@@ -74,21 +89,6 @@ Windows sign-in, XTray shows its tray icon and starts Xray using the saved
 configuration. This setting applies only to your Windows account.
 
 Opening XTray manually shows the window and waits for you to click **Run**.
-
-## Portable use
-
-XTray is a single Windows x64 EXE that runs without installation or an extra
-runtime.
-
-Settings are stored in the `data` folder beside `XTray.exe`. For a portable setup,
-keep Xray and your configuration files inside the XTray folder and use relative
-paths. Move the whole folder, including `data`, to keep your settings.
-
-After moving the folder, open Settings from the new location and re-enable
-sign-in startup if you use it.
-
-For multiple independent instances, use separate folders and Xray configurations
-with different listening ports. Each copy manages one Xray process.
 
 ## Acknowledgements
 
