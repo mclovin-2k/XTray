@@ -28,9 +28,6 @@ can maintain their own Xray-core configurations.**
 The first XTray release has not been published yet. Official EXE downloads will
 appear on the Releases page.
 
-XTray is a single Windows x64 EXE that runs without installation or an extra
-runtime.
-
 ## Quick start
 
 1. Place `XTray.exe` in a folder where your Windows account can write files.
@@ -79,6 +76,9 @@ configuration. This setting applies only to your Windows account.
 Opening XTray manually shows the window and waits for you to click **Run**.
 
 ## Portable use
+
+XTray is a single Windows x64 EXE that runs without installation or an extra
+runtime.
 
 Settings are stored in the `data` folder beside `XTray.exe`. For a portable setup,
 keep Xray and your configuration files inside the XTray folder and use relative
