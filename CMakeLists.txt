@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 4.2)
 
 project(XTray VERSION 0.1.0 LANGUAGES CXX RC)
 configure_file(resources/version.rc.in "${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc" @ONLY)
+configure_file(resources/version.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/version.h" @ONLY)
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/xtray-version.txt" CONTENT "${PROJECT_VERSION}\n")
 
 if(NOT WIN32 OR NOT MSVC)

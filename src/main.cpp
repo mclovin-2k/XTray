@@ -3,6 +3,7 @@
 #include "tray.h"
 #include "svg_icons.h"
 #include "resource.h"
+#include "version.h"
 #include "theme_window.h"
 #include "log_view.h"
 #include "xray_process.h"
@@ -37,6 +38,8 @@ constexpr UINT kExitMessage = WM_APP + 43;
 constexpr DWORD kWindowStyle = WS_OVERLAPPEDWINDOW;
 enum ControlId { Run = 2001, Stop, Restart, SettingsButton, FileList, OpenFile,
     OpenFileDirectory, OpenDirectory, Filter, ClearLogs, ScrollToEnd, ShowGui, ExitApp };
+enum IconId { StoppedTrayIcon, RunningTrayIcon, StoppedStatusIcon, RunningStatusIcon,
+    SmallWindowIcon, LargeWindowIcon, IconCount };
 
 NOTIFYICONDATAW smokeTrayData{};
 bool smokeTrayAvailable = true;
@@ -299,14 +302,11 @@ public:
                 status += L"  PID " + std::to_wstring(pid);
             }
             SetWindowTextW(status_, status.c_str());
-            SetWindowTextW(window_, running ? Text(L"XTray — Running", L"XTray — 运行中") : Text(L"XTray — Stopped", L"XTray — 已停止"));
             EnableWindow(run_, state == ProcessState::Stopped);
             EnableWindow(stop_, state == ProcessState::Running);
             EnableWindow(restart_, state == ProcessState::Running);
-            const size_t offset = running ? 3 : 0;
-            SendMessageW(statusIcon_, STM_SETICON, reinterpret_cast<WPARAM>(icons_[offset + 2]), 0);
-            SendMessageW(window_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icons_[offset]));
-            SendMessageW(window_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icons_[offset + 1]));
+            SendMessageW(statusIcon_, STM_SETICON,
+                reinterpret_cast<WPARAM>(icons_[running ? RunningStatusIcon : StoppedStatusIcon]), 0);
             shownState_ = state;
             shownPid_ = pid;
             UpdateTray();
@@ -660,7 +660,7 @@ private:
             : running ? Text(L"Running", L"运行中") : Text(L"Stopped", L"已停止");
         const std::wstring tooltip = std::wstring(L"XTray — ") + status + L"\n" + root_.native();
         nextTrayAttempt_ = GetTickCount64() + 2000;
-        if (tray_.Update(window_, icons_[running ? 3 : 0], tooltip)) {
+        if (tray_.Update(window_, icons_[running ? RunningTrayIcon : StoppedTrayIcon], tooltip)) {
             trayFailureReported_ = false;
         } else {
             if (!trayFailureReported_) {
@@ -766,9 +766,33 @@ private:
         updatingUi_ = false;
     }
 
+    bool SmokeTestWindowBranding(bool running)
+    {
+        const bool title = WindowText(window_) == kWindowTitle;
+        const auto small = reinterpret_cast<HICON>(SendMessageW(window_, WM_GETICON, ICON_SMALL, 0));
+        const auto large = reinterpret_cast<HICON>(SendMessageW(window_, WM_GETICON, ICON_BIG, 0));
+        const bool smallIcon = small == icons_[SmallWindowIcon] &&
+            IconMatches(small, kApplicationIconColor, Scale(16));
+        const bool largeIcon = large == icons_[LargeWindowIcon] &&
+            IconMatches(large, kApplicationIconColor, Scale(32));
+        const bool statusIcon = reinterpret_cast<HICON>(SendMessageW(statusIcon_, STM_GETICON, 0, 0)) ==
+            icons_[running ? RunningStatusIcon : StoppedStatusIcon];
+        const bool trayIcon = smokeTrayData.hIcon == icons_[running ? RunningTrayIcon : StoppedTrayIcon];
+        if (!title || !smallIcon || !largeIcon || !statusIcon || !trayIcon) {
+            std::fwprintf(stderr,
+                L"Smoke: fixed window branding failed (title=%d, small=%d, large=%d, status=%d, tray=%d).\n",
+                title ? 1 : 0, smallIcon ? 1 : 0, largeIcon ? 1 : 0, statusIcon ? 1 : 0, trayIcon ? 1 : 0);
+            return false;
+        }
+        return true;
+    }
+
     bool SmokeTestIconResources()
     {
-        std::fwprintf(stderr, L"Smoke: embedded yellow EXE icon and SVG tint resources.\n");
+        std::fwprintf(stderr, L"Smoke: fixed version title, yellow window icons, and SVG resources.\n");
+        if (!SmokeTestWindowBranding(false)) {
+            return false;
+        }
         for (const int side : {16, 20, 24, 32, 48, 256}) {
             IconBatch<1> loaded;
             loaded.values[0] = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),
@@ -1338,7 +1362,7 @@ private:
         settingsValid_ = false;
         StartFromLogon();
         if (IsWindowVisible(window_) || !tray_.IsAdded() ||
-            process_.State() != ProcessState::Stopped || smokeTrayData.hIcon != icons_[0]) {
+            process_.State() != ProcessState::Stopped || smokeTrayData.hIcon != icons_[StoppedTrayIcon]) {
             return false;
         }
         bool hasError = false;
@@ -1363,7 +1387,7 @@ private:
                 }
             }
             return false;
-        }) || IsWindowVisible(window_) || smokeTrayData.hIcon != icons_[0]) {
+        }) || IsWindowVisible(window_) || smokeTrayData.hIcon != icons_[StoppedTrayIcon]) {
             return false;
         }
         logonStarted_ = false;
@@ -1379,7 +1403,7 @@ private:
                 }
             }
             return false;
-        }) || IsWindowVisible(window_) || smokeTrayData.hIcon != icons_[3]) {
+        }) || IsWindowVisible(window_) || smokeTrayData.hIcon != icons_[RunningTrayIcon]) {
             return false;
         }
         const DWORD pid = process_.Pid();
@@ -1410,7 +1434,7 @@ private:
     bool SmokeTestTray()
     {
         std::fwprintf(stderr, L"Smoke: tray registration and stopped menu state.\n");
-        if (!tray_.IsAdded() || smokeTrayData.hIcon != icons_[0] ||
+        if (!tray_.IsAdded() || smokeTrayData.hIcon != icons_[StoppedTrayIcon] ||
             std::wstring_view(smokeTrayData.szTip).find(L"已停止") == std::wstring_view::npos) {
             return false;
         }
@@ -1424,7 +1448,7 @@ private:
             DestroyMenu(menu);
             return valid;
         };
-        if (!checkMenu(false)) {
+        if (!checkMenu(false) || !SmokeTestWindowBranding(false)) {
             return false;
         }
         const auto original = settings_;
@@ -1452,14 +1476,14 @@ private:
         std::fwprintf(stderr, L"Smoke: tray run and restart.\n");
         TrayCommand(Run);
         if (!wait([&] { return hasOutput(L"stream 1"); }) || !checkMenu(true) ||
-            smokeTrayData.hIcon != icons_[3]) {
+            smokeTrayData.hIcon != icons_[RunningTrayIcon] || !SmokeTestWindowBranding(true)) {
             return false;
         }
         const DWORD themePid = process_.Pid();
         settings_.theme = ThemeMode::Dark;
         UpdateTheme(false);
         if (!wait([&] { return hasOutput(L"stream 2"); }) || process_.Pid() != themePid ||
-            !theme_.Colors().dark) {
+            !theme_.Colors().dark || !SmokeTestWindowBranding(true)) {
             return false;
         }
         settings_.theme = original.theme;
@@ -1489,7 +1513,7 @@ private:
             return false;
         }
         TaskbarCreated();
-        if (!tray_.IsAdded() || smokeTrayData.hIcon != icons_[3]) {
+        if (!tray_.IsAdded() || smokeTrayData.hIcon != icons_[RunningTrayIcon] || !SmokeTestWindowBranding(true)) {
             return false;
         }
         std::fwprintf(stderr, L"Smoke: tray outage recovery and language refresh.\n");
@@ -1513,7 +1537,8 @@ private:
         ApplyLanguage(Language::English);
         ApplyUiText();
         Refresh();
-        if (std::wstring_view(smokeTrayData.szTip).find(L"Running") == std::wstring_view::npos) {
+        if (std::wstring_view(smokeTrayData.szTip).find(L"Running") == std::wstring_view::npos ||
+            !SmokeTestWindowBranding(true)) {
             return false;
         }
         EnableWindow(window_, FALSE);
@@ -1528,13 +1553,13 @@ private:
         std::fwprintf(stderr, L"Smoke: tray stop and failed run.\n");
         TrayCommand(Stop);
         if (!wait([&] { return process_.State() == ProcessState::Stopped; }) ||
-            smokeTrayData.hIcon != icons_[0] || !checkMenu(false)) {
+            smokeTrayData.hIcon != icons_[StoppedTrayIcon] || !checkMenu(false) || !SmokeTestWindowBranding(false)) {
             return false;
         }
         settings_ = original;
         TrayCommand(Run);
         if (!wait([&] { return process_.State() == ProcessState::Stopped; }) ||
-            smokeTrayData.hIcon != icons_[0]) {
+            smokeTrayData.hIcon != icons_[StoppedTrayIcon] || !SmokeTestWindowBranding(false)) {
             return false;
         }
         settings_.executable = (root_ / L"XTray.Tests.exe").native();
@@ -1594,22 +1619,23 @@ private:
         UpdateTooltips();
 
         SvgIconRenderer renderer;
-        IconBatch<6> next;
-        for (int state = 0; state < 2; ++state) {
-            const auto index = static_cast<size_t>(state * 3);
+        IconBatch<IconCount> next;
+        for (size_t state = 0; state < 2; ++state) {
             const COLORREF color = state != 0 ? kRunningIconColor : kStoppedIconColor;
-            next.values[index] = renderer.CreateIcon(SvgIcon::Application, Scale(16), color);
-            next.values[index + 1] = renderer.CreateIcon(SvgIcon::Application, Scale(32), color);
-            next.values[index + 2] = renderer.CreateIcon(SvgIcon::Application, Scale(24), color);
+            next.values[StoppedTrayIcon + state] = renderer.CreateIcon(SvgIcon::Application, Scale(16), color);
+            next.values[StoppedStatusIcon + state] = renderer.CreateIcon(SvgIcon::Application, Scale(24), color);
         }
+        next.values[SmallWindowIcon] = renderer.CreateIcon(SvgIcon::Application, Scale(16), kApplicationIconColor);
+        next.values[LargeWindowIcon] = renderer.CreateIcon(SvgIcon::Application, Scale(32), kApplicationIconColor);
         UpdateToolIcons(renderer);
-        IconBatch<6> old;
+        IconBatch<IconCount> old;
         old.values = icons_;
         icons_ = next.Release();
-        const size_t offset = process_.Pid() != 0 ? 3 : 0;
-        SendMessageW(statusIcon_, STM_SETICON, reinterpret_cast<WPARAM>(icons_[offset + 2]), 0);
-        SendMessageW(window_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icons_[offset]));
-        SendMessageW(window_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icons_[offset + 1]));
+        const bool running = process_.Pid() != 0;
+        SendMessageW(statusIcon_, STM_SETICON,
+            reinterpret_cast<WPARAM>(icons_[running ? RunningStatusIcon : StoppedStatusIcon]), 0);
+        SendMessageW(window_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icons_[SmallWindowIcon]));
+        SendMessageW(window_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icons_[LargeWindowIcon]));
         if (ready_) {
             theme_.Apply(theme_.Colors().dark, true);
             shownPid_ = MAXDWORD;
@@ -1689,7 +1715,7 @@ private:
     HWND filterLabel_ = nullptr, filter_ = nullptr, scrollToEnd_ = nullptr, clearLogs_ = nullptr;
     HWND logWindow_ = nullptr, tooltip_ = nullptr;
     HFONT font_ = nullptr, logFont_ = nullptr;
-    std::array<HICON, 6> icons_{};
+    std::array<HICON, IconCount> icons_{};
     std::array<HICON, 4> toolIcons_{};
     UINT toolIconDpi_ = 0;
     COLORREF toolIconColor_ = CLR_INVALID, toolDisabledColor_ = CLR_INVALID;
@@ -1877,7 +1903,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
         LONG height = bounds.bottom - bounds.top;
         width = (std::min)(width, workArea.right - workArea.left);
         height = (std::min)(height, workArea.bottom - workArea.top);
-        const HWND window = CreateWindowExW(0, className.c_str(), L"XTray", kWindowStyle,
+        const HWND window = CreateWindowExW(0, className.c_str(), kWindowTitle, kWindowStyle,
             workArea.left, workArea.top, width, height, nullptr, nullptr, instance, &app);
         if (window == nullptr) {
             if (app.startupError) {

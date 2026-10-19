@@ -2,7 +2,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="256" height="256">
   <title>XTray</title>
   <g id="foreground" fill="#ffffff">
-    <g transform="translate(9 1) scale(0.046)">
+    <g transform="translate(6.7 1) scale(0.0506)">
       <polygon points="530,530 900,530 650,650 530,1000"/>
       <polygon points="470,530 470,900 350,650 0,530"/>
       <polygon points="530,470 530,100 650,350 1000,470"/>

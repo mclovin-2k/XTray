@@ -8,7 +8,7 @@ Preparing **v0.1.0**. Xray process control, logs, settings, tray integration, di
 
 The user confirmed a successful Build for commit 9b8c121, covering the native tests, release simulations, executable version, and artifact checks. Desktop feedback confirmed version metadata, basic startup, startup registration after directory moves/copies, instance isolation, normal/forced-exit cleanup, and usable Chinese/English light/dark layouts at the minimum window size.
 
-The tested desktop environment is Windows 11 IoT Enterprise LTSC 24H2 (OS build 26100.9711), at 175% scaling and 3840 × 2160 resolution. Subsequent commits change documentation only. See the [release checklist](docs/release-checklist.md) for the recorded scope and manual scenarios not individually verified in this round. The first version tag and actual Release publication await maintainer confirmation.
+The previously tested desktop environment is Windows 11 IoT Enterprise LTSC 24H2 (OS build 26100.9711), at 175% scaling and 3840 × 2160 resolution. The current update adds a fixed versioned window title, yellow title-bar/taskbar icons, and a larger central Xray mark; its cloud build and desktop checks are pending. See the [release checklist](docs/release-checklist.md) for the recorded scope and manual scenarios not individually verified in this round. Publication is deferred while these UI details are completed and verified.
 
 ## Project documents
 
@@ -67,7 +67,7 @@ If Xray itself is configured to write log files, those files remain under Xray's
 
 ## Tray and directory instances
 
-Manual launch displays the main window and a tray icon without starting Xray. The tray, GUI, title bar, and taskbar share the new XTray mark: green while running and red while stopped. The tooltip includes the instance directory to help distinguish portable copies.
+Manual launch displays the main window and a tray icon without starting Xray. The window title is fixed as XTray [0.1.0], using the build's actual version. The EXE, title bar, and taskbar application icons stay yellow; the dedicated GUI status icon and system tray icon are green while running and red while stopped. The tray tooltip includes the instance directory to help distinguish portable copies.
 
 - Close the main window to hide it while Xray and log capture continue.
 - Click the tray icon once to show the existing window at its previous position.
@@ -95,7 +95,7 @@ Settings and startup changes are committed together during Save. Ordinary failur
 
 ## Icon resources
 
-The XTray mark retains the supplied Xray four-point shape with an added tray base. The editable sources in `resources/icons/` have a transparent background and a white foreground; runtime tinting changes only the fill or stroke color. The EXE file icon is yellow, while runtime state icons are green/red. The log tools use a trash can and the approved short-lines/down-arrow/end-line drawing.
+The XTray mark retains the supplied Xray four-point shape with an added tray base. The central Xray mark is now 10% larger; the canvas dimensions and tray path are unchanged. The editable sources in `resources/icons/` have a transparent background and a white foreground; runtime tinting changes only the fill or stroke color. The EXE file icon is yellow, while runtime state icons are green/red. The log tools use a trash can and the approved short-lines/down-arrow/end-line drawing.
 
 Windows SDK Direct2D SVG rendering supplies DPI-sized pixel icons to the native Windows icon APIs. A short-lived WARP device renders only when sizes or colors change; painting reuses the resulting handles. No external SVG file, graphics package, font icon library, or runtime installer is needed.
 

@@ -1,0 +1,7 @@
+#pragma once
+
+namespace xtray {
+
+inline constexpr wchar_t kWindowTitle[] = L"XTray [@PROJECT_VERSION@]";
+
+} // namespace xtray
