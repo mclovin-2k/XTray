@@ -1182,7 +1182,7 @@ private:
             }
             for (const auto control : {run_, clearLogs_, scrollToEnd_}) {
                 if (!SmokeTestControlHover(control)) {
-                    return fail(L"button hover transitions without repeated repainting");
+                    return fail(L"button hover appearance transitions");
                 }
             }
             SendMessageW(run_, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(canvas.device), PRF_CLIENT);

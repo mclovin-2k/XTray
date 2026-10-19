@@ -136,21 +136,72 @@ void SetButtonIcons(HWND control, HICON normal, HICON disabled)
 
 bool SmokeTestControlHover(HWND control)
 {
-    SendMessageW(control, WM_MOUSELEAVE, 0, 0);
-    ValidateRect(control, nullptr);
-    SendMessageW(control, WM_MOUSEMOVE, 0, MAKELPARAM(6, 6));
-    const bool entered = GetUpdateRect(control, nullptr, FALSE) != FALSE;
-    ValidateRect(control, nullptr);
-    SendMessageW(control, WM_MOUSEMOVE, 0, MAKELPARAM(7, 6));
-    const bool moved = GetUpdateRect(control, nullptr, FALSE) == FALSE;
-    SendMessageW(control, WM_MOUSELEAVE, 0, 0);
-    const bool left = GetUpdateRect(control, nullptr, FALSE) != FALSE;
-    ValidateRect(control, nullptr);
-    if (!entered || !moved || !left) {
-        std::fwprintf(stderr, L"Smoke: control hover failed (id=%d, enter=%d, move=%d, leave=%d).\n",
-            GetDlgCtrlID(control), entered, moved, left);
+    const auto* theme = ThemeWindow::From(GetParent(control));
+    RECT bounds{};
+    if (theme == nullptr || !GetClientRect(control, &bounds) ||
+        bounds.right <= 0 || bounds.bottom <= 0) {
+        std::fwprintf(stderr, L"Smoke: invalid hover test control (id=%d).\n", GetDlgCtrlID(control));
+        return false;
     }
-    return entered && moved && left;
+    struct Canvas {
+        HDC device = CreateCompatibleDC(nullptr);
+        HBITMAP bitmap = nullptr;
+        HGDIOBJ previous = nullptr;
+        ~Canvas()
+        {
+            if (previous != nullptr) { SelectObject(device, previous); }
+            if (bitmap != nullptr) { DeleteObject(bitmap); }
+            if (device != nullptr) { DeleteDC(device); }
+        }
+    } canvas;
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = bounds.right;
+    info.bmiHeader.biHeight = -bounds.bottom;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    void* pixels = nullptr;
+    canvas.bitmap = CreateDIBSection(canvas.device, &info, DIB_RGB_COLORS, &pixels, nullptr, 0);
+    if (canvas.device == nullptr || canvas.bitmap == nullptr) {
+        std::fwprintf(stderr, L"Smoke: cannot create hover test canvas.\n");
+        return false;
+    }
+    canvas.previous = SelectObject(canvas.device, canvas.bitmap);
+    if (canvas.previous == nullptr || canvas.previous == HGDI_ERROR) {
+        canvas.previous = nullptr;
+        std::fwprintf(stderr, L"Smoke: cannot select hover test bitmap.\n");
+        return false;
+    }
+    const auto& colors = theme->Colors();
+    const auto type = GetWindowLongPtrW(control, GWL_STYLE) & BS_TYPEMASK;
+    const bool checkbox = type == BS_AUTOCHECKBOX || type == BS_CHECKBOX;
+    const bool checked = checkbox && SendMessageW(control, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    const bool enabled = IsWindowEnabled(control) != FALSE;
+    const COLORREF normal = checkbox
+        ? checked && enabled ? colors.selection : colors.surface : colors.button;
+    const COLORREF hot = !enabled || checked ? normal : colors.hot;
+    const POINT sample = checkbox
+        ? POINT{Scale(control, 4), (bounds.bottom - Scale(control, 13)) / 2 + Scale(control, 2)}
+        : POINT{Scale(control, 2), Scale(control, 2)};
+    const auto color = [&] {
+        SetPixel(canvas.device, sample.x, sample.y, RGB(255, 0, 255));
+        SendMessageW(control, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(canvas.device), PRF_CLIENT);
+        return GetPixel(canvas.device, sample.x, sample.y);
+    };
+    SendMessageW(control, WM_MOUSELEAVE, 0, 0);
+    const COLORREF before = color();
+    SendMessageW(control, WM_MOUSEMOVE, 0, MAKELPARAM(Scale(control, 6), Scale(control, 6)));
+    const COLORREF entered = color();
+    SendMessageW(control, WM_MOUSEMOVE, 0, MAKELPARAM(Scale(control, 7), Scale(control, 6)));
+    const COLORREF moved = color();
+    SendMessageW(control, WM_MOUSELEAVE, 0, 0);
+    const COLORREF left = color();
+    const bool passed = before == normal && entered == hot && moved == hot && left == normal;
+    if (!passed) {
+        std::fwprintf(stderr, L"Smoke: control hover failed (id=%d, colors=%06lX/%06lX/%06lX/%06lX, expected=%06lX/%06lX).\n",
+            GetDlgCtrlID(control), before, entered, moved, left, normal, hot);
+    }
+    return passed;
 }
 
 ThemeWindow::ThemeWindow() : bufferedPaint_(SUCCEEDED(BufferedPaintInit())) {}
