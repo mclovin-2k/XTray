@@ -1039,8 +1039,46 @@ private:
         SendMessageW(logWindow_, WM_VSCROLL, SB_TOP, 0);
         UINT wheelLines = 0;
         if (SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &wheelLines, 0) && wheelLines != 0) {
-            SendMessageW(logWindow_, WM_MOUSEWHEEL, MAKEWPARAM(0, -WHEEL_DELTA), 0);
-            if (SendMessageW(logWindow_, EM_GETFIRSTVISIBLELINE, 0, 0) <= topLine) {
+            POINT wheelPoint{Scale(6), Scale(6)};
+            if (!ClientToScreen(logWindow_, &wheelPoint)) {
+                return fail(L"map log mouse wheel coordinates");
+            }
+            POINT previousScroll{};
+            SendMessageW(logWindow_, EM_GETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&previousScroll));
+            ULONGLONG lastChange = GetTickCount64();
+            const ULONGLONG deadline = lastChange + 1500;
+            SendMessageW(logWindow_, WM_MOUSEWHEEL, MAKEWPARAM(0, -WHEEL_DELTA),
+                MAKELPARAM(wheelPoint.x, wheelPoint.y));
+            bool settled = false;
+            // Rich Edit completes wheel scrolling through queued messages and timers.
+            do {
+                MSG message{};
+                while (GetTickCount64() < deadline &&
+                    PeekMessageW(&message, logWindow_, 0, 0, PM_REMOVE)) {
+                    if (message.message == WM_QUIT) {
+                        PostQuitMessage(static_cast<int>(message.wParam));
+                        return fail(L"window quit during log wheel scrolling");
+                    }
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+                POINT current{};
+                SendMessageW(logWindow_, EM_GETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&current));
+                const ULONGLONG now = GetTickCount64();
+                if (current.x != previousScroll.x || current.y != previousScroll.y) {
+                    previousScroll = current;
+                    lastChange = now;
+                }
+                if (SendMessageW(logWindow_, EM_GETFIRSTVISIBLELINE, 0, 0) > topLine &&
+                    now - lastChange >= 100) {
+                    settled = true;
+                    break;
+                }
+                Sleep(5);
+            } while (GetTickCount64() < deadline);
+            if (!settled) {
+                std::fwprintf(stderr, L"Smoke: wheel scrolling did not settle (x=%ld, y=%ld, lines=%u).\n",
+                    previousScroll.x, previousScroll.y, wheelLines);
                 return fail(L"native log mouse wheel scrolling");
             }
         }
