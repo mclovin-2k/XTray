@@ -29,8 +29,7 @@ The first XTray release has not been published yet. Official EXE downloads will
 appear on the Releases page.
 
 XTray is a single Windows x64 EXE that runs without installation or an extra
-runtime. Tested on Windows 11 IoT Enterprise LTSC 24H2; other Windows versions
-have not been verified.
+runtime.
 
 ## Quick start
 
