@@ -56,30 +56,27 @@ function Assert-TagCommit {
 }
 
 function Get-TaggedRelease {
-    # A failed lookup must never be interpreted as permission to create a release.
-    $taskResponse = (Invoke-GitHub @('api', '--paginate', '--slurp', "repos/$Repository/releases?per_page=100")) -join "`n"
-    $taskPages = $taskResponse | ConvertFrom-Json -AsHashtable -NoEnumerate
-    $taskMatchingReleases = @(
-        foreach ($taskPage in $taskPages) {
-            foreach ($taskRelease in $taskPage) {
-                if ($taskRelease.tag_name -ceq $Tag) {
-                    $taskRelease
-                }
-            }
-        }
-    )
-    if ($taskMatchingReleases.Count -gt 1) {
-        throw 'More than one release uses this version tag.'
+    # Drafts use a pending tag; the REST list may expose an untagged placeholder.
+    # GraphQL resolves that pending tag, as the GitHub CLI does for draft uploads.
+    $taskRepositoryParts = $Repository.Split('/')
+    $taskQuery = 'query($owner: String!, $name: String!, $tag: String!) { repository(owner: $owner, name: $name) { release(tagName: $tag) { isDraft } } }'
+    $taskResponse = (Invoke-GitHub @(
+        'api', 'graphql', '-f', "query=$taskQuery", '-f', "owner=$($taskRepositoryParts[0])",
+        '-f', "name=$($taskRepositoryParts[1])", '-f', "tag=$Tag"
+    )) -join "`n"
+    $taskResult = $taskResponse | ConvertFrom-Json -AsHashtable
+    if ($taskResult.Contains('errors') -or $null -eq $taskResult.data.repository) {
+        throw 'The release query failed; no release may be created or changed.'
     }
-    if ($taskMatchingReleases.Count -eq 1) {
-        return $taskMatchingReleases[0]
-    }
-    return $null
+    return $taskResult.data.repository.release
 }
 
 function Assert-Draft {
     param($Release)
-    if ($null -eq $Release -or $Release.draft -isnot [bool] -or -not $Release.draft) {
+    if ($null -eq $Release) {
+        throw "The release for '$Tag' could not be found; the draft remains unpublished."
+    }
+    if ($Release.isDraft -isnot [bool] -or -not $Release.isDraft) {
         throw 'Only an unpublished draft may be changed; published versions are never overwritten.'
     }
 }
