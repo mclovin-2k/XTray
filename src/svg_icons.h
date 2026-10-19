@@ -7,7 +7,7 @@
 
 namespace xtray {
 
-enum class SvgIcon { Application, ClearLogs, ScrollToEnd };
+enum class SvgIcon { Application, ClearLogs, ScrollToEnd, TrayApplication };
 
 inline constexpr COLORREF kApplicationIconColor = RGB(234, 179, 8);
 inline constexpr COLORREF kRunningIconColor = RGB(34, 197, 94);

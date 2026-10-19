@@ -61,6 +61,9 @@ struct SvgIconRenderer::Impl {
 
     ID2D1SvgDocument* Document(SvgIcon icon)
     {
+        if (icon == SvgIcon::TrayApplication) {
+            icon = SvgIcon::Application;
+        }
         const auto index = static_cast<size_t>(icon);
         constexpr std::array<int, 3> resources{IDR_SVG_XTRAY, IDR_SVG_CLEAR_LOGS, IDR_SVG_SCROLL_TO_END};
         if (index >= resources.size()) {
@@ -120,9 +123,16 @@ IconPixels SvgIconRenderer::Render(SvgIcon icon, int size, COLORREF color)
     CheckGraphics(impl_->context->CreateBitmap(dimensions, nullptr, 0, &properties, target.GetAddressOf()),
         Text(L"Cannot allocate SVG pixels", L"无法分配 SVG 像素"));
     impl_->context->SetTarget(target.Get());
-    const float extent = icon == SvgIcon::Application ? 256.0f : 24.0f;
+    const bool tray = icon == SvgIcon::TrayApplication;
+    const float extent = tray ? 240.0f : (icon == SvgIcon::Application ? 256.0f : 24.0f);
     const float scale = static_cast<float>(size) / extent;
-    impl_->context->SetTransform(D2D1::Matrix3x2F::Scale(scale, scale));
+    auto transform = D2D1::Matrix3x2F::Scale(scale, scale);
+    if (tray) {
+        // Fit the shared SVG's (2, 1, 60, 60) region in its 256-pixel viewport.
+        transform._31 = -8.0f * scale;
+        transform._32 = -4.0f * scale;
+    }
+    impl_->context->SetTransform(transform);
     impl_->context->BeginDraw();
     impl_->context->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
     impl_->context->DrawSvgDocument(document);

@@ -803,8 +803,8 @@ private:
             }
         }
         SvgIconRenderer renderer;
-        for (const auto kind : {SvgIcon::Application, SvgIcon::ClearLogs, SvgIcon::ScrollToEnd}) {
-            for (const int side : {16, 20, 24, 32}) {
+        for (const auto kind : {SvgIcon::Application, SvgIcon::ClearLogs, SvgIcon::ScrollToEnd, SvgIcon::TrayApplication}) {
+            for (const int side : {16, 20, 24, 28, 32}) {
                 const auto white = renderer.Render(kind, side, RGB(255, 255, 255));
                 for (const COLORREF color : {kRunningIconColor, kStoppedIconColor}) {
                     const auto tinted = renderer.Render(kind, side, color);
@@ -1622,7 +1622,7 @@ private:
         IconBatch<IconCount> next;
         for (size_t state = 0; state < 2; ++state) {
             const COLORREF color = state != 0 ? kRunningIconColor : kStoppedIconColor;
-            next.values[StoppedTrayIcon + state] = renderer.CreateIcon(SvgIcon::Application, Scale(16), color);
+            next.values[StoppedTrayIcon + state] = renderer.CreateIcon(SvgIcon::TrayApplication, Scale(16), color);
             next.values[StoppedStatusIcon + state] = renderer.CreateIcon(SvgIcon::Application, Scale(24), color);
         }
         next.values[SmallWindowIcon] = renderer.CreateIcon(SvgIcon::Application, Scale(16), kApplicationIconColor);
