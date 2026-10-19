@@ -57,6 +57,22 @@ paths are resolved from the folder containing `XTray.exe`.
 For help preparing your configuration, see the [Xray documentation](https://xtls.github.io/).
 XTray does not generate or edit Xray configuration files.
 
+### Why allow both configuration files and a directory?
+
+Xray natively supports multiple `-config` arguments together with `-confdir`.
+XTray exposes these options so you can organize your configuration into reusable
+parts and choose how to load them.
+
+For example, keep shared logging, DNS and routing settings in a directory, then
+select separate files for the inbound or outbound connections you want to use.
+This lets you reuse common settings and maintain each part independently,
+without duplicating a complete configuration or merging files by hand.
+
+XTray passes the selected paths to Xray, which loads and merges the configuration
+according to its [multi-file configuration rules](https://xtls.github.io/en/config/features/multiple.html).
+You can use a single file, multiple files, one directory, or files and a directory
+together, depending on your setup.
+
 ## Everyday use
 
 - **Run / Stop / Restart:** control Xray from the main window or the tray menu.
