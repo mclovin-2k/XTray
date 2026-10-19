@@ -1,5 +1,7 @@
 # XTray
 
+English | [简体中文](README.zh-CN.md)
+
 A lightweight, portable Windows tray app for running [Xray-core](https://github.com/XTLS/Xray-core).
 
 Start, stop and restart Xray, view its logs, and manage sign-in startup from a
