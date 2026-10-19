@@ -823,11 +823,15 @@ private:
                 }
             }
         }
+        std::fwprintf(stderr, L"Smoke: native icon button state images.\n");
         const auto nativeImages = [this](HWND control) {
             BUTTON_IMAGELIST images{};
-            if (!SendMessageW(control, BCM_GETIMAGELIST, 0, reinterpret_cast<LPARAM>(&images)) ||
-                images.uAlign != BUTTON_IMAGELIST_ALIGN_CENTER ||
-                ImageList_GetImageCount(images.himl) != 6) {
+            const bool read = SendMessageW(control, BCM_GETIMAGELIST, 0,
+                reinterpret_cast<LPARAM>(&images)) != 0;
+            const int count = images.himl != nullptr ? ImageList_GetImageCount(images.himl) : 0;
+            if (!read || images.uAlign != BUTTON_IMAGELIST_ALIGN_CENTER || count != 6) {
+                std::fwprintf(stderr, L"Smoke: native button image list failed (id=%d, read=%d, count=%d, align=%u).\n",
+                    GetDlgCtrlID(control), read ? 1 : 0, count, images.uAlign);
                 return false;
             }
             const auto& colors = theme_.Colors();
@@ -838,16 +842,14 @@ private:
                     DestroyIcon(icon);
                 }
                 if (!matched) {
+                    std::fwprintf(stderr, L"Smoke: native button image tint failed (id=%d, state=%d, size=%d).\n",
+                        GetDlgCtrlID(control), state + 1, Scale(20));
                     return false;
                 }
             }
             return true;
         };
-        return SendMessageW(clearLogs_, BM_GETIMAGE, IMAGE_ICON, 0) ==
-                reinterpret_cast<LRESULT>(toolIcons_[0]) &&
-            SendMessageW(scrollToEnd_, BM_GETIMAGE, IMAGE_ICON, 0) ==
-                reinterpret_cast<LRESULT>(toolIcons_[2]) &&
-            nativeImages(clearLogs_) && nativeImages(scrollToEnd_);
+        return nativeImages(clearLogs_) && nativeImages(scrollToEnd_);
     }
 
     bool SmokeTestLogButtons()

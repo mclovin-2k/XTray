@@ -107,7 +107,6 @@ void SetButtonIcons(HWND control, HICON normal, HICON disabled, int size)
     if (attached) {
         ImageList_Destroy(reinterpret_cast<HIMAGELIST>(previous));
     }
-    SendMessageW(control, BM_SETIMAGE, IMAGE_ICON, reinterpret_cast<LPARAM>(normal));
     InvalidateRect(control, nullptr, FALSE);
 }
 
