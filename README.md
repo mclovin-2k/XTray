@@ -8,7 +8,7 @@ Preparing **v0.1.0**. Xray process control, logs, settings, tray integration, di
 
 The user confirmed a successful Build for commit 9b8c121, covering the native tests, release simulations, executable version, and artifact checks. Desktop feedback confirmed version metadata, basic startup, startup registration after directory moves/copies, instance isolation, normal/forced-exit cleanup, and usable Chinese/English light/dark layouts at the minimum window size.
 
-The previously tested desktop environment is Windows 11 IoT Enterprise LTSC 24H2 (OS build 26100.9711), at 175% scaling and 3840 × 2160 resolution. The user confirmed a successful Build for commit 44a38cd. Following desktop feedback, the current update changes the title to XTray v0.1.0 and fits the complete tray artwork into tighter transparent margins; its cloud build and desktop checks are pending. See the [release checklist](docs/release-checklist.md) for the recorded scope and manual scenarios not individually verified in this round. Publication is deferred while these UI details are completed and verified.
+The previously tested desktop environment is Windows 11 IoT Enterprise LTSC 24H2 (OS build 26100.9711), at 175% scaling and 3840 × 2160 resolution. The user confirmed a successful Build for commit 44a38cd. Following desktop feedback, the current update changes the title to XTray v0.1.0 and fits the complete tray artwork into tighter transparent margins; the user confirmed a successful Build for commit 92b1a54, while desktop checks remain pending. See the [release checklist](docs/release-checklist.md) for the recorded scope and manual scenarios not individually verified in this round. Publication is deferred while these UI details are completed and verified.
 
 ## Project documents
 
