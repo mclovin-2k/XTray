@@ -4,9 +4,11 @@ A lightweight, portable Windows tray application for managing Xray-core.
 
 ## Project status
 
-Preparing **v0.1.0**. Xray process control, logs, settings, tray integration, directory instances, appearance/language selection, sign-in startup, and embedded icons are implemented. The user confirmed that the Build for commit 736b28e succeeded and reported that the restored native controls looked better in the desktop trial.
+Preparing **v0.1.0**. Xray process control, logs, settings, tray integration, directory instances, appearance/language selection, sign-in startup, and embedded icons are implemented.
 
-Version resources and version-tag publishing are now implemented. The user confirmed a successful Build for commit 9b8c121, covering the native tests, release simulations, executable version, and artifact checks. Final desktop regression checks and the first real tag-triggered publication remain pending. No v0.1.0 tag or GitHub Release has been created. See the [release checklist](docs/release-checklist.md) for the remaining acceptance record.
+The user confirmed a successful Build for commit 9b8c121, covering the native tests, release simulations, executable version, and artifact checks. Desktop feedback confirmed version metadata, basic startup, startup registration after directory moves/copies, instance isolation, normal/forced-exit cleanup, and usable Chinese/English light/dark layouts at the minimum window size.
+
+The tested desktop environment is Windows 11 IoT Enterprise LTSC 24H2 (OS build 26100.9711), at 175% scaling and 3840 × 2160 resolution. Subsequent commits change documentation only. See the [release checklist](docs/release-checklist.md) for the recorded scope and manual scenarios not individually verified in this round. The first version tag and actual Release publication await maintainer confirmation.
 
 ## Project documents
 
