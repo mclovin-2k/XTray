@@ -769,12 +769,12 @@ private:
     bool SmokeTestWindowBranding(bool running)
     {
         const bool title = WindowText(window_) == kWindowTitle;
-        const auto small = reinterpret_cast<HICON>(SendMessageW(window_, WM_GETICON, ICON_SMALL, 0));
-        const auto large = reinterpret_cast<HICON>(SendMessageW(window_, WM_GETICON, ICON_BIG, 0));
-        const bool smallIcon = small == icons_[SmallWindowIcon] &&
-            IconMatches(small, kApplicationIconColor, Scale(16));
-        const bool largeIcon = large == icons_[LargeWindowIcon] &&
-            IconMatches(large, kApplicationIconColor, Scale(32));
+        const auto smallWindowIcon = reinterpret_cast<HICON>(SendMessageW(window_, WM_GETICON, ICON_SMALL, 0));
+        const auto largeWindowIcon = reinterpret_cast<HICON>(SendMessageW(window_, WM_GETICON, ICON_BIG, 0));
+        const bool smallIcon = smallWindowIcon == icons_[SmallWindowIcon] &&
+            IconMatches(smallWindowIcon, kApplicationIconColor, Scale(16));
+        const bool largeIcon = largeWindowIcon == icons_[LargeWindowIcon] &&
+            IconMatches(largeWindowIcon, kApplicationIconColor, Scale(32));
         const bool statusIcon = reinterpret_cast<HICON>(SendMessageW(statusIcon_, STM_GETICON, 0, 0)) ==
             icons_[running ? RunningStatusIcon : StoppedStatusIcon];
         const bool trayIcon = smokeTrayData.hIcon == icons_[running ? RunningTrayIcon : StoppedTrayIcon];
