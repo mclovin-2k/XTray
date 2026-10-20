@@ -37,6 +37,7 @@ struct Context {
     ThemeWindow contentTheme;
     HWND contents = nullptr;
     int scroll = 0;
+    int contentHeight = 0;
     int wheelRemainder = 0;
     std::function<void(HWND)> automation;
     std::exception_ptr error;
@@ -135,6 +136,7 @@ void LayoutSettingsContent(Context& context)
         GetClientRect(body, &updated);
         if (updated.right == client.right) { break; }
     }
+    context.contentHeight = contentHeight;
     for (const auto& placement : placements) {
         MoveWindow(placement.control, placement.x, placement.y - context.scroll,
             placement.width, placement.height, TRUE);
@@ -160,7 +162,7 @@ void LayoutSettings(HWND dialog, Context& context)
     LayoutSettingsContent(context);
 }
 
-void FitSettingsWindow(HWND dialog)
+void FitSettingsWindow(HWND dialog, Context& context)
 {
     MONITORINFO monitor{sizeof(MONITORINFO)};
     RECT bounds{};
@@ -174,6 +176,16 @@ void FitSettingsWindow(HWND dialog)
     SetWindowPos(dialog, nullptr, std::clamp(bounds.left, work.left, work.right - width),
         std::clamp(bounds.top, work.top, work.bottom - height), width, height,
         SWP_NOZORDER | SWP_NOACTIVATE);
+    LayoutSettings(dialog, context);
+    RECT viewport{};
+    GetClientRect(context.contents, &viewport);
+    GetWindowRect(dialog, &bounds);
+    const LONG preferredHeight = bounds.bottom - bounds.top +
+        (std::max)(0, context.contentHeight - static_cast<int>(viewport.bottom));
+    const LONG fittedHeight = (std::min)(preferredHeight, work.bottom - work.top);
+    SetWindowPos(dialog, nullptr, bounds.left,
+        std::clamp(bounds.top, work.top, work.bottom - fittedHeight),
+        width, fittedHeight, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 LRESULT CALLBACK SettingsFocusProcedure(HWND control, UINT message, WPARAM wParam,
@@ -438,7 +450,7 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         }
         const auto* owner = ThemeWindow::From(GetWindow(dialog, GW_OWNER));
         context->theme.Apply(owner != nullptr && owner->Colors().dark, true);
-        FitSettingsWindow(dialog);
+        FitSettingsWindow(dialog, *context);
         LayoutSettings(dialog, *context);
         SetFocus(SettingsControl(dialog, IDC_EXECUTABLE));
         if (context->automation) {
@@ -468,7 +480,7 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
     }
     if (message == kRefreshDialogTheme) {
         context->theme.Apply(context->theme.Colors().dark, true);
-        FitSettingsWindow(dialog);
+        FitSettingsWindow(dialog, *context);
         LayoutSettings(dialog, *context);
         return TRUE;
     }
@@ -618,6 +630,13 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
         context.automation = [&](HWND window) {
             RECT bounds{};
             GetWindowRect(window, &bounds);
+            MONITORINFO monitor{sizeof(MONITORINFO)};
+            SCROLLINFO initialScroll{sizeof(SCROLLINFO), SIF_ALL};
+            if (GetMonitorInfoW(MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST), &monitor) &&
+                bounds.bottom - bounds.top < monitor.rcWork.bottom - monitor.rcWork.top - UiScale(window, 8)) {
+                passed = passed && GetScrollInfo(context.contents, SB_VERT, &initialScroll) &&
+                    initialScroll.nMax + 1 <= static_cast<int>(initialScroll.nPage);
+            }
             SetWindowPos(window, nullptr, 0, 0,
                 (std::min)(bounds.right - bounds.left, static_cast<LONG>(UiScale(window, 520))),
                 UiScale(window, 340), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
