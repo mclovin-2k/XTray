@@ -243,8 +243,8 @@ public:
         openFile_ = child(0, L"BUTTON", L"", WS_TABSTOP, OpenFile);
         openFileDirectory_ = child(0, L"BUTTON", L"", WS_TABSTOP, OpenFileDirectory);
         directoryLabel_ = child(0, L"STATIC", L"", SS_CENTERIMAGE);
-        directory_ = child(WS_EX_CLIENTEDGE, L"EDIT", L"",
-            ES_READONLY | ES_AUTOHSCROLL | WS_TABSTOP);
+        directory_ = child(WS_EX_CLIENTEDGE, L"STATIC", L"",
+            SS_LEFTNOWORDWRAP | SS_CENTERIMAGE | SS_NOPREFIX | SS_NOTIFY);
         openDirectory_ = child(0, L"BUTTON", L"", WS_TABSTOP, OpenDirectory);
         filterLabel_ = child(0, L"STATIC", L"", SS_CENTERIMAGE);
         filter_ = child(0, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, Filter);
@@ -322,7 +322,7 @@ public:
         const int directoryWidth = TextButtonWidth(openDirectory_);
         const int directoryX = width - margin - directoryWidth;
         move(directoryLabel_, margin, Scale(98), labelWidth, Scale(26));
-        const int directoryHeight = SingleLineEditHeight(directory_);
+        const int directoryHeight = SingleLineControlHeight(directory_);
         move(directory_, inputX, Scale(98) + (Scale(26) - directoryHeight) / 2,
             directoryX - gap - inputX, directoryHeight);
         move(openDirectory_, directoryX, Scale(98), directoryWidth, Scale(26));
@@ -1107,7 +1107,7 @@ private:
         const auto previousLanguage = CurrentLanguage();
         settings_.configFiles = {L".\\very long 配置目录\\" + std::wstring(180, L'x') + L"\\one.json",
             L".\\other 配置目录\\two.json"};
-        settings_.configDirectory = L".\\a long 配置目录 with spaces\\fragments";
+        settings_.configDirectory = L".\\a long 配置目录 & spaces\\fragments";
         UpdatePaths();
         for (const auto language : {Language::English, Language::Chinese}) {
             ApplyLanguage(language);
@@ -1127,18 +1127,30 @@ private:
                 return false;
             }
         }
-        std::fwprintf(stderr, L"Smoke: native single-line path input height and vertical alignment.\n");
-        RECT directoryBounds{}, directoryButton{}, directoryClient{}, directoryText{};
+        std::fwprintf(stderr, L"Smoke: directory display alignment, click focus, Tab order, and literal path.\n");
+        RECT directoryBounds{}, directoryButton{}, directoryClient{};
         GetWindowRect(directory_, &directoryBounds);
         GetWindowRect(openDirectory_, &directoryButton);
         GetClientRect(directory_, &directoryClient);
-        SendMessageW(directory_, EM_GETRECT, 0, reinterpret_cast<LPARAM>(&directoryText));
-        const LONG directoryBottom = directoryClient.bottom - directoryText.bottom;
-        if (directoryText.bottom - directoryText.top < ControlTextSize(directory_).cy || directoryBottom < 0 ||
-            std::abs(directoryText.top - directoryBottom) > 1 ||
+        wchar_t directoryClass[16]{};
+        GetClassNameW(directory_, directoryClass, static_cast<int>(std::size(directoryClass)));
+        const auto directoryStyle = GetWindowLongPtrW(directory_, GWL_STYLE);
+        const auto previousFocus = GetFocus();
+        SetFocus(openFileDirectory_);
+        const auto clickFocus = GetFocus();
+        SendMessageW(directory_, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(5, 5));
+        SendMessageW(directory_, WM_LBUTTONUP, 0, MAKELPARAM(5, 5));
+        const bool keepsFocus = GetFocus() == clickFocus && GetFocus() != directory_;
+        SetFocus(previousFocus);
+        if (_wcsicmp(directoryClass, L"Static") != 0 || (directoryStyle & WS_TABSTOP) != 0 ||
+            (directoryStyle & SS_CENTERIMAGE) == 0 || (directoryStyle & SS_NOPREFIX) == 0 ||
+            (SendMessageW(directory_, WM_GETDLGCODE, 0, 0) & DLGC_STATIC) == 0 || !keepsFocus ||
+            GetNextDlgTabItem(window_, openFileDirectory_, FALSE) != openDirectory_ ||
+            GetNextDlgTabItem(window_, openDirectory_, TRUE) != openFileDirectory_ ||
+            WindowText(directory_) != settings_.configDirectory || TooltipText(directory_) != settings_.configDirectory ||
+            directoryClient.bottom < ControlTextSize(directory_).cy ||
             std::abs(directoryBounds.top + directoryBounds.bottom - directoryButton.top - directoryButton.bottom) > 1) {
-            std::fwprintf(stderr, L"Smoke: main path input alignment failed (top=%ld, bottom=%ld).\n",
-                directoryText.top, directoryBottom);
+            std::fwprintf(stderr, L"Smoke: non-focusable directory display failed.\n");
             return false;
         }
         SendMessageW(files_, CB_SETCURSEL, 1, 0);
@@ -1381,6 +1393,12 @@ private:
             }
             if (theme_.Colors() != palette) {
                 return fail(L"apply requested palette");
+            }
+            const auto directoryBrush = SendMessageW(window_, WM_CTLCOLORSTATIC,
+                reinterpret_cast<WPARAM>(canvas.device), reinterpret_cast<LPARAM>(directory_));
+            if (directoryBrush == 0 || !IsWindowEnabled(directory_) ||
+                GetBkColor(canvas.device) != palette.surface || GetTextColor(canvas.device) != palette.text) {
+                return fail(L"directory display surface and readable text colors");
             }
             if (WindowText(logWindow_) != before || logs_.Revision() != revision ||
                 SendMessageW(filter_, CB_GETCURSEL, 0, 0) != 0) {

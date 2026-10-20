@@ -95,15 +95,15 @@ void LayoutSettingsContent(Context& context)
             y += (std::max)(height, rowHeight) + sectionGap;
         };
         label(IDC_LABEL_EXECUTABLE);
-        pathRow(IDC_EXECUTABLE, IDC_BROWSE_EXECUTABLE, SingleLineEditHeight(GetDlgItem(body, IDC_EXECUTABLE)));
+        pathRow(IDC_EXECUTABLE, IDC_BROWSE_EXECUTABLE, SingleLineControlHeight(GetDlgItem(body, IDC_EXECUTABLE)));
         label(IDC_LABEL_CONFIG_FILES);
         units = {0, 0, 0, 75};
         MapDialogRect(body, &units);
         pathRow(IDC_CONFIG_FILES, IDC_ADD_FILES, static_cast<int>(units.bottom));
         label(IDC_LABEL_CONFIG_DIRECTORY);
-        pathRow(IDC_CONFIG_DIRECTORY, IDC_BROWSE_DIRECTORY, SingleLineEditHeight(GetDlgItem(body, IDC_CONFIG_DIRECTORY)));
+        pathRow(IDC_CONFIG_DIRECTORY, IDC_BROWSE_DIRECTORY, SingleLineControlHeight(GetDlgItem(body, IDC_CONFIG_DIRECTORY)));
         const auto logLabel = ControlTextSize(GetDlgItem(body, IDC_LABEL_LOG_LINES));
-        const int logHeight = SingleLineEditHeight(GetDlgItem(body, IDC_LOG_LINES));
+        const int logHeight = SingleLineControlHeight(GetDlgItem(body, IDC_LOG_LINES));
         const int logRow = (std::max)(static_cast<int>(logLabel.cy), logHeight);
         place(IDC_LABEL_LOG_LINES, margin, y + (logRow - logLabel.cy) / 2, logLabel.cx, logLabel.cy);
         place(IDC_LOG_LINES, margin + logLabel.cx + gap, y + (logRow - logHeight) / 2,

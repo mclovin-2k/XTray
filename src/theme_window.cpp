@@ -37,6 +37,11 @@ bool IsClass(HWND window, const wchar_t* expected)
 
 bool IsRichEdit(HWND window) { return IsClass(window, L"RICHEDIT50W"); }
 
+bool IsFramedText(HWND window)
+{
+    return IsClass(window, L"Static") && (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_CLIENTEDGE) != 0;
+}
+
 void Fill(HDC device, const RECT& bounds, COLORREF color)
 {
     SetDCBrushColor(device, color);
@@ -283,7 +288,7 @@ bool ThemeWindow::AttachControl(HWND control)
 {
     const bool combo = IsClass(control, L"ComboBox");
     const bool edit = IsClass(control, L"Edit") || IsRichEdit(control);
-    if (!combo && !edit && !IsClass(control, L"Button") && !IsClass(control, L"ComboLBox")) {
+    if (!combo && !edit && !IsFramedText(control) && !IsClass(control, L"Button") && !IsClass(control, L"ComboLBox")) {
         return true;
     }
     const wchar_t* visualStyle = colors_.dark
@@ -445,7 +450,7 @@ bool ThemeWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam, LRESULT& re
     if (message >= WM_CTLCOLORMSGBOX && message <= WM_CTLCOLORSTATIC) {
         const HWND control = reinterpret_cast<HWND>(lParam);
         const bool rich = IsRichEdit(control);
-        const bool input = rich || IsClass(control, L"Edit") || message == WM_CTLCOLORLISTBOX;
+        const bool input = rich || IsClass(control, L"Edit") || IsFramedText(control) || message == WM_CTLCOLORLISTBOX;
         const auto color = rich ? colors_.logBackground : input ? colors_.surface : colors_.window;
         const HDC device = reinterpret_cast<HDC>(wParam);
         SetBkColor(device, color);
