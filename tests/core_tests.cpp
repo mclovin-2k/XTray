@@ -92,6 +92,23 @@ int FakeXray(int argc, wchar_t** argv)
         Write(error, "\xF0\x9F");
         return 23;
     }
+    if (first.filename() == L"paths.conf") {
+        for (int index = 2; index + 1 < argc; index += 2) {
+            const std::filesystem::path argument(argv[index + 1]);
+            const auto source = std::wstring_view(argv[index]) == L"-confdir"
+                ? argument / L"marker.txt" : argument;
+            std::ifstream file(source, std::ios::binary);
+            if (!file) {
+                Write(error, "Cannot open path probe input: " + ToUtf8(source.native()) + "\n");
+                return 95;
+            }
+            const std::string content(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>{});
+            Write(output, "loaded[" + std::to_string(index / 2 - 1) + "]=" + content + "\n");
+        }
+        Write(output, "paths ready\n");
+        Sleep(INFINITE);
+        return 0;
+    }
     if (first.filename() == L"flood.conf") {
         for (int index = 0; index < 15000; ++index) {
             Write(output, "line " + std::to_string(index) + "\n");
@@ -613,6 +630,105 @@ void TestSettings(const std::filesystem::path& root)
         loaded.settings.configDirectory.empty(), "Configuration sources must default to empty.");
 }
 
+void TestConfigurationPaths(const std::filesystem::path& root)
+{
+    const auto base = root / L"configuration path cases";
+    const auto original = base / L"original root";
+    const auto moved = base / L"tail moved root";
+    const auto absoluteFile = base / L"absolute 文件.json";
+    const auto absoluteDirectory = base / L"absolute 目录";
+    std::filesystem::create_directories(original / L"configs");
+    std::filesystem::create_directories(original / L"fragments 片段");
+    std::filesystem::create_directories(base / L"shared 共享");
+    std::filesystem::create_directories(absoluteDirectory);
+    const auto write = [](const std::filesystem::path& path, const char* marker) {
+        std::ofstream file(path, std::ios::binary);
+        Check(static_cast<bool>(file), "Cannot create a configuration path fixture.");
+        file << marker;
+        Check(static_cast<bool>(file), "Cannot write a configuration path fixture.");
+    };
+    write(original / L"paths.conf", "relative-first");
+    write(original / L"configs" / L"配置 ;=& one.json", "relative-unicode");
+    write(base / L"shared 共享" / L"outside.json", "outside-relative");
+    write(absoluteFile, "absolute-file");
+    write(original / L"fragments 片段" / L"marker.txt", "relative-directory");
+    write(absoluteDirectory / L"marker.txt", "absolute-directory");
+    Settings settings;
+    settings.executable = ExecutablePath().native();
+    settings.configFiles = {L".\\paths.conf", L".\\configs\\..\\configs\\配置 ;=& one.json",
+        L"..\\shared 共享\\outside.json", absoluteFile.native(), L".\\configs\\..\\configs\\配置 ;=& one.json"};
+    settings.configDirectory = L".\\fragments 片段\\";
+    std::wstring error;
+    Check(SaveSettings(original, settings, error), "Cannot save original path settings.");
+    const auto verify = [&](XrayProcess& process, const Logs& logs,
+        const std::filesystem::path& directory, const Settings& expected,
+        std::wstring_view directoryMarker, DWORD previousPid) {
+        Check(WaitUntil([&] { return process.State() == ProcessState::Running &&
+            process.Pid() != previousPid && HasText(logs, LogSource::Xray, L"paths ready"); }),
+            "Configuration inputs could not be read from the explicit child working directory.");
+        std::vector<std::wstring> arguments, loaded;
+        for (const auto& line : logs.Snapshot().lines) {
+            if (line->source != LogSource::Xray) {
+                continue;
+            }
+            const std::wstring_view text(line->text);
+            if (text.starts_with(L"-config=") || text.starts_with(L"-confdir=")) {
+                arguments.push_back(line->text);
+            } else if (text.starts_with(L"loaded[")) {
+                loaded.push_back(line->text);
+            }
+        }
+        std::vector<std::wstring> expectedArguments;
+        for (const auto& file : expected.configFiles) {
+            expectedArguments.push_back(L"-config=" + file);
+        }
+        std::vector<std::wstring> expectedContents{L"loaded[0]=relative-first", L"loaded[1]=relative-unicode",
+            L"loaded[2]=outside-relative", L"loaded[3]=absolute-file", L"loaded[4]=relative-unicode"};
+        if (!expected.configDirectory.empty()) {
+            expectedArguments.push_back(L"-confdir=" + expected.configDirectory);
+            expectedContents.push_back(L"loaded[5]=" + std::wstring(directoryMarker));
+        }
+        Check(arguments == expectedArguments, "Configuration path spelling, order, or duplicates changed.");
+        Check(loaded == expectedContents, "Relative or absolute configuration paths selected the wrong files.");
+        Check(HasText(logs, LogSource::Xray, L"cwd=" + directory.native()),
+            "Configuration inputs used the wrong child working directory.");
+        Check(HasText(logs, LogSource::Xray, L"console=0"), "The configuration path child acquired a console.");
+    };
+    {
+        const auto loaded = LoadSettings(original);
+        Check(loaded.success, "Cannot load original path settings.");
+        Logs logs;
+        XrayProcess process(original, logs);
+        Check(process.Run(loaded.settings), "Original configuration path run was rejected.");
+        verify(process, logs, original, settings, L"relative-directory", 0);
+    }
+    std::filesystem::rename(original, moved);
+    const auto reloaded = LoadSettings(moved);
+    Check(reloaded.success && reloaded.settings.configFiles == settings.configFiles &&
+        reloaded.settings.configDirectory == settings.configDirectory,
+        "Moving the portable directory changed the saved configuration paths.");
+    Logs logs;
+    XrayProcess process(moved, logs);
+    Check(process.Run(reloaded.settings), "Moved configuration path run was rejected.");
+    verify(process, logs, moved, settings, L"relative-directory", 0);
+    auto absolute = reloaded.settings;
+    absolute.configDirectory = absoluteDirectory.native();
+    const DWORD relativePid = process.Pid();
+    Check(process.Restart(absolute), "Absolute configuration directory restart was rejected.");
+    verify(process, logs, moved, absolute, L"absolute-directory", relativePid);
+    absolute.configDirectory.clear();
+    const DWORD directoryPid = process.Pid();
+    Check(process.Restart(absolute), "Files-only configuration restart was rejected.");
+    verify(process, logs, moved, absolute, L"", directoryPid);
+    auto missing = absolute;
+    missing.configFiles[1] = L".\\missing 配置.json";
+    Check(process.Restart(missing), "Missing configuration path restart was rejected.");
+    Check(WaitUntil([&] { return process.State() == ProcessState::Stopped &&
+        HasText(logs, LogSource::Xray, L"Cannot open path probe input: " + missing.configFiles[1]) &&
+        HasText(logs, LogSource::Tray, L"退出码 95"); }),
+        "A missing relative configuration path did not preserve the child error and exit code.");
+}
+
 void TestProcesses(const std::filesystem::path& root)
 {
     Logs logs(64);
@@ -641,6 +757,8 @@ void TestProcesses(const std::filesystem::path& root)
         HasText(logs, LogSource::Xray, L"\uFFFD"), "Early failure output or exit code was lost.");
 
     auto settings = FakeSettings(root);
+    const std::wstring alternateDrive = root.root_name().native() == L"Z:" ? L"Y:" : L"Z:";
+    settings.configFiles.push_back(alternateDrive + L"\\external configs\\cross-drive.json");
     Check(process.Run(settings), "Run request was rejected.");
     Check(WaitUntil([&] { return HasText(logs, LogSource::Xray, L"partial without newline"); }),
         "Live partial stdout was not received.");
@@ -648,10 +766,12 @@ void TestProcesses(const std::filesystem::path& root)
         "Running status is incorrect.");
     Check(HasText(logs, LogSource::Xray, L"console=0"), "The child acquired a console.");
     Check(HasText(logs, LogSource::Xray, L"cwd=" + root.native()), "Child working directory is incorrect.");
-    Check(HasText(logs, LogSource::Xray, L"-config=" +
-        ResolvePath(root, settings.configFiles[1]).native()), "Unicode/multiple file arguments were corrupted.");
-    Check(HasText(logs, LogSource::Xray, L"-confdir=" +
-        ResolvePath(root, settings.configDirectory).native()), "Directory argument was corrupted.");
+    Check(HasText(logs, LogSource::Xray, L"-config=" + settings.configFiles[0]) &&
+        HasText(logs, LogSource::Xray, L"-config=" + settings.configFiles[1]) &&
+        HasText(logs, LogSource::Xray, L"-config=" + settings.configFiles[2]),
+        "Absolute, Unicode relative, or cross-drive configuration arguments changed.");
+    Check(HasText(logs, LogSource::Xray, L"-confdir=" + settings.configDirectory),
+        "The relative directory argument changed.");
     Check(HasText(logs, LogSource::Xray, L"中文 stdout") &&
         HasText(logs, LogSource::Xray, L"stderr captured"), "stdout/stderr capture failed.");
     Check(!process.Run(settings), "A second run was allowed while Xray was running.");
@@ -662,8 +782,9 @@ void TestProcesses(const std::filesystem::path& root)
     auto directoryOnly = settings;
     directoryOnly.configFiles.clear();
     Check(other.Run(directoryOnly), "Directory-only configuration was rejected.");
-    Check(WaitUntil([&] { return other.State() == ProcessState::Running; }),
-        "Independent instance did not start.");
+    Check(WaitUntil([&] { return other.State() == ProcessState::Running &&
+        HasText(otherLogs, LogSource::Xray, L"-confdir=" + directoryOnly.configDirectory); }),
+        "Directory-only startup did not preserve its relative path.");
 
     const DWORD oldPid = process.Pid();
     Handle old(OpenProcess(SYNCHRONIZE, FALSE, oldPid));
@@ -780,6 +901,7 @@ int wmain(int argc, wchar_t** argv)
         TestArguments();
         TestSettings(root / L"settings");
         TestStartup(root / L"startup");
+        TestConfigurationPaths(root);
         TestProcesses(root);
         TestAbnormalExit(root);
         std::puts("All core tests passed. No real Xray process or network listener was started.");
