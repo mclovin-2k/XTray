@@ -90,22 +90,25 @@ void LayoutSettingsContent(Context& context)
             const int buttonWidth = TextButtonWidth(GetDlgItem(body, browseId));
             const int buttonX = margin + available - buttonWidth;
             place(browseId, buttonX, y, buttonWidth, rowHeight);
-            place(editId, margin, y, buttonX - gap - margin, height);
-            y += height + sectionGap;
+            place(editId, margin, y + (std::max)(0, (rowHeight - height) / 2),
+                buttonX - gap - margin, height);
+            y += (std::max)(height, rowHeight) + sectionGap;
         };
         label(IDC_LABEL_EXECUTABLE);
-        pathRow(IDC_EXECUTABLE, IDC_BROWSE_EXECUTABLE, rowHeight);
+        pathRow(IDC_EXECUTABLE, IDC_BROWSE_EXECUTABLE, SingleLineEditHeight(GetDlgItem(body, IDC_EXECUTABLE)));
         label(IDC_LABEL_CONFIG_FILES);
         units = {0, 0, 0, 75};
         MapDialogRect(body, &units);
         pathRow(IDC_CONFIG_FILES, IDC_ADD_FILES, static_cast<int>(units.bottom));
         label(IDC_LABEL_CONFIG_DIRECTORY);
-        pathRow(IDC_CONFIG_DIRECTORY, IDC_BROWSE_DIRECTORY, rowHeight);
-        const int logLabel = static_cast<int>(ControlTextSize(GetDlgItem(body, IDC_LABEL_LOG_LINES)).cx);
-        place(IDC_LABEL_LOG_LINES, margin, y, logLabel, rowHeight);
-        place(IDC_LOG_LINES, margin + logLabel + gap, y,
-            (std::min)(UiScale(body, 112), available - logLabel - gap), rowHeight);
-        y += rowHeight + sectionGap;
+        pathRow(IDC_CONFIG_DIRECTORY, IDC_BROWSE_DIRECTORY, SingleLineEditHeight(GetDlgItem(body, IDC_CONFIG_DIRECTORY)));
+        const auto logLabel = ControlTextSize(GetDlgItem(body, IDC_LABEL_LOG_LINES));
+        const int logHeight = SingleLineEditHeight(GetDlgItem(body, IDC_LOG_LINES));
+        const int logRow = (std::max)(static_cast<int>(logLabel.cy), logHeight);
+        place(IDC_LABEL_LOG_LINES, margin, y + (logRow - logLabel.cy) / 2, logLabel.cx, logLabel.cy);
+        place(IDC_LOG_LINES, margin + logLabel.cx + gap, y + (logRow - logHeight) / 2,
+            (std::min)(UiScale(body, 112), available - static_cast<int>(logLabel.cx) - gap), logHeight);
+        y += logRow + sectionGap;
         const int languageLabel = static_cast<int>(ControlTextSize(GetDlgItem(body, IDC_LABEL_LANGUAGE)).cx);
         const int themeLabel = static_cast<int>(ControlTextSize(GetDlgItem(body, IDC_LABEL_THEME)).cx);
         const int half = (available - sectionGap) / 2;
@@ -623,6 +626,7 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
     for (const auto selected : {Language::English, Language::Chinese}) {
         ApplyLanguage(selected);
         Settings settings;
+        settings.configDirectory = L".\\配置 directory\\fragments";
         Logs logs;
         MemoryStartupRegistry registry;
         StartupRegistration startup(root, CurrentExecutable(), &registry);
@@ -658,6 +662,27 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                 const int padding = static_cast<int>(button.right - button.left - text.cx);
                 passed = passed && padding >= UiScale(control, 23) && padding <= UiScale(control, 25);
             }
+            const auto checkInputs = [&] {
+                for (const auto& [id, neighbor] : {std::pair{IDC_EXECUTABLE, IDC_BROWSE_EXECUTABLE},
+                    std::pair{IDC_CONFIG_DIRECTORY, IDC_BROWSE_DIRECTORY}, std::pair{IDC_LOG_LINES, IDC_LABEL_LOG_LINES}}) {
+                    const HWND control = SettingsControl(window, id);
+                    RECT edit{}, other{}, client{}, text{};
+                    GetWindowRect(control, &edit);
+                    GetWindowRect(SettingsControl(window, neighbor), &other);
+                    GetClientRect(control, &client);
+                    SendMessageW(control, EM_GETRECT, 0, reinterpret_cast<LPARAM>(&text));
+                    const LONG bottom = client.bottom - text.bottom;
+                    const LONG center = std::abs(edit.top + edit.bottom - other.top - other.bottom);
+                    if ((GetWindowLongPtrW(control, GWL_STYLE) & ES_MULTILINE) != 0 ||
+                        text.bottom - text.top < ControlTextSize(control).cy || bottom < 0 || std::abs(text.top - bottom) > 1 || center > 1) {
+                        std::fwprintf(stderr, L"Smoke: single-line settings input failed (id=%d, top=%ld, bottom=%ld, center=%ld).\n",
+                            id, text.top, bottom, center);
+                        return false;
+                    }
+                }
+                return true;
+            };
+            passed = checkInputs() && passed;
             SCROLLINFO scroll{sizeof(SCROLLINFO), SIF_ALL};
             passed = passed && GetScrollInfo(context.contents, SB_VERT, &scroll) &&
                 scroll.nMax + 1 > static_cast<int>(scroll.nPage);
@@ -692,7 +717,7 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
             passed = passed && focused.top >= 0 && focused.bottom <= viewport.bottom &&
                 WindowText(executable) == L".\\bin\\路径 with spaces\\xray.exe";
             context.theme.Apply(true, true);
-            passed = passed && context.contentTheme.Colors().dark && SmokeTestNativeControl(checkbox);
+            passed = checkInputs() && passed && context.contentTheme.Colors().dark && SmokeTestNativeControl(checkbox);
             SendMessageW(window, WM_COMMAND, IDCANCEL, 0);
         };
         const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_SETTINGS),

@@ -322,7 +322,9 @@ public:
         const int directoryWidth = TextButtonWidth(openDirectory_);
         const int directoryX = width - margin - directoryWidth;
         move(directoryLabel_, margin, Scale(98), labelWidth, Scale(26));
-        move(directory_, inputX, Scale(98), directoryX - gap - inputX, Scale(26));
+        const int directoryHeight = SingleLineEditHeight(directory_);
+        move(directory_, inputX, Scale(98) + (Scale(26) - directoryHeight) / 2,
+            directoryX - gap - inputX, directoryHeight);
         move(openDirectory_, directoryX, Scale(98), directoryWidth, Scale(26));
         move(filterLabel_, margin, Scale(136), labelWidth, Scale(26));
         move(filter_, inputX, Scale(136), Scale(136), Scale(180));
@@ -1124,6 +1126,20 @@ private:
                 TooltipText(directory_) != settings_.configDirectory) {
                 return false;
             }
+        }
+        std::fwprintf(stderr, L"Smoke: native single-line path input height and vertical alignment.\n");
+        RECT directoryBounds{}, directoryButton{}, directoryClient{}, directoryText{};
+        GetWindowRect(directory_, &directoryBounds);
+        GetWindowRect(openDirectory_, &directoryButton);
+        GetClientRect(directory_, &directoryClient);
+        SendMessageW(directory_, EM_GETRECT, 0, reinterpret_cast<LPARAM>(&directoryText));
+        const LONG directoryBottom = directoryClient.bottom - directoryText.bottom;
+        if (directoryText.bottom - directoryText.top < ControlTextSize(directory_).cy || directoryBottom < 0 ||
+            std::abs(directoryText.top - directoryBottom) > 1 ||
+            std::abs(directoryBounds.top + directoryBounds.bottom - directoryButton.top - directoryButton.bottom) > 1) {
+            std::fwprintf(stderr, L"Smoke: main path input alignment failed (top=%ld, bottom=%ld).\n",
+                directoryText.top, directoryBottom);
+            return false;
         }
         SendMessageW(files_, CB_SETCURSEL, 1, 0);
         Command(FileList, CBN_SELCHANGE);

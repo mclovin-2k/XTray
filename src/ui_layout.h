@@ -40,6 +40,30 @@ inline SIZE ControlTextSize(HWND control, int wrapWidth = 0)
     return size;
 }
 
+inline int SingleLineEditHeight(HWND control)
+{
+    const HDC device = GetDC(control);
+    if (device == nullptr) {
+        throw std::runtime_error(Text("Cannot measure input height.", "无法测量输入框高度。"));
+    }
+    const auto font = reinterpret_cast<HFONT>(SendMessageW(control, WM_GETFONT, 0, 0));
+    const auto previous = SelectObject(device, font != nullptr ? font : static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
+    TEXTMETRICW metrics{};
+    const bool measured = GetTextMetricsW(device, &metrics) != FALSE;
+    SelectObject(device, previous);
+    ReleaseDC(control, device);
+    if (!measured) {
+        throw std::runtime_error(Text("Cannot measure input height.", "无法测量输入框高度。"));
+    }
+    const UINT dpi = GetDpiForWindow(control);
+    const auto style = GetWindowLongPtrW(control, GWL_STYLE);
+    const auto extended = GetWindowLongPtrW(control, GWL_EXSTYLE);
+    // Native EDIT adds a one-pixel text inset beside its border.
+    const int inset = (extended & WS_EX_CLIENTEDGE) != 0 ? GetSystemMetricsForDpi(SM_CYEDGE, dpi) + 1
+        : (style & WS_BORDER) != 0 ? GetSystemMetricsForDpi(SM_CYBORDER, dpi) + 1 : 0;
+    return static_cast<int>(metrics.tmHeight) + inset * 2;
+}
+
 inline int TextButtonWidth(HWND control)
 {
     return ControlTextSize(control).cx + UiScale(control, 24);
