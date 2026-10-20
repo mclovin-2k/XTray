@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <cwchar>
 #include <exception>
+#include <iterator>
 #include <memory>
 #include <string_view>
 
@@ -51,6 +52,45 @@ BOOL WINAPI SmokeNotifyIcon(DWORD operation, PNOTIFYICONDATAW data)
         smokeTrayData = *data;
     }
     return smokeTrayAvailable;
+}
+
+std::wstring MainWindowTitle(const std::filesystem::path& root)
+{
+    return std::wstring(kWindowTitle) + L" (" + root.native() + L")";
+}
+
+std::wstring XrayStatusText(ProcessState state, DWORD pid)
+{
+    std::wstring result = L"Xray";
+    if (pid != 0) {
+        result += L"(PID " + std::to_wstring(pid) + L")";
+    }
+    const auto* status = state == ProcessState::Starting ? Text(L"Starting...", L"启动中…")
+        : state == ProcessState::Stopping ? Text(L"Stopping...", L"停止中…")
+        : pid != 0 ? Text(L"Running", L"运行中") : Text(L"Stopped", L"已停止");
+    return result + L" " + status;
+}
+
+std::wstring TrayTooltipText(const std::filesystem::path& root, ProcessState state, DWORD pid)
+{
+    const std::wstring first = std::wstring(kWindowTitle) + L"\n";
+    const std::wstring last = L"\n" + XrayStatusText(state, pid);
+    const size_t capacity = std::size(NOTIFYICONDATAW{}.szTip) - 1;
+    const size_t pathLimit = capacity - first.size() - last.size();
+    std::wstring directory = root.native();
+    if (directory.size() > pathLimit) {
+        // Keep the version and status intact within the native tooltip's limit.
+        size_t prefix = (pathLimit - 1) / 2;
+        size_t suffix = directory.size() - (pathLimit - 1 - prefix);
+        if (prefix > 0 && directory[prefix - 1] >= 0xD800 && directory[prefix - 1] <= 0xDBFF) {
+            --prefix;
+        }
+        if (suffix < directory.size() && directory[suffix] >= 0xDC00 && directory[suffix] <= 0xDFFF) {
+            ++suffix;
+        }
+        directory = directory.substr(0, prefix) + L"…" + directory.substr(suffix);
+    }
+    return first + directory + last;
 }
 
 int ReportStartupError(bool smokeTest, const std::wstring& error)
@@ -309,12 +349,7 @@ public:
         const DWORD pid = process_.Pid();
         const bool running = pid != 0;
         if (state != shownState_ || pid != shownPid_) {
-            std::wstring status = state == ProcessState::Starting ? Text(L"Starting...", L"启动中…")
-                : state == ProcessState::Stopping ? Text(L"Stopping...", L"停止中…")
-                : running ? Text(L"Running", L"运行中") : Text(L"Stopped", L"已停止");
-            if (running) {
-                status += L"  PID " + std::to_wstring(pid);
-            }
+            const auto status = XrayStatusText(state, pid);
             SetWindowTextW(status_, status.c_str());
             EnableWindow(run_, state == ProcessState::Stopped);
             EnableWindow(stop_, state == ProcessState::Running);
@@ -591,7 +626,7 @@ public:
             text.find(L"test 中文") != std::wstring::npos) {
             return false;
         }
-        return SmokeTestIconResources() && SmokeTestUiChanges() && SmokeTestLogButtons() &&
+        return SmokeTestIconResources() && SmokeTestInstanceText() && SmokeTestUiChanges() && SmokeTestLogButtons() &&
             SmokeTestThemes() && SmokeTestLogon() && SmokeTestTray();
     }
 
@@ -701,10 +736,7 @@ private:
         }
         const auto state = shownState_;
         const bool running = shownPid_ != 0 && shownPid_ != MAXDWORD;
-        const auto* status = state == ProcessState::Starting ? Text(L"Starting...", L"启动中…")
-            : state == ProcessState::Stopping ? Text(L"Stopping...", L"停止中…")
-            : running ? Text(L"Running", L"运行中") : Text(L"Stopped", L"已停止");
-        const std::wstring tooltip = std::wstring(L"XTray — ") + status + L"\n" + root_.native();
+        const auto tooltip = TrayTooltipText(root_, state, running ? shownPid_ : 0);
         nextTrayAttempt_ = GetTickCount64() + 2000;
         if (tray_.Update(window_, icons_[running ? RunningTrayIcon : StoppedTrayIcon], tooltip)) {
             trayFailureReported_ = false;
@@ -815,7 +847,7 @@ private:
 
     bool SmokeTestWindowBranding(bool running)
     {
-        const bool title = WindowText(window_) == kWindowTitle;
+        const bool title = WindowText(window_) == MainWindowTitle(root_);
         const auto smallWindowIcon = reinterpret_cast<HICON>(SendMessageW(window_, WM_GETICON, ICON_SMALL, 0));
         const auto largeWindowIcon = reinterpret_cast<HICON>(SendMessageW(window_, WM_GETICON, ICON_BIG, 0));
         const bool smallIcon = smallWindowIcon == icons_[SmallWindowIcon] &&
@@ -825,13 +857,65 @@ private:
         const bool statusIcon = reinterpret_cast<HICON>(SendMessageW(statusIcon_, STM_GETICON, 0, 0)) ==
             icons_[running ? RunningStatusIcon : StoppedStatusIcon];
         const bool trayIcon = smokeTrayData.hIcon == icons_[running ? RunningTrayIcon : StoppedTrayIcon];
-        if (!title || !smallIcon || !largeIcon || !statusIcon || !trayIcon) {
+        const auto pid = running ? process_.Pid() : 0;
+        const auto state = running ? ProcessState::Running : ProcessState::Stopped;
+        const bool statusText = WindowText(status_) == XrayStatusText(state, pid);
+        const bool trayText = std::wstring_view(smokeTrayData.szTip) == TrayTooltipText(root_, state, pid);
+        if (!title || !smallIcon || !largeIcon || !statusIcon || !trayIcon || !statusText || !trayText) {
             std::fwprintf(stderr,
-                L"Smoke: fixed window branding failed (title=%d, small=%d, large=%d, status=%d, tray=%d).\n",
-                title ? 1 : 0, smallIcon ? 1 : 0, largeIcon ? 1 : 0, statusIcon ? 1 : 0, trayIcon ? 1 : 0);
+                L"Smoke: window branding failed (title=%d, small=%d, large=%d, status=%d, tray=%d, status text=%d, tray text=%d).\n",
+                title ? 1 : 0, smallIcon ? 1 : 0, largeIcon ? 1 : 0, statusIcon ? 1 : 0, trayIcon ? 1 : 0,
+                statusText ? 1 : 0, trayText ? 1 : 0);
             return false;
         }
         return true;
+    }
+
+    bool SmokeTestInstanceText()
+    {
+        std::fwprintf(stderr, L"Smoke: directory title, three-line tray status, PID, and long-path limits.\n");
+        const auto language = CurrentLanguage();
+        const std::filesystem::path directory = L"D:\\Tools\\XRay\\XTray";
+        const std::wstring heading = kWindowTitle;
+        bool passed = MainWindowTitle(directory) == heading + L" (D:\\Tools\\XRay\\XTray)";
+        for (const auto selected : {Language::English, Language::Chinese}) {
+            ApplyLanguage(selected);
+            const std::wstring stopped = selected == Language::Chinese ? L"Xray 已停止" : L"Xray Stopped";
+            const std::wstring running = selected == Language::Chinese ? L"Xray(PID 12345) 运行中" : L"Xray(PID 12345) Running";
+            const std::wstring starting = selected == Language::Chinese ? L"Xray 启动中…" : L"Xray Starting...";
+            const std::wstring stopping = selected == Language::Chinese ? L"Xray(PID 12345) 停止中…" : L"Xray(PID 12345) Stopping...";
+            passed = passed && XrayStatusText(ProcessState::Stopped, 0) == stopped &&
+                XrayStatusText(ProcessState::Running, 12345) == running &&
+                XrayStatusText(ProcessState::Starting, 0) == starting &&
+                XrayStatusText(ProcessState::Stopping, 12345) == stopping &&
+                TrayTooltipText(directory, ProcessState::Stopped, 0) == heading + L"\n" + directory.native() + L"\n" + stopped &&
+                TrayTooltipText(directory, ProcessState::Running, 12345) == heading + L"\n" + directory.native() + L"\n" + running;
+            for (const DWORD pid : {DWORD{0}, DWORD{12345}, DWORD{MAXDWORD}}) {
+                const auto state = pid == 0 ? ProcessState::Stopped : ProcessState::Running;
+                const auto status = XrayStatusText(state, pid);
+                const size_t pathLimit = 127 - heading.size() - status.size() - 2;
+                std::wstring path = L"D:\\目录 with spaces\\";
+                path.append(pathLimit - path.size(), L'长');
+                const auto exact = heading + L"\n" + path + L"\n" + status;
+                passed = passed && TrayTooltipText(path, state, pid) == exact && exact.size() == 127;
+                path += std::wstring(200, L'长') + L"\\XTray";
+                const size_t prefix = (pathLimit - 1) / 2;
+                const size_t suffix = path.size() - (pathLimit - 1 - prefix);
+                path.replace(prefix - 1, 2, L"\U0001F600");
+                path.replace(suffix - 1, 2, L"\U0001F600");
+                const auto compact = TrayTooltipText(path, state, pid);
+                passed = passed && compact.size() <= 127 && std::count(compact.begin(), compact.end(), L'\n') == 2 &&
+                    compact.starts_with(heading + L"\nD:\\") && compact.ends_with(L"\\XTray\n" + status) &&
+                    compact.find(L'…') != std::wstring::npos && FromUtf8(ToUtf8(compact)) == compact &&
+                    MainWindowTitle(path) == heading + L" (" + path + L")";
+            }
+            if (!passed) {
+                std::fwprintf(stderr, L"Smoke: instance text failed (language=%d).\n", static_cast<int>(selected));
+                break;
+            }
+        }
+        ApplyLanguage(language);
+        return passed;
     }
 
     bool SmokeTestIconResources()
@@ -1124,7 +1208,7 @@ private:
         Refresh();
         if (WindowText(run_) != L"Run" || WindowText(clearLogs_) != L"Clear logs" ||
             TooltipText(clearLogs_) != L"Clear logs" || TooltipText(scrollToEnd_) != L"Scroll to end" ||
-            WindowText(status_) != L"Stopped" || logs_.Revision() != revision ||
+            WindowText(status_) != L"Xray Stopped" || logs_.Revision() != revision ||
             SendMessageW(filter_, CB_GETCURSEL, 0, 0) != 2 ||
             WindowText(logWindow_).find(L"[XTRAY]") != std::wstring::npos) {
             return false;
@@ -1997,7 +2081,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
         LONG height = bounds.bottom - bounds.top;
         width = (std::min)(width, workArea.right - workArea.left);
         height = (std::min)(height, workArea.bottom - workArea.top);
-        const HWND window = CreateWindowExW(0, className.c_str(), kWindowTitle, kWindowStyle,
+        const auto title = MainWindowTitle(root);
+        const HWND window = CreateWindowExW(0, className.c_str(), title.c_str(), kWindowStyle,
             workArea.left, workArea.top, width, height, nullptr, nullptr, instance, &app);
         if (window == nullptr) {
             if (app.startupError) {
