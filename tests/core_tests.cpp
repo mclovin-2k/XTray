@@ -671,11 +671,15 @@ void TestConfigurationPaths(const std::filesystem::path& root)
             if (line->source != LogSource::Xray) {
                 continue;
             }
-            const std::wstring_view text(line->text);
+            std::wstring_view text(line->text);
+            // Log lines retain their CR/LF; compare the argument without its output framing.
+            while (!text.empty() && (text.back() == L'\r' || text.back() == L'\n')) {
+                text.remove_suffix(1);
+            }
             if (text.starts_with(L"-config=") || text.starts_with(L"-confdir=")) {
-                arguments.push_back(line->text);
+                arguments.emplace_back(text);
             } else if (text.starts_with(L"loaded[")) {
-                loaded.push_back(line->text);
+                loaded.emplace_back(text);
             }
         }
         std::vector<std::wstring> expectedArguments;
