@@ -259,11 +259,16 @@ INT_PTR CALLBACK SettingsContentsProcedure(HWND window, UINT message, WPARAM wPa
                 GetWindowRect(control, &bounds);
                 MapWindowPoints(nullptr, window, reinterpret_cast<POINT*>(&bounds), 2);
                 const int margin = UiScale(window, 8);
+                const int previousScroll = context->scroll;
                 if (bounds.top < margin || bounds.bottom - bounds.top > client.bottom - margin * 2) {
                     context->scroll += bounds.top - margin;
                 } else if (bounds.bottom > client.bottom - margin) {
                     context->scroll += bounds.bottom - client.bottom + margin;
                 }
+                context->scroll = std::clamp(context->scroll, 0,
+                    (std::max)(0, context->contentHeight - static_cast<int>(client.bottom)));
+                // Moving an already visible combo box closes its newly opened drop-down.
+                if (context->scroll == previousScroll) { return TRUE; }
             } else if (message == WM_MOUSEWHEEL) {
                 UINT lines = 3;
                 SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
@@ -637,6 +642,50 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
             passed = passed && GetFocus() == languageChoice &&
                 GetNextDlgTabItem(window, languageChoice, FALSE) == themeChoice &&
                 GetNextDlgTabItem(window, themeChoice, FALSE) == SettingsControl(window, IDC_EXECUTABLE);
+            const auto dispatchFocusMessages = [&] {
+                MSG pending{};
+                while (PeekMessageW(&pending, context.contents, kEnsureSettingVisible, kEnsureSettingVisible, PM_REMOVE)) {
+                    if (pending.message == WM_QUIT) {
+                        PostQuitMessage(static_cast<int>(pending.wParam));
+                        passed = false;
+                        break;
+                    }
+                    DispatchMessageW(&pending);
+                }
+            };
+            const auto checkDropdowns = [&] {
+                for (const int id : {IDC_LANGUAGE, IDC_THEME}) {
+                    const HWND control = SettingsControl(window, id);
+                    SetFocus(SettingsControl(window, IDC_EXECUTABLE));
+                    dispatchFocusMessages();
+                    COMBOBOXINFO combo{sizeof(COMBOBOXINFO)};
+                    if (!GetComboBoxInfo(control, &combo)) { return false; }
+                    const auto point = MAKELPARAM((combo.rcButton.left + combo.rcButton.right) / 2,
+                        (combo.rcButton.top + combo.rcButton.bottom) / 2);
+                    const auto selection = SendMessageW(control, CB_GETCURSEL, 0, 0);
+                    const int scrollBefore = context.scroll;
+                    SendMessageW(control, WM_LBUTTONDOWN, MK_LBUTTON, point);
+                    dispatchFocusMessages();
+                    SendMessageW(control, WM_LBUTTONUP, 0, point);
+                    const bool opened = GetFocus() == control &&
+                        SendMessageW(control, CB_GETDROPPEDSTATE, 0, 0) != FALSE &&
+                        SendMessageW(control, CB_GETCURSEL, 0, 0) == selection && context.scroll == scrollBefore;
+                    SendMessageW(control, CB_SHOWDROPDOWN, FALSE, 0);
+                    if (!opened) {
+                        std::fwprintf(stderr, L"Smoke: settings first-click drop-down failed (id=%d, dark=%d).\n",
+                            id, context.contentTheme.Colors().dark);
+                        return false;
+                    }
+                }
+                return true;
+            };
+            std::fwprintf(stderr, L"Smoke: settings combo boxes open on the first click after focus changes.\n");
+            const bool initialDark = context.theme.Colors().dark;
+            for (const bool dark : {false, true}) {
+                context.theme.Apply(dark, true);
+                passed = checkDropdowns() && passed;
+            }
+            context.theme.Apply(initialDark, true);
             RECT bounds{};
             GetWindowRect(window, &bounds);
             MONITORINFO monitor{sizeof(MONITORINFO)};
@@ -706,15 +755,7 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                 GetFocus() == SettingsControl(window, IDC_BROWSE_EXECUTABLE);
             const HWND checkbox = SettingsControl(window, IDC_LOGON_STARTUP);
             SetFocus(checkbox);
-            MSG pending{};
-            while (PeekMessageW(&pending, context.contents, kEnsureSettingVisible, kEnsureSettingVisible, PM_REMOVE)) {
-                if (pending.message == WM_QUIT) {
-                    PostQuitMessage(static_cast<int>(pending.wParam));
-                    passed = false;
-                    break;
-                }
-                DispatchMessageW(&pending);
-            }
+            dispatchFocusMessages();
             RECT focused{}, viewport{};
             GetWindowRect(checkbox, &focused);
             GetClientRect(context.contents, &viewport);
