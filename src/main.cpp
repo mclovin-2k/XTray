@@ -316,7 +316,8 @@ public:
         const int folderX = width - margin - folderWidth;
         const int fileX = folderX - gap - fileWidth;
         move(fileLabel_, margin, Scale(60), labelWidth, Scale(26));
-        move(files_, inputX, Scale(60), fileX - gap - inputX, Scale(240));
+        move(files_, inputX, Scale(60) + (Scale(26) - ComboBoxHeight(files_)) / 2,
+            fileX - gap - inputX, Scale(240));
         move(openFile_, fileX, Scale(60), fileWidth, Scale(26));
         move(openFileDirectory_, folderX, Scale(60), folderWidth, Scale(26));
         const int directoryWidth = TextButtonWidth(openDirectory_);
@@ -326,10 +327,11 @@ public:
         move(directory_, inputX, Scale(98) + (Scale(26) - directoryHeight) / 2,
             directoryX - gap - inputX, directoryHeight);
         move(openDirectory_, directoryX, Scale(98), directoryWidth, Scale(26));
-        move(filterLabel_, margin, Scale(136), labelWidth, Scale(26));
-        move(filter_, inputX, Scale(136), Scale(136), Scale(180));
-        move(scrollToEnd_, width - margin - Scale(72), Scale(134), Scale(32), Scale(32));
-        move(clearLogs_, width - margin - Scale(32), Scale(134), Scale(32), Scale(32));
+        const int filterY = Scale(134), filterHeight = Scale(32);
+        move(filterLabel_, margin, filterY + (filterHeight - Scale(26)) / 2, labelWidth, Scale(26));
+        move(filter_, inputX, filterY + (filterHeight - ComboBoxHeight(filter_)) / 2, Scale(136), Scale(180));
+        move(scrollToEnd_, width - margin - Scale(72), filterY, Scale(32), filterHeight);
+        move(clearLogs_, width - margin - Scale(32), filterY, Scale(32), filterHeight);
         move(logWindow_, margin, Scale(174), width - margin * 2,
             static_cast<int>(client.bottom) - Scale(190));
     }
@@ -1073,6 +1075,46 @@ private:
         return true;
     }
 
+    bool SmokeTestControlAlignment()
+    {
+        const auto rowAligned = [](const auto& controls, const wchar_t* name) {
+            RECT reference{};
+            if (!GetWindowRect(controls.front(), &reference)) { return false; }
+            for (const HWND control : controls) {
+                RECT bounds{};
+                if (!GetWindowRect(control, &bounds)) { return false; }
+                const LONG delta = bounds.top + bounds.bottom - reference.top - reference.bottom;
+                if (std::abs(delta) > 1) {
+                    std::fwprintf(stderr, L"Smoke: control row alignment failed (%ls, id=%d, delta=%ld).\n",
+                        name, GetDlgCtrlID(control), delta);
+                    return false;
+                }
+            }
+            return true;
+        };
+        const auto columnAligned = [](const auto& controls, bool right) {
+            RECT reference{};
+            if (!GetWindowRect(controls.front(), &reference)) { return false; }
+            for (const HWND control : controls) {
+                RECT bounds{};
+                if (!GetWindowRect(control, &bounds) ||
+                    (right ? bounds.right != reference.right : bounds.left != reference.left)) {
+                    std::fwprintf(stderr, L"Smoke: control column alignment failed (id=%d, right=%d).\n",
+                        GetDlgCtrlID(control), right);
+                    return false;
+                }
+            }
+            return true;
+        };
+        return rowAligned(std::array{statusIcon_, status_, run_, stop_, restart_, settingsButton_}, L"status") &&
+            rowAligned(std::array{fileLabel_, files_, openFile_, openFileDirectory_}, L"config files") &&
+            rowAligned(std::array{directoryLabel_, directory_, openDirectory_}, L"config directory") &&
+            rowAligned(std::array{filterLabel_, filter_, scrollToEnd_, clearLogs_}, L"log source") &&
+            columnAligned(std::array{statusIcon_, fileLabel_, directoryLabel_, filterLabel_, logWindow_}, false) &&
+            columnAligned(std::array{files_, directory_, filter_}, false) &&
+            columnAligned(std::array{settingsButton_, openFileDirectory_, openDirectory_, clearLogs_, logWindow_}, true);
+    }
+
     bool SmokeTestUiChanges()
     {
         std::fwprintf(stderr, L"Smoke: centered window and clear-button alignment.\n");
@@ -1109,9 +1151,19 @@ private:
             L".\\other 配置目录\\two.json"};
         settings_.configDirectory = L".\\a long 配置目录 & spaces\\fragments";
         UpdatePaths();
+        std::fwprintf(stderr, L"Smoke: main control rows and columns at normal and minimum widths.\n");
+        RECT originalClient{};
+        GetClientRect(window_, &originalClient);
+        const LONG originalWidth = bounds.right - bounds.left;
+        const LONG minimumWidth = originalWidth - originalClient.right + Scale(640);
         for (const auto language : {Language::English, Language::Chinese}) {
             ApplyLanguage(language);
             ApplyUiText();
+            for (const LONG width : {(std::min)(originalWidth, minimumWidth), originalWidth}) {
+                SetWindowPos(window_, nullptr, 0, 0, width, bounds.bottom - bounds.top,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+                if (!SmokeTestControlAlignment()) { return false; }
+            }
             for (const auto control : {run_, stop_, restart_, settingsButton_, openFile_, openFileDirectory_, openDirectory_}) {
                 RECT button{};
                 GetWindowRect(control, &button);
@@ -1382,6 +1434,7 @@ private:
         for (const bool dark : {true, false, true, false}) {
             settings_.theme = dark ? ThemeMode::Dark : ThemeMode::Light;
             UpdateTheme(!dark);
+            if (!SmokeTestControlAlignment()) { return fail(L"control alignment after theme changes"); }
             CHARRANGE after{};
             POINT afterScroll{};
             SendMessageW(logWindow_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&after));

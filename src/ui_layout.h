@@ -64,6 +64,16 @@ inline int SingleLineControlHeight(HWND control)
     return static_cast<int>(metrics.tmHeight) + inset * 2;
 }
 
+inline int ComboBoxHeight(HWND control)
+{
+    RECT bounds{};
+    if (!GetWindowRect(control, &bounds) || bounds.bottom <= bounds.top) {
+        throw std::runtime_error(Text("Cannot measure combo box height.", "无法测量下拉框高度。"));
+    }
+    // The window rectangle excludes the drop-down list.
+    return static_cast<int>(bounds.bottom - bounds.top);
+}
+
 inline int TextButtonWidth(HWND control)
 {
     return ControlTextSize(control).cx + UiScale(control, 24);

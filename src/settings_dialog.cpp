@@ -94,19 +94,24 @@ void LayoutSettingsContent(Context& context)
                 buttonX - gap - margin, height);
             y += (std::max)(height, rowHeight) + sectionGap;
         };
-        const int languageLabel = static_cast<int>(ControlTextSize(GetDlgItem(body, IDC_LABEL_LANGUAGE)).cx);
-        const int themeLabel = static_cast<int>(ControlTextSize(GetDlgItem(body, IDC_LABEL_THEME)).cx);
+        const auto languageLabel = ControlTextSize(GetDlgItem(body, IDC_LABEL_LANGUAGE));
+        const auto themeLabel = ControlTextSize(GetDlgItem(body, IDC_LABEL_THEME));
         const int half = (available - sectionGap) / 2;
-        const bool stacked = half < (std::max)(languageLabel, themeLabel) + gap + UiScale(body, 96);
+        const bool stacked = half < (std::max)(languageLabel.cx, themeLabel.cx) + gap + UiScale(body, 96);
         const int groupWidth = stacked ? available : half;
-        place(IDC_LABEL_LANGUAGE, margin, y, languageLabel, rowHeight);
-        place(IDC_LANGUAGE, margin + languageLabel + gap, y,
-            groupWidth - languageLabel - gap, rowHeight + UiScale(body, 160));
+        const LONG languageWidth = stacked ? (std::max)(languageLabel.cx, themeLabel.cx) : languageLabel.cx;
+        const LONG themeWidth = stacked ? languageWidth : themeLabel.cx;
+        place(IDC_LABEL_LANGUAGE, margin, y + (rowHeight - languageLabel.cy) / 2,
+            languageLabel.cx, languageLabel.cy);
+        place(IDC_LANGUAGE, margin + languageWidth + gap,
+            y + (rowHeight - ComboBoxHeight(GetDlgItem(body, IDC_LANGUAGE))) / 2,
+            groupWidth - languageWidth - gap, rowHeight + UiScale(body, 160));
         if (stacked) { y += rowHeight + gap; }
         const int themeX = stacked ? margin : margin + half + sectionGap;
-        place(IDC_LABEL_THEME, themeX, y, themeLabel, rowHeight);
-        place(IDC_THEME, themeX + themeLabel + gap, y,
-            available + margin - themeX - themeLabel - gap, rowHeight + UiScale(body, 160));
+        place(IDC_LABEL_THEME, themeX, y + (rowHeight - themeLabel.cy) / 2, themeLabel.cx, themeLabel.cy);
+        place(IDC_THEME, themeX + themeWidth + gap,
+            y + (rowHeight - ComboBoxHeight(GetDlgItem(body, IDC_THEME))) / 2,
+            available + margin - themeX - themeWidth - gap, rowHeight + UiScale(body, 160));
         y += rowHeight + sectionGap;
         label(IDC_LABEL_EXECUTABLE);
         pathRow(IDC_EXECUTABLE, IDC_BROWSE_EXECUTABLE, SingleLineControlHeight(GetDlgItem(body, IDC_EXECUTABLE)));
@@ -653,6 +658,41 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                     DispatchMessageW(&pending);
                 }
             };
+            const auto checkAlignment = [&] {
+                for (const auto& [labelId, inputId] : {std::pair{IDC_LABEL_LANGUAGE, IDC_LANGUAGE},
+                    std::pair{IDC_LABEL_THEME, IDC_THEME}}) {
+                    RECT label{}, input{};
+                    GetWindowRect(SettingsControl(window, labelId), &label);
+                    GetWindowRect(SettingsControl(window, inputId), &input);
+                    if (std::abs(label.top + label.bottom - input.top - input.bottom) > 1 ||
+                        label.bottom - label.top < ControlTextSize(SettingsControl(window, labelId)).cy ||
+                        label.right >= input.left) {
+                        std::fwprintf(stderr, L"Smoke: settings inline label alignment failed (id=%d).\n", labelId);
+                        return false;
+                    }
+                }
+                RECT languageLabel{}, themeLabel{}, languageInput{}, themeInput{}, save{}, cancel{};
+                GetWindowRect(SettingsControl(window, IDC_LABEL_LANGUAGE), &languageLabel);
+                GetWindowRect(SettingsControl(window, IDC_LABEL_THEME), &themeLabel);
+                GetWindowRect(languageChoice, &languageInput);
+                GetWindowRect(themeChoice, &themeInput);
+                GetWindowRect(SettingsControl(window, IDOK), &save);
+                GetWindowRect(SettingsControl(window, IDCANCEL), &cancel);
+                if (languageLabel.left == themeLabel.left) {
+                    if (languageInput.left != themeInput.left || languageInput.right != themeInput.right ||
+                        themeLabel.top <= languageInput.bottom) { return false; }
+                } else if (std::abs(languageInput.top + languageInput.bottom - themeInput.top - themeInput.bottom) > 1) {
+                    return false;
+                }
+                RECT browse{};
+                GetWindowRect(SettingsControl(window, IDC_BROWSE_EXECUTABLE), &browse);
+                for (const int id : {IDC_ADD_FILES, IDC_BROWSE_DIRECTORY}) {
+                    RECT button{};
+                    GetWindowRect(SettingsControl(window, id), &button);
+                    if (button.right != browse.right) { return false; }
+                }
+                return std::abs(save.top + save.bottom - cancel.top - cancel.bottom) <= 1;
+            };
             const auto checkDropdowns = [&] {
                 for (const int id : {IDC_LANGUAGE, IDC_THEME}) {
                     const HWND control = SettingsControl(window, id);
@@ -683,6 +723,7 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
             const bool initialDark = context.theme.Colors().dark;
             for (const bool dark : {false, true}) {
                 context.theme.Apply(dark, true);
+                passed = checkAlignment() && passed;
                 passed = checkDropdowns() && passed;
             }
             context.theme.Apply(initialDark, true);
@@ -696,7 +737,7 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                     initialScroll.nMax + 1 <= static_cast<int>(initialScroll.nPage);
             }
             SetWindowPos(window, nullptr, 0, 0,
-                (std::min)(bounds.right - bounds.left, static_cast<LONG>(UiScale(window, 520))),
+                (std::min)(bounds.right - bounds.left, static_cast<LONG>(UiScale(window, 320))),
                 UiScale(window, 340), SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
             RECT client{}, saveBefore{}, saveAfter{}, cancel{}, bodyBounds{};
             GetClientRect(window, &client);
@@ -736,7 +777,7 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                 }
                 return true;
             };
-            passed = checkInputs() && passed;
+            passed = checkInputs() && checkAlignment() && passed;
             SCROLLINFO scroll{sizeof(SCROLLINFO), SIF_ALL};
             passed = passed && GetScrollInfo(context.contents, SB_VERT, &scroll) &&
                 scroll.nMax + 1 > static_cast<int>(scroll.nPage);
@@ -763,7 +804,8 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
             passed = passed && focused.top >= 0 && focused.bottom <= viewport.bottom &&
                 WindowText(executable) == L".\\bin\\路径 with spaces\\xray.exe";
             context.theme.Apply(true, true);
-            passed = checkInputs() && passed && context.contentTheme.Colors().dark && SmokeTestNativeControl(checkbox);
+            passed = checkInputs() && checkAlignment() && passed &&
+                context.contentTheme.Colors().dark && SmokeTestNativeControl(checkbox);
             SendMessageW(window, WM_COMMAND, IDCANCEL, 0);
         };
         const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_SETTINGS),
