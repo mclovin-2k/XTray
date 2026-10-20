@@ -4,6 +4,7 @@
 #include <dwmapi.h>
 #include <richedit.h>
 #include <uxtheme.h>
+#include <vssym32.h>
 
 #include <algorithm>
 #include <cwchar>
@@ -11,6 +12,7 @@
 #include <exception>
 #include <iterator>
 #include <stdexcept>
+#include <string>
 
 namespace xtray {
 namespace {
@@ -51,6 +53,47 @@ HFONT WindowFont(HWND window, HFONT fallback)
 int Scale(HWND window, int value)
 {
     return MulDiv(value, static_cast<int>(GetDpiForWindow(window)), 96);
+}
+
+bool DrawCheckboxCaption(HWND control, const NMCUSTOMDRAW& item, const ThemePalette& colors)
+{
+    const auto theme = GetWindowTheme(control);
+    const int length = GetWindowTextLengthW(control);
+    if (theme == nullptr || length <= 0) {
+        return false;
+    }
+    SavedDc saved(item.hdc);
+    SelectObject(item.hdc, WindowFont(control, nullptr));
+    SIZE glyph{}, spacing{};
+    if (FAILED(GetThemePartSize(theme, item.hdc, BP_CHECKBOX, CBS_UNCHECKEDNORMAL,
+        nullptr, TS_DRAW, &glyph)) ||
+        !GetTextExtentPoint32W(item.hdc, L"0", 1, &spacing)) {
+        return false;
+    }
+    std::wstring text(static_cast<size_t>(length) + 1, L'\0');
+    const int copied = GetWindowTextW(control, text.data(), static_cast<int>(text.size()));
+    if (copied <= 0) {
+        return false;
+    }
+    RECT bounds = item.rc;
+    bounds.left += glyph.cx + spacing.cx / 2;
+    const auto cues = SendMessageW(control, WM_QUERYUISTATE, 0, 0);
+    const UINT flags = DT_SINGLELINE | ((cues & UISF_HIDEACCEL) != 0 ? DT_HIDEPREFIX : 0);
+    SetBkMode(item.hdc, TRANSPARENT);
+    SetTextColor(item.hdc, IsWindowEnabled(control) ? colors.text : colors.disabled);
+    DrawTextW(item.hdc, text.data(), copied, &bounds, flags | DT_VCENTER | DT_END_ELLIPSIS);
+    if ((item.uItemState & CDIS_FOCUS) != 0 && (cues & UISF_HIDEFOCUS) == 0) {
+        RECT focus = bounds;
+        DrawTextW(item.hdc, text.data(), copied, &focus, flags | DT_CALCRECT);
+        const LONG height = focus.bottom - focus.top;
+        focus.top = bounds.top + (bounds.bottom - bounds.top - height) / 2;
+        focus.bottom = focus.top + height;
+        focus.right = (std::min)(focus.right, bounds.right);
+        InflateRect(&focus, 1, 1);
+        IntersectRect(&focus, &focus, &item.rc);
+        DrawFocusRect(item.hdc, &focus);
+    }
+    return true;
 }
 
 const wchar_t* MenuText(ULONG_PTR data)
@@ -116,6 +159,7 @@ bool SmokeTestNativeControl(HWND control)
     const bool combo = IsClass(control, L"ComboBox");
     const bool button = IsClass(control, L"Button");
     const LONG_PTR style = GetWindowLongPtrW(control, GWL_STYLE);
+    const bool checkbox = button && (style & BS_TYPEMASK) == BS_AUTOCHECKBOX;
     RECT bounds{};
     if (theme == nullptr || (!combo && !button) ||
         (button && (style & BS_TYPEMASK) == BS_OWNERDRAW) ||
@@ -161,8 +205,31 @@ bool SmokeTestNativeControl(HWND control)
         GdiFlush();
         const auto* begin = static_cast<const DWORD*>(pixels);
         const auto count = static_cast<size_t>(bounds.right) * static_cast<size_t>(bounds.bottom);
-        return std::any_of(begin, begin + count,
+        const bool painted = std::any_of(begin, begin + count,
             [](DWORD pixel) { return (pixel & 0x00FFFFFF) != 0x00FF00FF; });
+        if (checkbox && theme->Colors().dark) {
+            const auto& colors = theme->Colors();
+            const auto foreground = IsWindowEnabled(control) ? colors.text : colors.disabled;
+            const auto threshold = (GetRValue(foreground) + GetRValue(colors.window)) / 2;
+            size_t readable = 0;
+            // Exclude the native check glyph, so its bright pixels cannot hide a black caption.
+            for (LONG y = 0; y < bounds.bottom; ++y) {
+                for (LONG x = Scale(control, 32); x < bounds.right; ++x) {
+                    const auto pixel = begin[static_cast<size_t>(y) * bounds.right + x];
+                    if ((pixel & 0x00FFFFFF) != 0x00FF00FF &&
+                        GetRValue(pixel) > threshold && GetGValue(pixel) > threshold &&
+                        GetBValue(pixel) > threshold) {
+                        ++readable;
+                    }
+                }
+            }
+            if (readable < 5) {
+                std::fwprintf(stderr, L"Smoke: native checkbox caption contrast failed (id=%d, enabled=%d, pixels=%zu).\n",
+                    GetDlgCtrlID(control), IsWindowEnabled(control), readable);
+                return false;
+            }
+        }
+        return painted;
     };
     bool passed = draw();
     SendMessageW(control, WM_MOUSEMOVE, 0, MAKELPARAM(Scale(control, 6), Scale(control, 6)));
@@ -349,6 +416,17 @@ bool ThemeWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam, LRESULT& re
         FillRect(reinterpret_cast<HDC>(wParam), &bounds, background_);
         result = TRUE;
         return true;
+    }
+    if (message == WM_NOTIFY && lParam != 0 && colors_.dark) {
+        const auto& item = *reinterpret_cast<const NMCUSTOMDRAW*>(lParam);
+        if (item.hdr.code == NM_CUSTOMDRAW && item.dwDrawStage == CDDS_PREPAINT &&
+            GetParent(item.hdr.hwndFrom) == window_ && IsClass(item.hdr.hwndFrom, L"Button") &&
+            (GetWindowLongPtrW(item.hdr.hwndFrom, GWL_STYLE) & BS_TYPEMASK) == BS_AUTOCHECKBOX &&
+            DrawCheckboxCaption(item.hdr.hwndFrom, item, colors_)) {
+            // Native checkbox painting has drawn the glyph in CDDS_PREERASE; replace only its caption.
+            result = CDRF_SKIPDEFAULT;
+            return true;
+        }
     }
     if (message >= WM_CTLCOLORMSGBOX && message <= WM_CTLCOLORSTATIC) {
         const HWND control = reinterpret_cast<HWND>(lParam);

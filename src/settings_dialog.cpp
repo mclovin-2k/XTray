@@ -4,6 +4,7 @@
 #include "theme_window.h"
 
 #include <shobjidl.h>
+#include <uxtheme.h>
 #include <wrl/client.h>
 
 #include <cerrno>
@@ -211,6 +212,10 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
     }
     LRESULT themed = 0;
     if (context->theme.Handle(message, wParam, lParam, themed)) {
+        if (message == WM_NOTIFY) {
+            SetWindowLongPtrW(dialog, DWLP_MSGRESULT, themed);
+            return TRUE;
+        }
         return themed;
     }
     if (message == WM_CLOSE || (message == WM_COMMAND && LOWORD(wParam) == IDCANCEL)) {
@@ -417,6 +422,11 @@ bool SmokeTestSettingsStartup(HWND owner, const std::filesystem::path& root)
                     (IsDlgButtonChecked(window, IDC_LOGON_STARTUP) == BST_CHECKED) == checked;
                 for (const bool dark : {false, true}) {
                     context.theme.Apply(dark, true);
+                    if (dark) {
+                        std::fwprintf(stderr, L"Smoke: dark startup checkbox caption with a native light checkbox theme.\n");
+                        // Reproduce a theme that ignores WM_CTLCOLOR's caption color, including on Windows 11.
+                        SetWindowTheme(checkbox, L"Explorer", nullptr);
+                    }
                     passed = passed &&
                         (IsDlgButtonChecked(window, IDC_LOGON_STARTUP) == BST_CHECKED) == checked &&
                         SmokeTestNativeControl(checkbox);
