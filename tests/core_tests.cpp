@@ -8,6 +8,7 @@
 
 #include <shellapi.h>
 
+#include <array>
 #include <chrono>
 #include <cstdio>
 #include <cwchar>
@@ -830,6 +831,57 @@ void TestProcesses(const std::filesystem::path& root)
         "Shutdown left the managed child running.");
 }
 
+void TestRuntimeFailure()
+{
+    std::fputs("Core: window callback failure reports its reason and cleans up the child.\n", stdout);
+    SECURITY_ATTRIBUTES security{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+    HANDLE rawRead = nullptr, rawWrite = nullptr;
+    Check(CreatePipe(&rawRead, &rawWrite, &security, 0) != FALSE,
+        "Cannot create the GUI failure test output pipe.");
+    Handle output(rawRead), writer(rawWrite);
+    Check(SetHandleInformation(output.Get(), HANDLE_FLAG_INHERIT, 0) != FALSE,
+        "Cannot configure the GUI failure test output pipe.");
+    Handle nullInput(CreateFileW(L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        &security, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+    Check(static_cast<bool>(nullInput), "Cannot prepare GUI failure test standard input.");
+    const auto executable = ExecutablePath().parent_path() / L"XTray.exe";
+    auto command = QuoteArgument(executable.native()) + L" --smoke-test-failure";
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = nullInput.Get();
+    startup.hStdOutput = startup.hStdError = writer.Get();
+    PROCESS_INFORMATION information{};
+    Check(CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, TRUE,
+        CREATE_NO_WINDOW, nullptr, executable.parent_path().c_str(), &startup, &information) != FALSE,
+        "Cannot start the controlled GUI failure test.");
+    Handle thread(information.hThread);
+    InstanceChild owner{Handle(information.hProcess)};
+    writer.Reset();
+    Check(WaitForSingleObject(owner.process.Get(), 10000) == WAIT_OBJECT_0,
+        "The GUI exception blocked instead of returning a diagnostic exit code.");
+    DWORD code = 0;
+    Check(GetExitCodeProcess(owner.process.Get(), &code) != FALSE && code == 1,
+        "The GUI callback exception did not fail its process.");
+    std::string captured;
+    std::array<char, 4096> buffer{};
+    DWORD count = 0;
+    while (ReadFile(output.Get(), buffer.data(), static_cast<DWORD>(buffer.size()), &count, nullptr) && count != 0) {
+        captured.append(buffer.data(), count);
+    }
+    const std::string marker = "Smoke: runtime failure child PID ";
+    const auto position = captured.find(marker);
+    Check(position != std::string::npos &&
+        captured.find("XTray runtime failure: Injected window callback failure.") != std::string::npos,
+        "The GUI runtime error lost the original reason or did not exercise a managed child.");
+    const auto childPid = std::stoul(captured.substr(position + marker.size()));
+    Check(childPid != 0, "The GUI runtime failure did not identify its managed child.");
+    Handle child(OpenProcess(SYNCHRONIZE, FALSE, static_cast<DWORD>(childPid)));
+    const DWORD openError = GetLastError();
+    Check(child ? WaitForSingleObject(child.Get(), 5000) == WAIT_OBJECT_0 : openError == ERROR_INVALID_PARAMETER,
+        "The managed child survived its GUI owner's runtime failure.");
+}
+
 void TestAbnormalExit(const std::filesystem::path& root)
 {
     std::wstring command = QuoteArgument(ExecutablePath().native()) +
@@ -908,6 +960,7 @@ int wmain(int argc, wchar_t** argv)
         TestConfigurationPaths(root);
         TestProcesses(root);
         TestAbnormalExit(root);
+        TestRuntimeFailure();
         std::puts("All core tests passed. No real Xray process or network listener was started.");
         return 0;
     } catch (const std::exception& exception) {

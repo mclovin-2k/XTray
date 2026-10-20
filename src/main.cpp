@@ -9,6 +9,7 @@
 #include "xray_process.h"
 #include "settings_dialog.h"
 #include "win32.h"
+#include "ui_layout.h"
 
 #include <commdlg.h>
 #include <objbase.h>
@@ -35,6 +36,7 @@ namespace {
 using namespace xtray;
 
 constexpr UINT kExitMessage = WM_APP + 43;
+constexpr UINT kRuntimeFailureTestMessage = WM_APP + 49;
 constexpr DWORD kWindowStyle = WS_OVERLAPPEDWINDOW;
 enum ControlId { Run = 2001, Stop, Restart, SettingsButton, FileList, OpenFile,
     OpenFileDirectory, OpenDirectory, Filter, ClearLogs, ScrollToEnd, ShowGui, ExitApp };
@@ -56,6 +58,9 @@ int ReportStartupError(bool smokeTest, const std::wstring& error)
     if (smokeTest) {
         std::fwprintf(stderr, L"%ls\n", error.c_str());
     } else {
+        // Failed creation/teardown can leave WM_QUIT queued before the error dialog.
+        MSG pending{};
+        while (PeekMessageW(&pending, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE)) {}
         MessageBoxW(nullptr, error.c_str(), L"XTray", MB_OK | MB_ICONERROR);
     }
     return 1;
@@ -249,33 +254,42 @@ public:
         }
         RECT client{};
         GetClientRect(window_, &client);
-        const int width = client.right;
-        const auto move = [this](HWND control, int x, int y, int widthValue, int height) {
-            MoveWindow(control, Scale(x), Scale(y), Scale(widthValue), Scale(height), TRUE);
+        const int width = static_cast<int>(client.right);
+        const int margin = Scale(16), gap = Scale(8);
+        const auto move = [](HWND control, int x, int y, int widthValue, int height) {
+            MoveWindow(control, x, y, (std::max)(1, widthValue), height, TRUE);
         };
-        const int logicalWidth = MulDiv(width, 96, static_cast<int>(dpi_));
-        move(statusIcon_, 16, 16, 24, 28);
-        move(status_, 48, 16, (std::max)(80, logicalWidth - 392), 28);
-        const int actions = logicalWidth - 328;
-        move(run_, actions, 16, 72, 28);
-        move(stop_, actions + 80, 16, 72, 28);
-        move(restart_, actions + 160, 16, 72, 28);
-        move(settingsButton_, actions + 240, 16, 72, 28);
-        move(fileLabel_, 16, 60, 96, 26);
-        move(files_, 112, 60, logicalWidth - 408, 240);
-        move(openFile_, logicalWidth - 288, 60, 112, 26);
-        move(openFileDirectory_, logicalWidth - 168, 60, 152, 26);
-        move(directoryLabel_, 16, 98, 96, 26);
-        move(directory_, 112, 98, logicalWidth - 248, 26);
-        move(openDirectory_, logicalWidth - 128, 98, 112, 26);
-        move(filterLabel_, 16, 136, 96, 26);
-        move(filter_, 112, 136, 136, 180);
-        MoveWindow(scrollToEnd_, width - Scale(16) - Scale(72), Scale(134),
-            Scale(32), Scale(32), TRUE);
-        MoveWindow(clearLogs_, width - Scale(16) - Scale(32), Scale(134),
-            Scale(32), Scale(32), TRUE);
-        MoveWindow(logWindow_, Scale(16), Scale(174), (std::max)(1, width - Scale(32)),
-            (std::max)(1, static_cast<int>(client.bottom) - Scale(190)), TRUE);
+        int actionX = width - margin;
+        for (const auto control : {settingsButton_, restart_, stop_, run_}) {
+            const int buttonWidth = TextButtonWidth(control);
+            actionX -= buttonWidth;
+            move(control, actionX, Scale(16), buttonWidth, Scale(28));
+            actionX -= gap;
+        }
+        move(statusIcon_, margin, Scale(16), Scale(24), Scale(28));
+        move(status_, Scale(48), Scale(16), actionX - Scale(48), Scale(28));
+        const int labelWidth = (std::max)({ControlTextSize(fileLabel_).cx,
+            ControlTextSize(directoryLabel_).cx, ControlTextSize(filterLabel_).cx});
+        const int inputX = margin + labelWidth + gap;
+        const int folderWidth = TextButtonWidth(openFileDirectory_);
+        const int fileWidth = TextButtonWidth(openFile_);
+        const int folderX = width - margin - folderWidth;
+        const int fileX = folderX - gap - fileWidth;
+        move(fileLabel_, margin, Scale(60), labelWidth, Scale(26));
+        move(files_, inputX, Scale(60), fileX - gap - inputX, Scale(240));
+        move(openFile_, fileX, Scale(60), fileWidth, Scale(26));
+        move(openFileDirectory_, folderX, Scale(60), folderWidth, Scale(26));
+        const int directoryWidth = TextButtonWidth(openDirectory_);
+        const int directoryX = width - margin - directoryWidth;
+        move(directoryLabel_, margin, Scale(98), labelWidth, Scale(26));
+        move(directory_, inputX, Scale(98), directoryX - gap - inputX, Scale(26));
+        move(openDirectory_, directoryX, Scale(98), directoryWidth, Scale(26));
+        move(filterLabel_, margin, Scale(136), labelWidth, Scale(26));
+        move(filter_, inputX, Scale(136), Scale(136), Scale(180));
+        move(scrollToEnd_, width - margin - Scale(72), Scale(134), Scale(32), Scale(32));
+        move(clearLogs_, width - margin - Scale(32), Scale(134), Scale(32), Scale(32));
+        move(logWindow_, margin, Scale(174), width - margin * 2,
+            static_cast<int>(client.bottom) - Scale(190));
     }
 
     void DpiChanged(UINT dpi)
@@ -314,6 +328,13 @@ public:
             UpdateTray();
         }
         view_->Refresh();
+        if (failureSmokePending_ && process_.Pid() != 0) {
+            failureSmokePending_ = false;
+            std::fwprintf(stderr, L"Smoke: runtime failure child PID %lu.\n", process_.Pid());
+            if (!PostMessageW(window_, kRuntimeFailureTestMessage, 0, 0)) {
+                throw std::runtime_error("Cannot post the runtime-failure smoke message.");
+            }
+        }
     }
 
     void Command(int id, int notification)
@@ -492,6 +513,24 @@ public:
         }
     }
 
+    void StartFailureSmokeTest()
+    {
+        if (!smokeTest_) { return; }
+        settings_.executable = (root_ / L"XTray.Tests.exe").native();
+        settings_.configFiles = {L".\\stream.conf"};
+        failureSmokePending_ = true;
+        Command(Run, BN_CLICKED);
+    }
+
+    void RaiseFailureForSmokeTest() const
+    {
+        if (smokeTest_) {
+            throw std::runtime_error("Injected window callback failure.");
+        }
+    }
+
+    bool IsExiting() const { return exiting_; }
+    std::exception_ptr runtimeError;
     int exitCode = 0;
     std::exception_ptr startupError;
 
@@ -567,7 +606,7 @@ private:
                 Text(L"Cannot create log button tooltips", L"无法创建日志按钮提示"))));
         }
         // Without a Common Controls v6 manifest, TOOLINFO must exclude the v6-only field.
-        for (const auto control : {scrollToEnd_, clearLogs_}) {
+        for (const auto control : {scrollToEnd_, clearLogs_, files_, directory_}) {
             TOOLINFOW tool{};
             tool.cbSize = TTTOOLINFOW_V2_SIZE;
             tool.hwnd = window_;
@@ -585,9 +624,15 @@ private:
         if (tooltip_ == nullptr) {
             return;
         }
+        const auto selected = SendMessageW(files_, CB_GETCURSEL, 0, 0);
+        fileTooltip_ = selected >= 0 && static_cast<size_t>(selected) < settings_.configFiles.size()
+            ? settings_.configFiles[static_cast<size_t>(selected)] : L"";
+        directoryTooltip_ = settings_.configDirectory;
         for (const auto& [control, label] : std::array{
             std::pair{scrollToEnd_, Text(L"Scroll to end", L"滚动至底部")},
-            std::pair{clearLogs_, Text(L"Clear logs", L"清空日志")}}) {
+            std::pair{clearLogs_, Text(L"Clear logs", L"清空日志")},
+            std::pair{files_, fileTooltip_.c_str()},
+            std::pair{directory_, directoryTooltip_.c_str()}}) {
             TOOLINFOW tool{};
             tool.cbSize = TTTOOLINFOW_V2_SIZE;
             tool.hwnd = window_;
@@ -600,13 +645,14 @@ private:
 
     std::wstring TooltipText(HWND control) const
     {
-        wchar_t text[128]{};
+        std::wstring text(32768, L'\0');
         TOOLINFOW tool{};
         tool.cbSize = TTTOOLINFOW_V2_SIZE;
         tool.hwnd = window_;
         tool.uId = reinterpret_cast<UINT_PTR>(control);
-        tool.lpszText = text;
-        SendMessageW(tooltip_, TTM_GETTEXTW, std::size(text), reinterpret_cast<LPARAM>(&tool));
+        tool.lpszText = text.data();
+        SendMessageW(tooltip_, TTM_GETTEXTW, text.size(), reinterpret_cast<LPARAM>(&tool));
+        text.resize(std::wcslen(text.c_str()));
         return text;
     }
 
@@ -764,6 +810,7 @@ private:
         UpdateTooltips();
         shownPid_ = MAXDWORD;
         updatingUi_ = false;
+        Layout();
     }
 
     bool SmokeTestWindowBranding(bool running)
@@ -969,6 +1016,41 @@ private:
             }
         }
 
+        std::fwprintf(stderr, L"Smoke: natural button widths, compact labels, and complete path tooltips.\n");
+        const auto previousSettings = settings_;
+        const auto previousLanguage = CurrentLanguage();
+        settings_.configFiles = {L".\\very long 配置目录\\" + std::wstring(180, L'x') + L"\\one.json",
+            L".\\other 配置目录\\two.json"};
+        settings_.configDirectory = L".\\a long 配置目录 with spaces\\fragments";
+        UpdatePaths();
+        for (const auto language : {Language::English, Language::Chinese}) {
+            ApplyLanguage(language);
+            ApplyUiText();
+            for (const auto control : {run_, stop_, restart_, settingsButton_, openFile_, openFileDirectory_, openDirectory_}) {
+                RECT button{};
+                GetWindowRect(control, &button);
+                const LONG padding = button.right - button.left - ControlTextSize(control).cx;
+                if (padding < Scale(23) || padding > Scale(25)) { return false; }
+            }
+            RECT label{}, input{};
+            GetWindowRect(fileLabel_, &label);
+            GetWindowRect(files_, &input);
+            if (input.left - label.right != Scale(8) || input.right <= input.left ||
+                TooltipText(files_) != settings_.configFiles.front() ||
+                TooltipText(directory_) != settings_.configDirectory) {
+                return false;
+            }
+        }
+        SendMessageW(files_, CB_SETCURSEL, 1, 0);
+        Command(FileList, CBN_SELCHANGE);
+        if (TooltipText(files_) != settings_.configFiles[1]) { return false; }
+        settings_ = previousSettings;
+        ApplyLanguage(previousLanguage);
+        ApplyUiText();
+        UpdatePaths();
+        if (!SmokeTestSettingsLayout(window_, root_ / (L"layout smoke " + std::to_wstring(GetCurrentProcessId())))) {
+            return false;
+        }
         std::fwprintf(stderr, L"Smoke: selective clearing and continued output.\n");
         logs_.Clear();
         logs_.SetLimit(8);
@@ -1662,6 +1744,7 @@ private:
         const bool selected = SendMessageW(files_, CB_GETCURSEL, 0, 0) != CB_ERR;
         EnableWindow(openFile_, selected);
         EnableWindow(openFileDirectory_, selected);
+        UpdateTooltips();
     }
 
     void OpenPath(const std::wstring& value, bool directory)
@@ -1699,6 +1782,7 @@ private:
     bool changingTheme_ = false;
     bool exiting_ = false;
     bool logonStarted_ = false;
+    bool failureSmokePending_ = false;
     bool trayFailureReported_ = false;
     UINT taskbarCreated_ = 0;
     ULONGLONG nextTrayAttempt_ = 0;
@@ -1714,6 +1798,7 @@ private:
     HWND directoryLabel_ = nullptr, directory_ = nullptr, openDirectory_ = nullptr;
     HWND filterLabel_ = nullptr, filter_ = nullptr, scrollToEnd_ = nullptr, clearLogs_ = nullptr;
     HWND logWindow_ = nullptr, tooltip_ = nullptr;
+    std::wstring fileTooltip_, directoryTooltip_;
     HFONT font_ = nullptr, logFont_ = nullptr;
     std::array<HICON, IconCount> icons_{};
     std::array<HICON, 4> toolIcons_{};
@@ -1776,6 +1861,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             case kTrayCallbackMessage:
                 app->TrayEvent(wParam, lParam);
                 return 0;
+            case kRuntimeFailureTestMessage:
+                app->RaiseFailureForSmokeTest();
+                return 0;
             case kExitMessage:
                 app->Exit();
                 return 0;
@@ -1814,8 +1902,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
                 return 0;
             }
         }
-    } catch (const std::exception& exception) {
-        std::fwprintf(stderr, L"Window operation failed: %hs\n", exception.what());
+    } catch (...) {
         if (message == WM_CREATE) {
             if (app != nullptr) {
                 app->startupError = std::current_exception();
@@ -1823,9 +1910,14 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             return -1;
         }
         if (app != nullptr) {
+            if (!app->runtimeError) {
+                app->runtimeError = std::current_exception();
+            }
             app->exitCode = 1;
         }
-        PostMessageW(window, kExitMessage, 0, 0);
+        if (app == nullptr || app->IsExiting() || !PostMessageW(window, kExitMessage, 0, 0)) {
+            PostQuitMessage(1);
+        }
         return 0;
     }
     return DefWindowProcW(window, message, wParam, lParam);
@@ -1835,7 +1927,8 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCommand)
 {
-    const bool smokeTest = std::wstring_view(commandLine) == L"--smoke-test";
+    const bool failureSmokeTest = std::wstring_view(commandLine) == L"--smoke-test-failure";
+    const bool smokeTest = failureSmokeTest || std::wstring_view(commandLine) == L"--smoke-test";
     const bool logon = IsLogonCommandLine(commandLine);
     ApplyLanguage(Language::Automatic);
     const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -1852,6 +1945,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
         ~LibraryLifetime() { FreeLibrary(module); }
     } library{richEdit};
 
+    bool initialized = false;
     try {
         const auto root = ExecutablePath().parent_path();
         std::unique_ptr<DirectoryInstance> directory;
@@ -1911,6 +2005,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
             }
             return ReportStartupError(smokeTest, WindowsError(Text(L"Cannot create the window or its controls", L"创建窗口或控件失败")));
         }
+        initialized = true;
         // The hidden window is already on the target monitor, so this DPI is its actual DPI.
         const UINT windowDpi = GetDpiForWindow(window);
         bounds = {0, 0, MulDiv(800, static_cast<int>(windowDpi), 96),
@@ -1927,7 +2022,9 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
             return ReportStartupError(smokeTest, WindowsError(
                 Text(L"Cannot center the window", L"无法将窗口居中")));
         }
-        if (smokeTest) {
+        if (failureSmokeTest) {
+            app.StartFailureSmokeTest();
+        } else if (smokeTest) {
             if (!app.SmokeTest()) {
                 app.exitCode = ReportStartupError(true, L"The Rich Edit log UI smoke test failed.");
             }
@@ -1954,8 +2051,18 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
             return ReportStartupError(smokeTest, WindowsError(
                 Text(L"The window message loop failed", L"窗口消息循环失败")));
         }
+        if (app.runtimeError) {
+            std::rethrow_exception(app.runtimeError);
+        }
         return app.exitCode != 0 ? app.exitCode : static_cast<int>(message.wParam);
     } catch (const std::exception& exception) {
-        return ReportStartupError(smokeTest, Text(L"XTray could not start: ", L"XTray 启动失败：") + FromUtf8(exception.what()));
+        Utf8Stream decoder;
+        const auto reason = decoder.Append(exception.what(), true);
+        return ReportStartupError(smokeTest, (initialized
+            ? smokeTest ? L"XTray runtime failure: " : Text(L"XTray stopped because of an internal error: ", L"XTray 因内部错误退出：")
+            : Text(L"XTray could not start: ", L"XTray 启动失败：")) + reason);
+    } catch (...) {
+        return ReportStartupError(smokeTest, smokeTest ? L"Unknown XTray runtime failure."
+            : Text(L"XTray stopped because of an unknown internal error.", L"XTray 因未知内部错误退出。"));
     }
 }

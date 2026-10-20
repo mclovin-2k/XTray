@@ -332,15 +332,29 @@ void ThemeWindow::Apply(bool dark, bool force)
     DwmSetWindowAttribute(window_, DWMWA_USE_IMMERSIVE_DARK_MODE, &enabled, sizeof(enabled));
     DwmSetWindowAttribute(window_, DWMWA_CAPTION_COLOR, &colors_.window, sizeof(colors_.window));
     DwmSetWindowAttribute(window_, DWMWA_TEXT_COLOR, &colors_.text, sizeof(colors_.text));
-    struct Controls { ThemeWindow* self; bool success = true; } controls{this};
+    if ((GetWindowLongPtrW(window_, GWL_STYLE) & WS_VSCROLL) != 0) {
+        SetWindowTheme(window_, dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+    }
+    struct Controls { ThemeWindow* self; bool success = true; std::exception_ptr error; } controls{this};
     EnumChildWindows(window_, [](HWND control, LPARAM parameter) -> BOOL {
         auto& context = *reinterpret_cast<Controls*>(parameter);
-        if (!context.self->AttachControl(control)) {
-            context.success = false;
+        try {
+            if (auto* nested = From(control)) {
+                nested->Apply(context.self->Colors().dark);
+            }
+            if (!context.self->AttachControl(control)) {
+                context.success = false;
+                return FALSE;
+            }
+            return TRUE;
+        } catch (...) {
+            context.error = std::current_exception();
             return FALSE;
         }
-        return TRUE;
     }, reinterpret_cast<LPARAM>(&controls));
+    if (controls.error) {
+        std::rethrow_exception(controls.error);
+    }
     if (!controls.success) {
         throw std::runtime_error(Text("Cannot theme a window control.", "无法设置控件主题。"));
     }
