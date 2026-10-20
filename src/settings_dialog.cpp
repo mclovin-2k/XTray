@@ -94,6 +94,20 @@ void LayoutSettingsContent(Context& context)
                 buttonX - gap - margin, height);
             y += (std::max)(height, rowHeight) + sectionGap;
         };
+        const int languageLabel = static_cast<int>(ControlTextSize(GetDlgItem(body, IDC_LABEL_LANGUAGE)).cx);
+        const int themeLabel = static_cast<int>(ControlTextSize(GetDlgItem(body, IDC_LABEL_THEME)).cx);
+        const int half = (available - sectionGap) / 2;
+        const bool stacked = half < (std::max)(languageLabel, themeLabel) + gap + UiScale(body, 96);
+        const int groupWidth = stacked ? available : half;
+        place(IDC_LABEL_LANGUAGE, margin, y, languageLabel, rowHeight);
+        place(IDC_LANGUAGE, margin + languageLabel + gap, y,
+            groupWidth - languageLabel - gap, rowHeight + UiScale(body, 160));
+        if (stacked) { y += rowHeight + gap; }
+        const int themeX = stacked ? margin : margin + half + sectionGap;
+        place(IDC_LABEL_THEME, themeX, y, themeLabel, rowHeight);
+        place(IDC_THEME, themeX + themeLabel + gap, y,
+            available + margin - themeX - themeLabel - gap, rowHeight + UiScale(body, 160));
+        y += rowHeight + sectionGap;
         label(IDC_LABEL_EXECUTABLE);
         pathRow(IDC_EXECUTABLE, IDC_BROWSE_EXECUTABLE, SingleLineControlHeight(GetDlgItem(body, IDC_EXECUTABLE)));
         label(IDC_LABEL_CONFIG_FILES);
@@ -109,20 +123,6 @@ void LayoutSettingsContent(Context& context)
         place(IDC_LOG_LINES, margin + logLabel.cx + gap, y + (logRow - logHeight) / 2,
             (std::min)(UiScale(body, 112), available - static_cast<int>(logLabel.cx) - gap), logHeight);
         y += logRow + sectionGap;
-        const int languageLabel = static_cast<int>(ControlTextSize(GetDlgItem(body, IDC_LABEL_LANGUAGE)).cx);
-        const int themeLabel = static_cast<int>(ControlTextSize(GetDlgItem(body, IDC_LABEL_THEME)).cx);
-        const int half = (available - sectionGap) / 2;
-        const bool stacked = half < (std::max)(languageLabel, themeLabel) + gap + UiScale(body, 96);
-        const int groupWidth = stacked ? available : half;
-        place(IDC_LABEL_LANGUAGE, margin, y, languageLabel, rowHeight);
-        place(IDC_LANGUAGE, margin + languageLabel + gap, y,
-            groupWidth - languageLabel - gap, rowHeight + UiScale(body, 160));
-        if (stacked) { y += rowHeight + gap; }
-        const int themeX = stacked ? margin : margin + half + sectionGap;
-        place(IDC_LABEL_THEME, themeX, y, themeLabel, rowHeight);
-        place(IDC_THEME, themeX + themeLabel + gap, y,
-            available + margin - themeX - themeLabel - gap, rowHeight + UiScale(body, 160));
-        y += rowHeight + sectionGap;
         place(IDC_LOGON_STARTUP, margin, y, available, rowHeight);
         y += rowHeight + sectionGap;
         label(IDC_HINT_RELATIVE);
@@ -455,7 +455,7 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         context->theme.Apply(owner != nullptr && owner->Colors().dark, true);
         FitSettingsWindow(dialog, *context);
         LayoutSettings(dialog, *context);
-        SetFocus(SettingsControl(dialog, IDC_EXECUTABLE));
+        SetFocus(SettingsControl(dialog, IDC_LANGUAGE));
         if (context->automation) {
             PostMessageW(dialog, kAutomateDialog, 0, 0);
         }
@@ -632,6 +632,11 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
         StartupRegistration startup(root, CurrentExecutable(), &registry);
         Context context{root, settings, logs, startup};
         context.automation = [&](HWND window) {
+            const HWND languageChoice = SettingsControl(window, IDC_LANGUAGE);
+            const HWND themeChoice = SettingsControl(window, IDC_THEME);
+            passed = passed && GetFocus() == languageChoice &&
+                GetNextDlgTabItem(window, languageChoice, FALSE) == themeChoice &&
+                GetNextDlgTabItem(window, themeChoice, FALSE) == SettingsControl(window, IDC_EXECUTABLE);
             RECT bounds{};
             GetWindowRect(window, &bounds);
             MONITORINFO monitor{sizeof(MONITORINFO)};
