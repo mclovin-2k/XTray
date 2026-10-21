@@ -585,11 +585,11 @@ bool MenuTheme::SmokeTestRenderedMenus()
         PopupProbe expected(native.handle, checkColumn_ * 2);
         if (!colors_.dark && !expected.Run(window_)) { return false; }
         for (const auto& item : items_) {
-            if (item->menu != menu.handle || item->separator) { continue; }
+            if (item->menu != menu.handle) { continue; }
             const UINT position = item->position;
             const auto size = actual.sizes[position];
             const auto reference = expected.sizes[position];
-            if (actual.ink[position] == 0 || (!colors_.dark &&
+            if ((!item->separator && actual.ink[position] == 0) || (!colors_.dark &&
                 (size.cx != reference.cx || size.cy != reference.cy))) {
                 std::fwprintf(stderr,
                     L"Smoke: real popup text/layout failed (caption=%ls, ink=%zu, actual=%ldx%ld, native=%ldx%ld).\n",

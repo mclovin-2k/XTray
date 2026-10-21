@@ -451,6 +451,14 @@ public:
 
     bool ThemeMessage(UINT message, WPARAM wParam, LPARAM lParam, LRESULT& result)
     {
+        if (message == WM_ENTERMENULOOP) {
+            menuActive_ = true;
+        } else if (message == WM_EXITMENULOOP) {
+            menuActive_ = false;
+            if (std::exchange(menuThemePending_, false)) {
+                PostMessageW(window_, kSystemThemeMessage, 0, 0);
+            }
+        }
         return menuTheme_.Handle(message, wParam, lParam, result) ||
             theme_.Handle(message, wParam, lParam, result);
     }
@@ -685,12 +693,24 @@ private:
         require(AppendMenuW(bar.value, MF_POPUP, reinterpret_cast<UINT_PTR>(tools.value), L"Xray Tools") != FALSE);
         tools.Release();
         require(SetMenu(window_, bar.value) != FALSE);
-        menuBar_ = bar.Release();
+        Menu previous{std::exchange(menuBar_, bar.Release())};
         menuTheme_.Attach(window_, menuBar_);
+        menuLanguage_ = CurrentLanguage();
+        menuDark_ = theme_.Colors().dark;
+        menuDpi_ = dpi_;
     }
 
     void UpdateMenus()
     {
+        if (menuActive_) {
+            menuThemePending_ = true;
+            return;
+        }
+        // Windows also caches menu-wide widths and separator sizes after display.
+        if (menuBar_ == nullptr || menuLanguage_ != CurrentLanguage() ||
+            menuDark_ != theme_.Colors().dark || menuDpi_ != dpi_) {
+            CreateMenus();
+        }
         ModifyMenuW(menuBar_, 0, MF_BYPOSITION | MF_POPUP | MF_STRING,
             reinterpret_cast<UINT_PTR>(fileMenu_), Text(L"&File", L"文件"));
         ModifyMenuW(menuBar_, 1, MF_BYPOSITION | MF_POPUP | MF_STRING,
@@ -834,6 +854,11 @@ private:
 
     void UpdateTheme(bool systemDark, bool force = false)
     {
+        if (menuActive_) {
+            // Keep a tracked native menu alive until Windows leaves its menu loop.
+            menuThemePending_ = true;
+            return;
+        }
         if (changingTheme_) {
             return;
         }
@@ -851,7 +876,7 @@ private:
         }
         theme_.ApplyOwned(dark);
         toolWindow_.SetAppearance(dark);
-        menuTheme_.Apply(theme_.Colors());
+        UpdateMenus();
     }
 
     void UpdateTray()
@@ -2012,7 +2037,7 @@ private:
         SendMessageW(window_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icons_[SmallWindowIcon]));
         SendMessageW(window_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icons_[LargeWindowIcon]));
         if (ready_) {
-            menuTheme_.Apply(theme_.Colors());
+            UpdateMenus();
             theme_.Apply(theme_.Colors().dark, true);
             shownPid_ = MAXDWORD;
             Refresh();
@@ -2091,6 +2116,9 @@ private:
     HWND statusIcon_ = nullptr, status_ = nullptr;
     HWND run_ = nullptr, stop_ = nullptr, restart_ = nullptr;
     HMENU menuBar_ = nullptr, fileMenu_ = nullptr, xrayMenu_ = nullptr;
+    Language menuLanguage_ = Language::Automatic;
+    bool menuDark_ = false, menuActive_ = false, menuThemePending_ = false;
+    UINT menuDpi_ = 0;
     HWND fileLabel_ = nullptr, files_ = nullptr, openFile_ = nullptr, openFileDirectory_ = nullptr;
     HWND directoryLabel_ = nullptr, directory_ = nullptr, openDirectory_ = nullptr;
     HWND filterLabel_ = nullptr, filter_ = nullptr, scrollToEnd_ = nullptr, clearLogs_ = nullptr;
