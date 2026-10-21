@@ -1803,6 +1803,7 @@ private:
             if (GetPixel(canvas.device, 2, 2) != palette.window) {
                 return fail(L"native window background");
             }
+            if (!SmokeTestTextWordWrap(logWindow_)) { return fail(L"native log scrollbar repaint after wrapping"); }
             for (const auto control : {run_, copyLogs_, clearLogs_, scrollToEnd_, wordWrap_, filter_, files_}) {
                 if (!SmokeTestNativeControl(control)) {
                     return fail(L"system-rendered button and combo controls");

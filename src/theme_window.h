@@ -9,6 +9,7 @@ namespace xtray {
 
 void SetButtonIcons(HWND control, HICON normal, HICON disabled, int size);
 bool SmokeTestNativeControl(HWND control);
+bool SmokeTestTextWordWrap(HWND reference);
 
 class ThemeWindow {
 public:

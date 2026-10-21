@@ -310,7 +310,7 @@ void LogView::Refresh(bool latest)
     revision_ = snapshot.revision;
     formatAll_ = false;
     SendMessageW(window_, WM_SETREDRAW, TRUE, 0);
-    InvalidateRect(window_, nullptr, FALSE);
+    RedrawWindow(window_, nullptr, nullptr, RDW_INVALIDATE | RDW_FRAME);
 }
 
 } // namespace xtray

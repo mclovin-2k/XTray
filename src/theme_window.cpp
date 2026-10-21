@@ -1,4 +1,5 @@
 #include "theme_window.h"
+#include "text_view.h"
 #include "win32.h"
 
 #include <dwmapi.h>
@@ -248,6 +249,84 @@ bool SmokeTestNativeControl(HWND control)
         std::fwprintf(stderr, L"Smoke: native control rendering failed (id=%d).\n", GetDlgCtrlID(control));
     }
     return passed;
+}
+
+bool SmokeTestTextWordWrap(HWND reference)
+{
+    struct PaintProbe {
+        bool redraw = true;
+        unsigned frames = 0;
+        static LRESULT CALLBACK Procedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam,
+            UINT_PTR id, DWORD_PTR parameter)
+        {
+            auto& probe = *reinterpret_cast<PaintProbe*>(parameter);
+            if (message == WM_SETREDRAW) { probe.redraw = wParam != FALSE; }
+            if (message == WM_NCPAINT && probe.redraw) { ++probe.frames; }
+            if (message == WM_NCDESTROY) { RemoveWindowSubclass(window, Procedure, id); }
+            return DefSubclassProc(window, message, wParam, lParam);
+        }
+    } probe;
+    struct Window {
+        HWND value = nullptr;
+        ~Window() { if (value != nullptr) { DestroyWindow(value); } }
+    } host;
+    const auto* theme = ThemeWindow::From(GetParent(reference));
+    const bool dark = theme != nullptr && theme->Colors().dark;
+    const auto mode = SendMessageW(reference, EM_GETTEXTMODE, 0, 0) & TM_PLAINTEXT
+        ? TM_PLAINTEXT : TM_RICHTEXT;
+    std::fwprintf(stderr, L"Smoke: native wrap scrollbar thumb and frame repaint (%ls, %ls).\n",
+        mode == TM_PLAINTEXT ? L"plain" : L"rich", dark ? L"dark" : L"light");
+    const int width = Scale(reference, 400), height = Scale(reference, 160);
+    // A visible off-screen host lets Windows paint the real nonclient scrollbar without activation.
+    host.value = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"STATIC", L"",
+        WS_POPUP, -32000, -32000, width, height, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (host.value == nullptr) { return false; }
+    const HWND output = CreateWindowExW(WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
+        WS_CHILD | WS_VISIBLE | WS_HSCROLL | WS_VSCROLL | ES_MULTILINE | ES_READONLY |
+        ES_AUTOHSCROLL | ES_AUTOVSCROLL | ES_NOHIDESEL | ES_DISABLENOSCROLL,
+        0, 0, width, height, host.value, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (output == nullptr) { return false; }
+    SendMessageW(output, EM_SETTEXTMODE, mode, 0);
+    SetWindowTheme(output, dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
+    SendMessageW(output, WM_SETFONT, static_cast<WPARAM>(SendMessageW(reference, WM_GETFONT, 0, 0)), FALSE);
+    std::wstring document;
+    for (int line = 0; line < 12; ++line) {
+        document += L"wrap probe 中文 " + std::wstring(220, L'x') + L"\r\n";
+    }
+    SetWindowTextW(output, document.c_str());
+    ShowWindow(host.value, SW_SHOWNOACTIVATE);
+    UpdateWindow(host.value);
+    UpdateWindow(output);
+    CHARRANGE selected{2, 6};
+    SendMessageW(output, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&selected));
+    if (!SetWindowSubclass(output, PaintProbe::Procedure, 1, reinterpret_cast<DWORD_PTR>(&probe))) {
+        return false;
+    }
+    for (const bool wrapped : {true, false, true, false}) {
+        probe.frames = 0;
+        SetTextWordWrap(output, wrapped);
+        SCROLLINFO range{sizeof(SCROLLINFO), SIF_RANGE | SIF_PAGE | SIF_POS};
+        SCROLLBARINFO bar{sizeof(SCROLLBARINFO)};
+        CHARRANGE after{};
+        SendMessageW(output, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&after));
+        const bool readable = GetScrollInfo(output, SB_HORZ, &range) &&
+            GetScrollBarInfo(output, OBJID_HSCROLL, &bar);
+        const bool hidden = (GetWindowLongPtrW(output, GWL_STYLE) & WS_HSCROLL) == 0;
+        const bool thumb = readable && bar.xyThumbBottom > bar.xyThumbTop &&
+            (bar.rgstate[0] & STATE_SYSTEM_INVISIBLE) == 0 &&
+            (bar.rgstate[3] & (STATE_SYSTEM_INVISIBLE | STATE_SYSTEM_UNAVAILABLE)) == 0 &&
+            range.nPage > 0 && range.nMax - range.nMin + 1 > static_cast<int>(range.nPage);
+        std::wstring text(static_cast<size_t>(GetWindowTextLengthW(output)) + 1, L'\0');
+        text.resize(static_cast<size_t>(GetWindowTextW(output, text.data(), static_cast<int>(text.size()))));
+        if (probe.frames == 0 || (wrapped ? !hidden : !thumb) ||
+            after.cpMin != selected.cpMin || after.cpMax != selected.cpMax || text != document) {
+            std::fwprintf(stderr,
+                L"Smoke: wrap scrollbar repaint failed (wrapped=%d, frames=%u, hidden=%d, range=%d/%u, thumb=%d..%d).\n",
+                wrapped, probe.frames, hidden, range.nMax, range.nPage, bar.xyThumbTop, bar.xyThumbBottom);
+            return false;
+        }
+    }
+    return true;
 }
 
 ThemeWindow::~ThemeWindow()

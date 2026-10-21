@@ -37,7 +37,8 @@ inline void SetTextWordWrap(HWND window, bool enabled)
     POINT target{enabled ? 0 : scroll.x, (std::max)(LONG{0}, current.y + after.y - before.y)};
     SendMessageW(window, EM_SETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&target));
     SendMessageW(window, WM_SETREDRAW, TRUE, 0);
-    InvalidateRect(window, nullptr, FALSE);
+    // The scrollbar is nonclient: invalidating only the text can leave its thumb unpainted.
+    RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW);
     if (!changed) {
         throw std::runtime_error(Text("Cannot change word wrapping.", "无法切换自动换行。"));
     }

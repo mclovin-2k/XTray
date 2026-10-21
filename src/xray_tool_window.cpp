@@ -541,6 +541,7 @@ bool SmokeTestXrayTools(HWND owner, const std::filesystem::path& root)
             format.cbSize = sizeof(format);
             SendMessageW(output, EM_GETCHARFORMAT, SCF_SELECTION, reinterpret_cast<LPARAM>(&format));
             if (format.crTextColor != PaletteFor(dark).text) { return fail(L"readable result text theme"); }
+            if (!SmokeTestTextWordWrap(output)) { return fail(L"native tool scrollbar repaint after wrapping"); }
             const HWND copy = GetDlgItem(tool.Window(), kCopyId);
             const HWND wrap = GetDlgItem(tool.Window(), kWordWrapId);
             RECT copyBounds{}, wrapBounds{}, outputBounds{}, closeBounds{};
