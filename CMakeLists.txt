@@ -62,6 +62,7 @@ add_executable(XTray WIN32
     src/main.cpp
     src/log_view.cpp
     src/theme_window.cpp
+    src/menu_theme.cpp
     src/settings_dialog.cpp
     src/xray_tool_window.cpp
     resources/XTray.rc

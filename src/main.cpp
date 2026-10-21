@@ -5,6 +5,7 @@
 #include "resource.h"
 #include "version.h"
 #include "theme_window.h"
+#include "menu_theme.h"
 #include "log_view.h"
 #include "xray_process.h"
 #include "settings_dialog.h"
@@ -450,7 +451,8 @@ public:
 
     bool ThemeMessage(UINT message, WPARAM wParam, LPARAM lParam, LRESULT& result)
     {
-        return theme_.Handle(message, wParam, lParam, result);
+        return menuTheme_.Handle(message, wParam, lParam, result) ||
+            theme_.Handle(message, wParam, lParam, result);
     }
 
     void SystemThemeChanged()
@@ -527,6 +529,7 @@ public:
         }
         tooltip_ = nullptr;
         themeMonitor_.reset();
+        menuTheme_.Detach();
         theme_.Detach();
         tray_.Remove();
         window_ = nullptr;
@@ -683,6 +686,7 @@ private:
         tools.Release();
         require(SetMenu(window_, bar.value) != FALSE);
         menuBar_ = bar.Release();
+        menuTheme_.Attach(window_, menuBar_);
     }
 
     void UpdateMenus()
@@ -706,33 +710,46 @@ private:
                 throw std::runtime_error("Cannot update the application menu language.");
             }
         }
-        DrawMenuBar(window_);
+        menuTheme_.Apply(theme_.Colors());
     }
 
     bool SmokeTestMenus()
     {
-        std::fwprintf(stderr, L"Smoke: native File and Xray Tools menus, language refresh, and removed Settings button.\n");
+        std::fwprintf(stderr, L"Smoke: File and Xray Tools menus, language refresh, light/dark transitions, and removed Settings button.\n");
         const auto language = CurrentLanguage();
+        const auto appearance = settings_.theme;
         bool passed = GetMenu(window_) == menuBar_ && GetMenuItemCount(menuBar_) == 2 &&
             GetMenuItemCount(fileMenu_) == 3 && GetMenuItemCount(xrayMenu_) == 3 &&
             GetMenuItemID(fileMenu_, 0) == SettingsButton && GetMenuItemID(fileMenu_, 2) == ExitApp &&
             GetDlgItem(window_, SettingsButton) == nullptr;
         for (const auto selected : {Language::English, Language::Chinese}) {
             ApplyLanguage(selected);
-            ApplyUiText();
-            wchar_t title[128]{};
-            GetMenuStringW(xrayMenu_, PreviewConfig, title, static_cast<int>(std::size(title)), MF_BYCOMMAND);
-            passed = passed && std::wstring_view(title) == Text(L"Preview Xray configuration", L"预览 Xray 配置");
-            for (int position = 0; position < 3; ++position) {
-                MENUITEMINFOW item{sizeof(MENUITEMINFOW)};
-                item.fMask = MIIM_FTYPE | MIIM_ID;
-                passed = passed && GetMenuItemInfoW(xrayMenu_, position, TRUE, &item) &&
-                    (item.fType & MFT_OWNERDRAW) == 0 &&
-                    item.wID == static_cast<UINT>(CheckConfig + position);
+            for (const bool dark : {false, true, false}) {
+                settings_.theme = dark ? ThemeMode::Dark : ThemeMode::Light;
+                UpdateTheme(false);
+                ApplyUiText();
+                wchar_t title[128]{};
+                GetMenuStringW(xrayMenu_, PreviewConfig, title, static_cast<int>(std::size(title)), MF_BYCOMMAND);
+                const bool caption = std::wstring_view(title) == Text(L"Preview Xray configuration", L"预览 Xray 配置");
+                if (!caption) {
+                    std::fwprintf(stderr, L"Smoke: main menu language failed (dark=%d, caption=%ls).\n", dark, title);
+                }
+                passed = caption && passed;
+                for (int position = 0; position < 3; ++position) {
+                    MENUITEMINFOW item{sizeof(MENUITEMINFOW)};
+                    item.fMask = MIIM_FTYPE | MIIM_ID;
+                    passed = GetMenuItemInfoW(xrayMenu_, position, TRUE, &item) &&
+                        ((item.fType & MFT_OWNERDRAW) != 0) == dark &&
+                        item.wID == static_cast<UINT>(CheckConfig + position) && passed;
+                }
+                const bool rendering = menuTheme_.SmokeTest();
+                passed = rendering && passed;
             }
         }
         ApplyLanguage(language);
+        settings_.theme = appearance;
         ApplyUiText();
+        UpdateTheme(themeMonitor_->SystemDark());
         return passed;
     }
 
@@ -833,6 +850,7 @@ private:
         }
         theme_.ApplyOwned(dark);
         toolWindow_.SetAppearance(dark);
+        menuTheme_.Apply(theme_.Colors());
     }
 
     void UpdateTray()
@@ -1993,6 +2011,7 @@ private:
         SendMessageW(window_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icons_[SmallWindowIcon]));
         SendMessageW(window_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icons_[LargeWindowIcon]));
         if (ready_) {
+            menuTheme_.Apply(theme_.Colors());
             theme_.Apply(theme_.Colors().dark, true);
             shownPid_ = MAXDWORD;
             Refresh();
@@ -2053,6 +2072,7 @@ private:
     bool smokeTest_;
     TrayIcon tray_;
     ThemeWindow theme_;
+    MenuTheme menuTheme_;
     std::unique_ptr<ThemeMonitor> themeMonitor_;
     bool changingTheme_ = false;
     bool exiting_ = false;
