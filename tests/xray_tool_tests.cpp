@@ -108,6 +108,9 @@ std::optional<int> FakeXrayTool(int argc, wchar_t** argv)
             WriteTool(output, "tool line " + std::to_string(index) + ": complete configuration output retained\n");
         }
     }
+    if (first == L"tool-large.conf") {
+        WriteTool(output, std::string(2400, 'X') + "\n");
+    }
     WriteTool(output, "tool output end");
     return 0;
 }

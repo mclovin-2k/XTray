@@ -396,7 +396,14 @@ LRESULT CALLBACK XrayToolWindow::Procedure(HWND window, UINT message, WPARAM wPa
         const auto text = Text(L"Cannot complete this operation. The full captured result can still be copied.",
             L"无法完成此操作，仍可复制已捕获的完整结果。");
         SetWindowTextW(self->status_, text);
-        if (self->quiet_) { std::fwprintf(stderr, L"Smoke: Xray result window operation failed.\n"); }
+        if (self->quiet_) {
+            try { std::rethrow_exception(self->error_); }
+            catch (const std::exception& exception) {
+                std::fprintf(stderr, "Smoke: Xray result window operation failed: %s\n", exception.what());
+            } catch (...) {
+                std::fwprintf(stderr, L"Smoke: Xray result window operation failed (unknown error).\n");
+            }
+        }
     }
     return DefWindowProcW(window, message, wParam, lParam);
 }
@@ -467,8 +474,12 @@ bool SmokeTestXrayTools(HWND owner, const std::filesystem::path& root)
     const auto style = GetWindowLongPtrW(output, GWL_STYLE);
     if (before.size() < 500000 || before.find(L"tool line 0:") == std::wstring::npos ||
         before.find(L"tool line 11999:") == std::wstring::npos ||
-        !before.ends_with(L"tool output end") || SendMessageW(output, EM_GETLINECOUNT, 0, 0) < 12000 ||
+        !before.ends_with(L"tool output end") || std::count(before.begin(), before.end(), L'\n') < 12000 ||
         (style & (ES_READONLY | WS_VSCROLL | WS_HSCROLL)) != (ES_READONLY | WS_VSCROLL | WS_HSCROLL)) {
+        std::fwprintf(stderr, L"Smoke: tool preview details (characters=%zu, lines=%zu, style=%llx, first=%d, last=%d, tail=%d).\n",
+            before.size(), static_cast<size_t>(std::count(before.begin(), before.end(), L'\n')),
+            static_cast<unsigned long long>(style), before.find(L"tool line 0:") != std::wstring::npos,
+            before.find(L"tool line 11999:") != std::wstring::npos, before.ends_with(L"tool output end"));
         return fail(L"complete scrollable preview beyond the runtime log limit");
     }
     CHARRANGE selection{0, 4};
