@@ -569,7 +569,7 @@ bool SmokeTestXrayTools(HWND owner, const std::filesystem::path& root)
     if (before.size() < 500000 || before.find(L"tool line 0:") == std::wstring::npos ||
         before.find(L"tool line 11999:") == std::wstring::npos ||
         !before.ends_with(L"tool output end") || std::count(before.begin(), before.end(), L'\n') < 12000 ||
-        (style & (ES_READONLY | WS_VSCROLL | WS_HSCROLL)) != (ES_READONLY | WS_VSCROLL | WS_HSCROLL)) {
+        (style & (ES_READONLY | WS_VSCROLL)) != (ES_READONLY | WS_VSCROLL)) {
         std::fwprintf(stderr, L"Smoke: tool preview details (characters=%zu, lines=%zu, style=%llx, first=%d, last=%d, tail=%d).\n",
             before.size(), static_cast<size_t>(std::count(before.begin(), before.end(), L'\n')),
             static_cast<unsigned long long>(style), before.find(L"tool line 0:") != std::wstring::npos,
@@ -584,8 +584,11 @@ bool SmokeTestXrayTools(HWND owner, const std::filesystem::path& root)
     SendMessageW(output, WM_HSCROLL, SB_RIGHT, 0);
     POINT scrolled{};
     SendMessageW(output, EM_GETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&scrolled));
-    if (scrolled.x <= 0 || scrolled.y <= 0) {
-        std::fwprintf(stderr, L"Smoke: tool scroll positions (x=%ld, y=%ld).\n", scrolled.x, scrolled.y);
+    // Rich Edit formats long output lazily; inspect the bar after revealing a long line.
+    const auto scrolledStyle = GetWindowLongPtrW(output, GWL_STYLE);
+    if (scrolled.x <= 0 || scrolled.y <= 0 || (scrolledStyle & WS_HSCROLL) == 0) {
+        std::fwprintf(stderr, L"Smoke: tool scroll positions (x=%ld, y=%ld, style=%llx).\n",
+            scrolled.x, scrolled.y, static_cast<unsigned long long>(scrolledStyle));
         return fail(L"native horizontal and vertical result scrolling");
     }
     CHARRANGE selection{0, 4};
@@ -625,6 +628,17 @@ bool SmokeTestXrayTools(HWND owner, const std::filesystem::path& root)
     if (wrappedCopy != nullptr) { GlobalUnlock(wrappedData); }
     CloseClipboard();
     if (!sameCopy) { return fail(L"word wrapping inserted line breaks into copied output"); }
+    SendMessageW(wrap, BM_CLICK, 0, 0);
+    SendMessageW(output, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&tail));
+    SendMessageW(output, EM_SCROLLCARET, 0, 0);
+    SendMessageW(output, WM_VSCROLL, SB_BOTTOM, 0);
+    SendMessageW(output, WM_HSCROLL, SB_RIGHT, 0);
+    SendMessageW(output, EM_GETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&scrolled));
+    if (SendMessageW(wrap, BM_GETCHECK, 0, 0) != BST_UNCHECKED || scrolled.x <= 0 || scrolled.y <= 0 ||
+        (GetWindowLongPtrW(output, GWL_STYLE) & WS_HSCROLL) == 0 || text(output) != before) {
+        return fail(L"horizontal scrolling after toggling word wrap off");
+    }
+    SendMessageW(wrap, BM_CLICK, 0, 0);
 
     settings.configFiles = {L".\\tool-fail.conf"};
     tool.Open(owner, XrayToolKind::Check, settings, true, true, true);
