@@ -257,8 +257,8 @@ public:
         wordWrap_ = child(0, L"BUTTON", L"", WS_TABSTOP | BS_ICON | BS_AUTOCHECKBOX | BS_PUSHLIKE, WordWrap);
         CreateTooltips();
         logWindow_ = child(WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
-            ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL | ES_AUTOVSCROLL | ES_NOHIDESEL | ES_DISABLENOSCROLL |
-            WS_VSCROLL | WS_HSCROLL | WS_TABSTOP);
+            ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_NOHIDESEL | ES_DISABLENOSCROLL |
+            WS_VSCROLL | WS_TABSTOP);
         view_ = std::make_unique<LogView>(logWindow_, logs_);
         if (smokeTest_) {
             std::fwprintf(stderr, L"Smoke: configuring fonts and icons.\n");
@@ -277,6 +277,7 @@ public:
             settings_.theme = ThemeMode::Light;
         }
         view_->SetWordWrap(settings_.logWordWrap);
+        logWindow_ = view_->Window();
         ApplyLanguage(settings_.language);
         ApplyUiText();
         themeMonitor_ = std::make_unique<ThemeMonitor>(window_);
@@ -828,7 +829,21 @@ private:
                 return false;
             }
         }
-        view_->SetWordWrap(enabled);
+        try {
+            view_->SetWordWrap(enabled);
+        } catch (const std::exception& exception) {
+            logWindow_ = view_->Window();
+            if (persist) {
+                std::wstring error;
+                static_cast<void>(SaveSettings(root_, settings_, error));
+            }
+            UpdateLogButtonState();
+            if (smokeTest_) { throw; }
+            const auto error = FromUtf8(exception.what());
+            MessageBoxW(window_, error.c_str(), Text(L"Word wrap", L"自动换行"), MB_OK | MB_ICONERROR);
+            return false;
+        }
+        logWindow_ = view_->Window();
         settings_.logWordWrap = enabled;
         UpdateLogButtonState();
         UpdateTooltips();

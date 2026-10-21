@@ -162,7 +162,6 @@ void XrayToolWindow::Initialize()
     SendMessageW(output_, EM_SETTEXTMODE, TM_PLAINTEXT, 0);
     close_ = child(L"BUTTON", 0, WS_TABSTOP, IDCANCEL);
     wordWrap_ = false;
-    SetTextWordWrap(output_, false);
     tooltip_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE, TOOLTIPS_CLASSW, nullptr,
         WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
         window_, nullptr, GetModuleHandleW(nullptr), nullptr);
@@ -430,7 +429,15 @@ LRESULT CALLBACK XrayToolWindow::Procedure(HWND window, UINT message, WPARAM wPa
                 self->CopyAll();
             } else if (LOWORD(wParam) == kWordWrapId && HIWORD(wParam) == BN_CLICKED) {
                 const bool enabled = SendMessageW(self->wordWrapButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-                SetTextWordWrap(self->output_, enabled);
+                try {
+                    self->output_ = RecreateTextView(self->output_, enabled, self->theme_.Colors());
+                } catch (const std::exception& exception) {
+                    self->UpdateToolbar();
+                    if (self->quiet_) { throw; }
+                    const auto error = FromUtf8(exception.what());
+                    MessageBoxW(window, error.c_str(), Text(L"Word wrap", L"自动换行"), MB_OK | MB_ICONERROR);
+                    return 0;
+                }
                 self->wordWrap_ = enabled;
                 self->UpdateToolbar();
             } else if (LOWORD(wParam) == IDCANCEL) {
@@ -564,7 +571,7 @@ bool SmokeTestXrayTools(HWND owner, const std::filesystem::path& root)
     settings.configFiles = {L".\\tool-large.conf"};
     tool.Open(owner, XrayToolKind::Preview, settings, true, false, true);
     if (!wait()) { return fail(L"large preview completion"); }
-    const HWND output = GetDlgItem(tool.Window(), kOutputId);
+    HWND output = GetDlgItem(tool.Window(), kOutputId);
     const auto before = text(output);
     const auto style = GetWindowLongPtrW(output, GWL_STYLE);
     if (before.size() < 500000 || before.find(L"tool line 0:") == std::wstring::npos ||
@@ -609,6 +616,7 @@ bool SmokeTestXrayTools(HWND owner, const std::filesystem::path& root)
     if (!completeCopy) { return fail(L"Copy all copied only a selection or truncated the result"); }
     const HWND wrap = GetDlgItem(tool.Window(), kWordWrapId);
     SendMessageW(wrap, BM_CLICK, 0, 0);
+    output = GetDlgItem(tool.Window(), kOutputId);
     CHARRANGE afterWrap{};
     SendMessageW(output, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&afterWrap));
     SendMessageW(output, EM_GETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&scrolled));
@@ -630,6 +638,7 @@ bool SmokeTestXrayTools(HWND owner, const std::filesystem::path& root)
     CloseClipboard();
     if (!sameCopy) { return fail(L"word wrapping inserted line breaks into copied output"); }
     SendMessageW(wrap, BM_CLICK, 0, 0);
+    output = GetDlgItem(tool.Window(), kOutputId);
     SendMessageW(output, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&tail));
     SendMessageW(output, EM_SCROLLCARET, 0, 0);
     SendMessageW(output, WM_VSCROLL, SB_BOTTOM, 0);

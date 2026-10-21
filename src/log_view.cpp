@@ -40,7 +40,6 @@ LogView::LogView(HWND window, Logs& logs) : window_(window), logs_(logs)
     SendMessageW(window_, EM_EXLIMITTEXT, 0, LONG_MAX);
     SendMessageW(window_, EM_SETBKGNDCOLOR, 0, RGB(255, 255, 255));
     SendMessageW(window_, EM_SETEVENTMASK, 0, ENM_SCROLL | ENM_SELCHANGE);
-    SetTextWordWrap(window_, true);
 }
 
 void LogView::SetTheme(const ThemePalette& palette)
@@ -90,7 +89,7 @@ void LogView::SetWordWrap(bool enabled)
 {
     if (wordWrap_ == enabled) { return; }
     const bool follow = Following();
-    SetTextWordWrap(window_, enabled);
+    window_ = RecreateTextView(window_, enabled, palette_);
     wordWrap_ = enabled;
     if (follow) { ScrollToEnd(); }
 }

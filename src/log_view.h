@@ -14,6 +14,7 @@ public:
     void ScrollToEnd();
     void SetWordWrap(bool enabled);
     bool Following() const;
+    HWND Window() const { return window_; }
     std::wstring CopyText() const;
     void InvalidateFormat(HFONT font);
     void SetTheme(const ThemePalette& palette);

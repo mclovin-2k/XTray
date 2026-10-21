@@ -253,58 +253,55 @@ bool SmokeTestNativeControl(HWND control)
 
 bool SmokeTestTextWordWrap(HWND reference)
 {
-    struct PaintProbe {
-        bool redraw = true;
-        unsigned frames = 0;
-        static LRESULT CALLBACK Procedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam,
-            UINT_PTR id, DWORD_PTR parameter)
-        {
-            auto& probe = *reinterpret_cast<PaintProbe*>(parameter);
-            if (message == WM_SETREDRAW) { probe.redraw = wParam != FALSE; }
-            if (message == WM_NCPAINT && probe.redraw) { ++probe.frames; }
-            if (message == WM_NCDESTROY) { RemoveWindowSubclass(window, Procedure, id); }
-            return DefSubclassProc(window, message, wParam, lParam);
-        }
-    } probe;
     struct Window {
         HWND value = nullptr;
         ~Window() { if (value != nullptr) { DestroyWindow(value); } }
     } host;
     const auto* theme = ThemeWindow::From(GetParent(reference));
     const bool dark = theme != nullptr && theme->Colors().dark;
+    const auto palette = PaletteFor(dark);
     const auto mode = SendMessageW(reference, EM_GETTEXTMODE, 0, 0) & TM_PLAINTEXT
         ? TM_PLAINTEXT : TM_RICHTEXT;
-    std::fwprintf(stderr, L"Smoke: native wrap scrollbar thumb and frame repaint (%ls, %ls).\n",
+    std::fwprintf(stderr, L"Smoke: recreated native wrap view, scrollbar thumb, and preserved state (%ls, %ls).\n",
         mode == TM_PLAINTEXT ? L"plain" : L"rich", dark ? L"dark" : L"light");
     const int width = Scale(reference, 400), height = Scale(reference, 160);
-    // A visible off-screen host lets Windows paint the real nonclient scrollbar without activation.
     host.value = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"STATIC", L"",
         WS_POPUP, -32000, -32000, width, height, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (host.value == nullptr) { return false; }
-    const HWND output = CreateWindowExW(WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
+    HWND output = CreateWindowExW(WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
         WS_CHILD | WS_VISIBLE | WS_HSCROLL | WS_VSCROLL | ES_MULTILINE | ES_READONLY |
         ES_AUTOHSCROLL | ES_AUTOVSCROLL | ES_NOHIDESEL | ES_DISABLENOSCROLL,
-        0, 0, width, height, host.value, nullptr, GetModuleHandleW(nullptr), nullptr);
+        0, 0, width, height, host.value, reinterpret_cast<HMENU>(INT_PTR{1}), GetModuleHandleW(nullptr), nullptr);
     if (output == nullptr) { return false; }
     SendMessageW(output, EM_SETTEXTMODE, mode, 0);
     SetWindowTheme(output, dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
-    SendMessageW(output, WM_SETFONT, static_cast<WPARAM>(SendMessageW(reference, WM_GETFONT, 0, 0)), FALSE);
+    const auto font = static_cast<WPARAM>(SendMessageW(reference, WM_GETFONT, 0, 0));
+    SendMessageW(output, WM_SETFONT, font, FALSE);
     std::wstring document;
     for (int line = 0; line < 12; ++line) {
         document += L"wrap probe 中文 " + std::wstring(220, L'x') + L"\r\n";
     }
     SetWindowTextW(output, document.c_str());
+    CHARRANGE selected{2, 6};
+    SendMessageW(output, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&selected));
+    CHARFORMAT2W bold{};
+    bold.cbSize = sizeof(bold);
+    bold.dwMask = CFM_BOLD;
+    bold.dwEffects = CFE_BOLD;
+    if (mode == TM_RICHTEXT) {
+        SendMessageW(output, EM_SETCHARFORMAT, SCF_SELECTION, reinterpret_cast<LPARAM>(&bold));
+    }
     ShowWindow(host.value, SW_SHOWNOACTIVATE);
     UpdateWindow(host.value);
     UpdateWindow(output);
-    CHARRANGE selected{2, 6};
-    SendMessageW(output, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&selected));
-    if (!SetWindowSubclass(output, PaintProbe::Procedure, 1, reinterpret_cast<DWORD_PTR>(&probe))) {
-        return false;
-    }
+    SendMessageW(output, EM_LINESCROLL, 0, 3);
+    const auto initialLine = SendMessageW(output, EM_GETFIRSTVISIBLELINE, 0, 0);
+    const auto anchor = SendMessageW(output, EM_LINEINDEX, initialLine, 0);
+    POINT initialPoint{};
+    SendMessageW(output, EM_POSFROMCHAR, reinterpret_cast<WPARAM>(&initialPoint), anchor);
     for (const bool wrapped : {true, false, true, false}) {
-        probe.frames = 0;
-        SetTextWordWrap(output, wrapped);
+        const HWND previous = output;
+        output = RecreateTextView(output, wrapped, palette);
         SCROLLINFO range{sizeof(SCROLLINFO), SIF_RANGE | SIF_PAGE | SIF_POS};
         SCROLLBARINFO bar{sizeof(SCROLLBARINFO)};
         CHARRANGE after{};
@@ -316,13 +313,24 @@ bool SmokeTestTextWordWrap(HWND reference)
             (bar.rgstate[0] & STATE_SYSTEM_INVISIBLE) == 0 &&
             (bar.rgstate[3] & (STATE_SYSTEM_INVISIBLE | STATE_SYSTEM_UNAVAILABLE)) == 0 &&
             range.nPage > 0 && range.nMax - range.nMin + 1 > static_cast<int>(range.nPage);
+        CHARFORMAT2W formatting{};
+        formatting.cbSize = sizeof(formatting);
+        SendMessageW(output, EM_GETCHARFORMAT, SCF_SELECTION, reinterpret_cast<LPARAM>(&formatting));
         std::wstring text(static_cast<size_t>(GetWindowTextLengthW(output)) + 1, L'\0');
         text.resize(static_cast<size_t>(GetWindowTextW(output, text.data(), static_cast<int>(text.size()))));
-        if (probe.frames == 0 || (wrapped ? !hidden : !thumb) ||
-            after.cpMin != selected.cpMin || after.cpMax != selected.cpMax || text != document) {
+        const auto topLine = SendMessageW(output, EM_GETFIRSTVISIBLELINE, 0, 0);
+        const auto topCharacter = SendMessageW(output, EM_LINEINDEX, topLine, 0);
+        POINT point{};
+        SendMessageW(output, EM_POSFROMCHAR, reinterpret_cast<WPARAM>(&point), anchor);
+        if (output == previous || IsWindow(previous) || GetDlgItem(host.value, 1) != output ||
+            SendMessageW(output, WM_GETFONT, 0, 0) != static_cast<LRESULT>(font) ||
+            (wrapped ? !hidden : !thumb) || after.cpMin != selected.cpMin || after.cpMax != selected.cpMax ||
+            text != document || topCharacter != anchor || std::abs(point.y - initialPoint.y) > 1 ||
+            (mode == TM_RICHTEXT && (formatting.dwEffects & CFE_BOLD) == 0) ||
+            (mode == TM_PLAINTEXT && formatting.crTextColor != palette.text)) {
             std::fwprintf(stderr,
-                L"Smoke: wrap scrollbar repaint failed (wrapped=%d, frames=%u, hidden=%d, range=%d/%u, thumb=%d..%d).\n",
-                wrapped, probe.frames, hidden, range.nMax, range.nPage, bar.xyThumbTop, bar.xyThumbBottom);
+                L"Smoke: recreated wrap view failed (wrapped=%d, hidden=%d, range=%d/%u, thumb=%d..%d, characters=%zu/%zu).\n",
+                wrapped, hidden, range.nMax, range.nPage, bar.xyThumbTop, bar.xyThumbBottom, text.size(), document.size());
             return false;
         }
     }
