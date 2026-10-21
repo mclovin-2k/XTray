@@ -1,5 +1,6 @@
 #include "xray_tool_window.h"
 #include "ui_layout.h"
+#include "resource.h"
 
 #include <richedit.h>
 
@@ -157,8 +158,6 @@ void XrayToolWindow::Initialize()
     copy_ = child(L"BUTTON", 0, WS_TABSTOP, kCopyId);
     close_ = child(L"BUTTON", 0, WS_TABSTOP, IDCANCEL);
     SetFonts();
-    SendMessageW(window_, WM_SETICON, ICON_SMALL, SendMessageW(owner_, WM_GETICON, ICON_SMALL, 0));
-    SendMessageW(window_, WM_SETICON, ICON_BIG, SendMessageW(owner_, WM_GETICON, ICON_BIG, 0));
 }
 
 void XrayToolWindow::SetFonts()
@@ -186,6 +185,21 @@ void XrayToolWindow::SetFonts()
     font_ = font;
     outputFont_ = outputFont;
     theme_.SetFont(font_);
+    struct Icons {
+        std::array<HICON, 2> values{};
+        ~Icons() { for (const auto icon : values) { if (icon != nullptr) { DestroyIcon(icon); } } }
+    } next;
+    for (size_t index = 0; index < next.values.size(); ++index) {
+        const int size = UiScale(window_, index == 0 ? 16 : 32);
+        next.values[index] = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),
+            MAKEINTRESOURCEW(IDI_XTRAY), IMAGE_ICON, size, size, 0));
+        if (next.values[index] == nullptr) {
+            throw std::runtime_error("Cannot load result window icons.");
+        }
+    }
+    next.values.swap(icons_);
+    SendMessageW(window_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icons_[0]));
+    SendMessageW(window_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icons_[1]));
 }
 
 void XrayToolWindow::RefreshLanguage()
@@ -246,8 +260,6 @@ void XrayToolWindow::SetAppearance(bool dark)
     dark_ = dark;
     if (window_ != nullptr) {
         theme_.Apply(dark);
-        SendMessageW(window_, WM_SETICON, ICON_SMALL, SendMessageW(owner_, WM_GETICON, ICON_SMALL, 0));
-        SendMessageW(window_, WM_SETICON, ICON_BIG, SendMessageW(owner_, WM_GETICON, ICON_BIG, 0));
         ApplyTextColors();
     }
 }
@@ -275,6 +287,7 @@ void XrayToolWindow::Poll()
         result_ = std::move(*result);
         document_ = L"Xray: " + result_->executable.native() + L"\r\n\r\n";
         document_ += DisplayOutput(result_->output);
+        std::string{}.swap(result_->output);
         if (!result_->error.empty()) {
             if (!document_.empty() && document_.back() != L'\n') { document_ += L"\r\n"; }
             document_ += result_->error;
@@ -380,6 +393,9 @@ LRESULT CALLBACK XrayToolWindow::Procedure(HWND window, UINT message, WPARAM wPa
             self->task_.Cancel();
             static_cast<void>(self->task_.TakeResult());
             self->theme_.Detach();
+            for (auto& icon : self->icons_) {
+                if (icon != nullptr) { DestroyIcon(icon); icon = nullptr; }
+            }
             if (self->font_ != nullptr) { DeleteObject(self->font_); self->font_ = nullptr; }
             if (self->outputFont_ != nullptr) { DeleteObject(self->outputFont_); self->outputFont_ = nullptr; }
             self->status_ = self->note_ = self->output_ = self->copy_ = self->close_ = nullptr;
@@ -520,6 +536,18 @@ bool SmokeTestXrayTools(HWND owner, const std::filesystem::path& root)
     tool.Open(owner, XrayToolKind::Version, settings, true, false, true);
     if (!wait() || text(GetDlgItem(tool.Window(), kOutputId)).find(L"Xray test-version") == std::wstring::npos) {
         return fail(L"version query without configuration");
+    }
+    RECT resultBounds{};
+    GetWindowRect(tool.Window(), &resultBounds);
+    const UINT dpi = GetDpiForWindow(tool.Window());
+    SendMessageW(tool.Window(), WM_DPICHANGED, MAKEWPARAM(dpi, dpi), reinterpret_cast<LPARAM>(&resultBounds));
+    for (const auto size : {ICON_SMALL, ICON_BIG}) {
+        const auto icon = reinterpret_cast<HICON>(SendMessageW(tool.Window(), WM_GETICON, size, 0));
+        ICONINFO information{};
+        const bool valid = icon != nullptr && GetIconInfo(icon, &information) != FALSE;
+        if (information.hbmColor != nullptr) { DeleteObject(information.hbmColor); }
+        if (information.hbmMask != nullptr) { DeleteObject(information.hbmMask); }
+        if (!valid) { return fail(L"independent window icons after DPI refresh"); }
     }
     settings.configFiles = {L".\\tool-hold.conf"};
     tool.Open(owner, XrayToolKind::Preview, settings, true, true, true);

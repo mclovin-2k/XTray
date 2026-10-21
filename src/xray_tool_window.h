@@ -3,6 +3,7 @@
 #include "theme_window.h"
 #include "xray_tool.h"
 
+#include <array>
 #include <exception>
 
 namespace xtray {
@@ -38,6 +39,7 @@ private:
     HWND window_ = nullptr, owner_ = nullptr;
     HWND status_ = nullptr, note_ = nullptr, output_ = nullptr, copy_ = nullptr, close_ = nullptr;
     HFONT font_ = nullptr, outputFont_ = nullptr;
+    std::array<HICON, 2> icons_{};
     bool dark_ = false, quiet_ = false;
     std::exception_ptr error_;
 };

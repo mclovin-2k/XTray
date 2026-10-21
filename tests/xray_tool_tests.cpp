@@ -154,6 +154,15 @@ void TestXrayTools(const std::filesystem::path& root)
         failed.output.find("expected failure") != std::string::npos,
         "Configuration check lost its failure exit code or original output.");
 
+    auto directoryOnly = ToolSettings(root);
+    directoryOnly.configFiles.clear();
+    Require(tool.Start(XrayToolKind::Preview, directoryOnly), "Cannot preview a directory without configuration files.");
+    const auto directoryResult = Result(tool);
+    Require(directoryResult.exitCode == 0 &&
+        directoryResult.output.find("-config=") == std::string::npos &&
+        directoryResult.output.find("-confdir=..\\shared configs\\\n") != std::string::npos,
+        "Directory-only configuration source was not preserved.");
+
     Settings noConfig;
     noConfig.executable = ExecutablePath().native();
     Require(tool.Start(XrayToolKind::Version, noConfig), "Cannot query version without a configuration.");
