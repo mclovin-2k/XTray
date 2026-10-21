@@ -38,7 +38,7 @@ struct SvgIconRenderer::Impl {
     ComPtr<ID2D1Factory6> factory;
     ComPtr<ID2D1Device5> device;
     ComPtr<ID2D1DeviceContext5> context;
-    std::array<ComPtr<ID2D1SvgDocument>, 3> documents;
+    std::array<ComPtr<ID2D1SvgDocument>, 5> documents;
 
     Impl()
     {
@@ -65,7 +65,8 @@ struct SvgIconRenderer::Impl {
             icon = SvgIcon::Application;
         }
         const auto index = static_cast<size_t>(icon);
-        constexpr std::array<int, 3> resources{IDR_SVG_XTRAY, IDR_SVG_CLEAR_LOGS, IDR_SVG_SCROLL_TO_END};
+        constexpr std::array resources{IDR_SVG_XTRAY, IDR_SVG_CLEAR_LOGS, IDR_SVG_SCROLL_TO_END,
+            IDR_SVG_COPY_ALL, IDR_SVG_WORD_WRAP};
         if (index >= resources.size()) {
             throw std::runtime_error("Unknown SVG icon.");
         }
@@ -110,7 +111,8 @@ IconPixels SvgIconRenderer::Render(SvgIcon icon, int size, COLORREF color)
     wchar_t paint[8]{};
     swprintf_s(paint, L"#%02X%02X%02X", static_cast<unsigned>(GetRValue(color)),
         static_cast<unsigned>(GetGValue(color)), static_cast<unsigned>(GetBValue(color)));
-    CheckGraphics(foreground->SetAttributeValue(icon == SvgIcon::ScrollToEnd ? L"stroke" : L"fill",
+    const bool stroked = icon == SvgIcon::ScrollToEnd || icon == SvgIcon::CopyAll || icon == SvgIcon::WordWrap;
+    CheckGraphics(foreground->SetAttributeValue(stroked ? L"stroke" : L"fill",
         D2D1_SVG_ATTRIBUTE_STRING_TYPE_SVG, paint),
         Text(L"Cannot tint an SVG icon", L"无法为 SVG 图标着色"));
 

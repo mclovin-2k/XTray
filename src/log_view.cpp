@@ -1,5 +1,6 @@
 #include "log_view.h"
 #include "win32.h"
+#include "text_view.h"
 
 #include <richedit.h>
 
@@ -39,6 +40,7 @@ LogView::LogView(HWND window, Logs& logs) : window_(window), logs_(logs)
     SendMessageW(window_, EM_EXLIMITTEXT, 0, LONG_MAX);
     SendMessageW(window_, EM_SETBKGNDCOLOR, 0, RGB(255, 255, 255));
     SendMessageW(window_, EM_SETEVENTMASK, 0, ENM_SCROLL | ENM_SELCHANGE);
+    SetTextWordWrap(window_, true);
 }
 
 void LogView::SetTheme(const ThemePalette& palette)
@@ -75,6 +77,38 @@ void LogView::Clear()
 void LogView::ScrollToEnd()
 {
     Refresh(true);
+}
+
+bool LogView::Following() const
+{
+    CHARRANGE selection{};
+    SendMessageW(window_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&selection));
+    return selection.cpMin == selection.cpMax && TextViewAtEnd(window_);
+}
+
+void LogView::SetWordWrap(bool enabled)
+{
+    if (wordWrap_ == enabled) { return; }
+    const bool follow = Following();
+    SetTextWordWrap(window_, enabled);
+    wordWrap_ = enabled;
+    if (follow) { ScrollToEnd(); }
+}
+
+std::wstring LogView::CopyText() const
+{
+    std::wstring text;
+    for (const auto& line : logs_.Snapshot().lines) {
+        if ((filter_ == 1 && line->source != LogSource::Tray) ||
+            (filter_ == 2 && line->source != LogSource::Xray)) {
+            continue;
+        }
+        for (const wchar_t character : DisplayText(*line)) {
+            if (character == L'\r') { text += L"\r\n"; }
+            else { text += character; }
+        }
+    }
+    return text;
 }
 
 void LogView::InvalidateFormat(HFONT font)
@@ -215,10 +249,7 @@ void LogView::Refresh(bool latest)
     SendMessageW(window_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&selection));
     const auto start = Capture(selection.cpMin);
     const auto end = Capture(selection.cpMax);
-    SCROLLINFO scroll{sizeof(SCROLLINFO), SIF_RANGE | SIF_PAGE | SIF_POS};
-    const bool hasScroll = GetScrollInfo(window_, SB_VERT, &scroll) != FALSE;
-    const bool follow = latest || (selection.cpMin == selection.cpMax &&
-        (!hasScroll || scroll.nPos + static_cast<int>(scroll.nPage) >= scroll.nMax - 1));
+    const bool follow = latest || Following();
     const auto firstLine = SendMessageW(window_, EM_GETFIRSTVISIBLELINE, 0, 0);
     const LONG topCharacter = static_cast<LONG>(SendMessageW(window_, EM_LINEINDEX, firstLine, 0));
     const auto top = Capture((std::max)(LONG{0}, topCharacter));

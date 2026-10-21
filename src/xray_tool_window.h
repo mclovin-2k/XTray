@@ -28,6 +28,7 @@ private:
     void Poll();
     void SetDocument();
     void CopyAll() const;
+    void UpdateToolbar();
     void ApplyTextColors();
     const wchar_t* Title() const;
     std::wstring Status() const;
@@ -38,8 +39,13 @@ private:
     ThemeWindow theme_;
     HWND window_ = nullptr, owner_ = nullptr;
     HWND status_ = nullptr, note_ = nullptr, output_ = nullptr, copy_ = nullptr, close_ = nullptr;
+    HWND wordWrapButton_ = nullptr, tooltip_ = nullptr;
     HFONT font_ = nullptr, outputFont_ = nullptr;
     std::array<HICON, 2> icons_{};
+    std::array<HICON, 4> toolIcons_{};
+    UINT toolIconDpi_ = 0;
+    COLORREF toolIconColor_ = CLR_INVALID;
+    bool wordWrap_ = false;
     bool dark_ = false, quiet_ = false;
     std::exception_ptr error_;
 };

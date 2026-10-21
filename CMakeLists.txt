@@ -44,6 +44,8 @@ set(XTRAY_SVG_ASSETS
     "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/xtray.svg"
     "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/clear-logs.svg"
     "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/scroll-to-end.svg"
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/copy-all.svg"
+    "${CMAKE_CURRENT_SOURCE_DIR}/resources/icons/word-wrap.svg"
 )
 set(XTRAY_GENERATED_ICON "${CMAKE_CURRENT_BINARY_DIR}/generated/XTray.ico")
 add_custom_command(OUTPUT "${XTRAY_GENERATED_ICON}"

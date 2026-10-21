@@ -165,6 +165,13 @@ SettingsResult LoadSettings(const std::filesystem::path& root)
                 throw std::runtime_error(Text("Invalid appearance setting.", "无效的外观设置。"));
             }
         }
+        if (values.contains({L"XTray", L"LogWordWrap"})) {
+            const auto wrap = take(L"XTray", L"LogWordWrap");
+            if (wrap != L"0" && wrap != L"1") {
+                throw std::runtime_error(Text("Invalid log word wrap setting.", "无效的日志自动换行设置。"));
+            }
+            settings.logWordWrap = wrap == L"1";
+        }
         const size_t count = ParseNumber(take(L"XTray", L"ConfigCount"));
         if (count > values.size()) {
             throw std::runtime_error(Text("Incomplete configuration file list.", "配置文件列表不完整。"));
@@ -219,6 +226,7 @@ bool SaveSettings(const std::filesystem::path& root, const Settings& settings, s
                 : settings.language == Language::English ? L"en" : L"zh") +
             L"\r\nTheme=" + (settings.theme == ThemeMode::System ? L"system"
                 : settings.theme == ThemeMode::Light ? L"light" : L"dark") +
+            L"\r\nLogWordWrap=" + (settings.logWordWrap ? L"1" : L"0") +
             L"\r\nConfigCount=" + std::to_wstring(settings.configFiles.size()) +
             L"\r\n\r\n[ConfigFiles]\r\n";
         for (size_t index = 0; index < settings.configFiles.size(); ++index) {

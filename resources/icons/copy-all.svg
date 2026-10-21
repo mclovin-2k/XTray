@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <title>Copy all</title>
+  <g id="foreground" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 4H17A3 3 0 0 1 20 7V17"/>
+    <rect x="4" y="7" width="13" height="14" rx="2"/>
+    <path d="M8 11H13M8 15H13"/>
+  </g>
+</svg>

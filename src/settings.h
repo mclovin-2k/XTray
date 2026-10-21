@@ -16,6 +16,7 @@ struct Settings {
     size_t logLines = 5000;
     Language language = Language::Automatic;
     ThemeMode theme = ThemeMode::System;
+    bool logWordWrap = true;
 };
 
 struct SettingsResult {

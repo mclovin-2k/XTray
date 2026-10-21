@@ -83,9 +83,14 @@ together, depending on your setup.
   stop this copy's Xray and quit XTray.
 - **Configuration shortcuts:** open a saved configuration file, its containing
   folder or the configured directory from the main window.
-- **Logs:** choose all output, XTray only or Xray only. The trash-can button clears
-  the selected source; the scroll-to-end button jumps to the latest output and
-  resumes following. XTray keeps logs in memory and does not save historical logs.
+- **Logs:** choose all output, XTray only or Xray only. The buttons, from left to
+  right, copy all retained logs for the selected source, clear that source,
+  scroll to the end, and toggle word wrap. The scroll-to-end button stays
+  pressed while following new output; scrolling up pauses following, and
+  scrolling back to the bottom or clicking the button resumes it. Word wrap is
+  on by default, and its setting is remembered. Copying includes off-screen
+  logs and preserves line breaks regardless of wrapping.
+  XTray keeps logs in memory and does not save historical logs.
   To save Xray logs to files, use [Xray's own logging configuration](https://xtls.github.io/config/log.html).
 - **Language and appearance:** Settings offers automatic, English or Chinese
   language selection, light/dark/system appearance, and a configurable log limit.
@@ -107,8 +112,11 @@ The **Xray Tools** menu uses the Xray executable and settings saved in
   information. Configuration files are not required.
 
 Tools run independently of the managed proxy, with one tool task at a time.
-The result window provides horizontal and vertical scrolling and **Copy all**;
-its full output is separate from the runtime log limit. Closing the result
+The result window has **Copy all** and a word-wrap toggle above the output.
+Word wrap starts off for each new result window; its setting is kept only until
+that window closes. With wrapping off, horizontal scrolling is available.
+Copying always includes the full result with its original line breaks.
+The full output is separate from the runtime log limit. Closing the result
 window cancels an unfinished task. Results are kept only in memory until that
 window is closed.
 

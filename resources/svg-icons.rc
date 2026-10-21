@@ -4,3 +4,5 @@
 IDR_SVG_XTRAY RCDATA "icons/xtray.svg"
 IDR_SVG_CLEAR_LOGS RCDATA "icons/clear-logs.svg"
 IDR_SVG_SCROLL_TO_END RCDATA "icons/scroll-to-end.svg"
+IDR_SVG_COPY_ALL RCDATA "icons/copy-all.svg"
+IDR_SVG_WORD_WRAP RCDATA "icons/word-wrap.svg"

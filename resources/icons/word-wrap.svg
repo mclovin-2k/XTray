@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24">
+  <title>Word wrap</title>
+  <g id="foreground" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 5H21M3 11H18A4 4 0 0 1 18 19H13M16 16L13 19L16 22M3 19H8"/>
+  </g>
+</svg>

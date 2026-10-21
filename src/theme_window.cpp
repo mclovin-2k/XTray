@@ -164,7 +164,7 @@ bool SmokeTestNativeControl(HWND control)
     const bool combo = IsClass(control, L"ComboBox");
     const bool button = IsClass(control, L"Button");
     const LONG_PTR style = GetWindowLongPtrW(control, GWL_STYLE);
-    const bool checkbox = button && (style & BS_TYPEMASK) == BS_AUTOCHECKBOX;
+    const bool checkbox = button && (style & BS_TYPEMASK) == BS_AUTOCHECKBOX && (style & BS_PUSHLIKE) == 0;
     RECT bounds{};
     if (theme == nullptr || (!combo && !button) ||
         (button && (style & BS_TYPEMASK) == BS_OWNERDRAW) ||
@@ -440,7 +440,7 @@ bool ThemeWindow::Handle(UINT message, WPARAM wParam, LPARAM lParam, LRESULT& re
         const auto& item = *reinterpret_cast<const NMCUSTOMDRAW*>(lParam);
         if (item.hdr.code == NM_CUSTOMDRAW && item.dwDrawStage == CDDS_PREPAINT &&
             GetParent(item.hdr.hwndFrom) == window_ && IsClass(item.hdr.hwndFrom, L"Button") &&
-            (GetWindowLongPtrW(item.hdr.hwndFrom, GWL_STYLE) & BS_TYPEMASK) == BS_AUTOCHECKBOX &&
+            (GetWindowLongPtrW(item.hdr.hwndFrom, GWL_STYLE) & (BS_TYPEMASK | BS_PUSHLIKE)) == BS_AUTOCHECKBOX &&
             DrawCheckboxCaption(item.hdr.hwndFrom, item, colors_)) {
             // Native checkbox painting has drawn the glyph in CDDS_PREERASE; replace only its caption.
             result = CDRF_SKIPDEFAULT;

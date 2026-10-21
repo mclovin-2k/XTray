@@ -1,6 +1,8 @@
 #include "xray_tool_window.h"
 #include "ui_layout.h"
 #include "resource.h"
+#include "svg_icons.h"
+#include "text_view.h"
 
 #include <richedit.h>
 
@@ -8,13 +10,14 @@
 #include <array>
 #include <cstdio>
 #include <cstring>
+#include <cwchar>
 #include <limits>
 
 namespace xtray {
 namespace {
 
 constexpr wchar_t kToolClass[] = L"XTray.XrayTool";
-constexpr int kOutputId = 4101, kCopyId = 4102, kStatusId = 4103;
+constexpr int kOutputId = 4101, kCopyId = 4102, kStatusId = 4103, kWordWrapId = 4104;
 constexpr DWORD kToolStyle = WS_OVERLAPPEDWINDOW;
 
 std::wstring DisplayOutput(std::string_view bytes)
@@ -150,13 +153,31 @@ void XrayToolWindow::Initialize()
     };
     status_ = child(L"STATIC", 0, SS_LEFT | SS_NOPREFIX, kStatusId);
     note_ = child(L"STATIC", 0, SS_LEFT | SS_NOPREFIX, 0);
+    copy_ = child(L"BUTTON", 0, WS_TABSTOP | BS_ICON, kCopyId);
+    wordWrapButton_ = child(L"BUTTON", 0, WS_TABSTOP | BS_ICON | BS_AUTOCHECKBOX | BS_PUSHLIKE, kWordWrapId);
     output_ = child(MSFTEDIT_CLASS, WS_EX_CLIENTEDGE,
         ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL | ES_AUTOVSCROLL | ES_NOHIDESEL | ES_DISABLENOSCROLL |
         WS_VSCROLL | WS_HSCROLL | WS_TABSTOP, kOutputId);
     SendMessageW(output_, EM_EXLIMITTEXT, 0, (std::numeric_limits<LONG>::max)() - 1);
     SendMessageW(output_, EM_SETTEXTMODE, TM_PLAINTEXT, 0);
-    copy_ = child(L"BUTTON", 0, WS_TABSTOP, kCopyId);
     close_ = child(L"BUTTON", 0, WS_TABSTOP, IDCANCEL);
+    wordWrap_ = false;
+    SetTextWordWrap(output_, false);
+    tooltip_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE, TOOLTIPS_CLASSW, nullptr,
+        WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+        window_, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (tooltip_ == nullptr) { throw std::runtime_error("Cannot create result button tooltips."); }
+    for (const auto control : {copy_, wordWrapButton_}) {
+        TOOLINFOW tool{};
+        tool.cbSize = TTTOOLINFOW_V2_SIZE;
+        tool.hwnd = window_;
+        tool.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+        tool.uId = reinterpret_cast<UINT_PTR>(control);
+        tool.lpszText = const_cast<wchar_t*>(L"");
+        if (!SendMessageW(tooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool))) {
+            throw std::runtime_error("Cannot register result button tooltips.");
+        }
+    }
     SetFonts();
 }
 
@@ -176,7 +197,7 @@ void XrayToolWindow::SetFonts()
         if (outputFont != nullptr) { DeleteObject(outputFont); }
         throw std::runtime_error("Cannot create result window fonts.");
     }
-    for (const auto control : {status_, note_, copy_, close_}) {
+    for (const auto control : {status_, note_, copy_, wordWrapButton_, close_}) {
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     }
     SendMessageW(output_, WM_SETFONT, reinterpret_cast<WPARAM>(outputFont), TRUE);
@@ -200,6 +221,7 @@ void XrayToolWindow::SetFonts()
     next.values.swap(icons_);
     SendMessageW(window_, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icons_[0]));
     SendMessageW(window_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icons_[1]));
+    UpdateToolbar();
 }
 
 void XrayToolWindow::RefreshLanguage()
@@ -214,6 +236,7 @@ void XrayToolWindow::RefreshLanguage()
             L"使用已保存设置执行，不影响正在运行的 Xray 实例。"));
     SetWindowTextW(copy_, Text(L"Copy all", L"复制全部"));
     SetWindowTextW(close_, Text(L"Close", L"关闭"));
+    UpdateToolbar();
     Layout();
 }
 
@@ -225,16 +248,23 @@ void XrayToolWindow::Layout()
     const int margin = UiScale(window_, 16), gap = UiScale(window_, 8);
     const int width = (std::max)(1, static_cast<int>(client.right) - margin * 2);
     int y = margin;
-    for (const auto label : {status_, note_}) {
-        const int height = (std::max)(1L, ControlTextSize(label, width).cy);
-        MoveWindow(label, margin, y, width, height, TRUE);
-        y += height + gap;
-    }
-    const int height = (std::max)(ControlTextSize(copy_).cy, ControlTextSize(close_).cy) + UiScale(window_, 12);
+    const int statusHeight = (std::max)(1L, ControlTextSize(status_, width).cy);
+    MoveWindow(status_, margin, y, width, statusHeight, TRUE);
+    y += statusHeight + gap;
+    const int button = UiScale(window_, 32);
+    const int noteWidth = (std::max)(1, width - button * 2 - gap * 2);
+    const int noteHeight = (std::max)(1L, ControlTextSize(note_, noteWidth).cy);
+    const int rowHeight = (std::max)(noteHeight, button);
+    MoveWindow(note_, margin, y + (rowHeight - noteHeight) / 2, noteWidth, noteHeight, TRUE);
+    MoveWindow(copy_, client.right - margin - button * 2 - gap,
+        y + (rowHeight - button) / 2, button, button, TRUE);
+    MoveWindow(wordWrapButton_, client.right - margin - button,
+        y + (rowHeight - button) / 2, button, button, TRUE);
+    y += rowHeight + gap;
+    const int height = ControlTextSize(close_).cy + UiScale(window_, 12);
     const int bottom = (std::max)(y + gap, static_cast<int>(client.bottom) - margin - height);
-    const int closeWidth = TextButtonWidth(close_), copyWidth = TextButtonWidth(copy_);
+    const int closeWidth = TextButtonWidth(close_);
     MoveWindow(close_, client.right - margin - closeWidth, bottom, closeWidth, height, TRUE);
-    MoveWindow(copy_, client.right - margin - closeWidth - gap - copyWidth, bottom, copyWidth, height, TRUE);
     MoveWindow(output_, margin, y, width, (std::max)(1, bottom - gap - y), TRUE);
 }
 
@@ -260,6 +290,7 @@ void XrayToolWindow::SetAppearance(bool dark)
     dark_ = dark;
     if (window_ != nullptr) {
         theme_.Apply(dark);
+        UpdateToolbar();
         ApplyTextColors();
     }
 }
@@ -299,27 +330,43 @@ void XrayToolWindow::Poll()
 
 void XrayToolWindow::CopyAll() const
 {
-    if (document_.empty()) { return; }
-    const size_t bytes = (document_.size() + 1) * sizeof(wchar_t);
-    HGLOBAL data = GlobalAlloc(GMEM_MOVEABLE, bytes);
-    if (data == nullptr) { throw std::runtime_error("Cannot allocate clipboard text."); }
-    const auto pointer = GlobalLock(data);
-    if (pointer == nullptr) {
-        GlobalFree(data);
-        throw std::runtime_error("Cannot access clipboard text.");
+    CopyTextToClipboard(window_, document_);
+}
+
+void XrayToolWindow::UpdateToolbar()
+{
+    if (wordWrapButton_ == nullptr) { return; }
+    SetWindowTextW(wordWrapButton_, WordWrapCaption(wordWrap_));
+    SendMessageW(wordWrapButton_, BM_SETCHECK, wordWrap_ ? BST_CHECKED : BST_UNCHECKED, 0);
+    for (const auto& [control, caption] : std::array{
+        std::pair{copy_, Text(L"Copy all", L"复制全部")},
+        std::pair{wordWrapButton_, WordWrapCaption(wordWrap_)}}) {
+        TOOLINFOW tool{};
+        tool.cbSize = TTTOOLINFOW_V2_SIZE;
+        tool.hwnd = window_;
+        tool.uId = reinterpret_cast<UINT_PTR>(control);
+        tool.lpszText = const_cast<wchar_t*>(caption);
+        SendMessageW(tooltip_, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tool));
     }
-    std::memcpy(pointer, document_.c_str(), bytes);
-    GlobalUnlock(data);
-    if (!OpenClipboard(window_)) {
-        GlobalFree(data);
-        throw std::runtime_error(ToUtf8(WindowsError(Text(L"Cannot open the clipboard", L"打开剪贴板失败"))));
+    const auto& colors = theme_.Colors();
+    const UINT dpi = GetDpiForWindow(window_);
+    if (dpi == toolIconDpi_ && colors.text == toolIconColor_) { return; }
+    struct Icons {
+        std::array<HICON, 4> values{};
+        ~Icons() { for (const auto icon : values) { if (icon != nullptr) { DestroyIcon(icon); } } }
+    } next;
+    SvgIconRenderer renderer;
+    const int size = UiScale(window_, 20);
+    const std::array kinds{SvgIcon::CopyAll, SvgIcon::WordWrap};
+    const std::array controls{copy_, wordWrapButton_};
+    for (size_t index = 0; index < kinds.size(); ++index) {
+        next.values[index * 2] = renderer.CreateIcon(kinds[index], size, colors.text);
+        next.values[index * 2 + 1] = renderer.CreateIcon(kinds[index], size, colors.disabled);
+        SetButtonIcons(controls[index], next.values[index * 2], next.values[index * 2 + 1], size);
     }
-    const bool copied = EmptyClipboard() && SetClipboardData(CF_UNICODETEXT, data) != nullptr;
-    CloseClipboard();
-    if (!copied) {
-        GlobalFree(data);
-        throw std::runtime_error("Cannot copy the complete result.");
-    }
+    next.values.swap(toolIcons_);
+    toolIconDpi_ = dpi;
+    toolIconColor_ = colors.text;
 }
 
 bool XrayToolWindow::Translate(MSG& message) const
@@ -381,6 +428,11 @@ LRESULT CALLBACK XrayToolWindow::Procedure(HWND window, UINT message, WPARAM wPa
         case WM_COMMAND:
             if (LOWORD(wParam) == kCopyId && HIWORD(wParam) == BN_CLICKED) {
                 self->CopyAll();
+            } else if (LOWORD(wParam) == kWordWrapId && HIWORD(wParam) == BN_CLICKED) {
+                const bool enabled = SendMessageW(self->wordWrapButton_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+                SetTextWordWrap(self->output_, enabled);
+                self->wordWrap_ = enabled;
+                self->UpdateToolbar();
             } else if (LOWORD(wParam) == IDCANCEL) {
                 self->Close();
             }
@@ -396,6 +448,15 @@ LRESULT CALLBACK XrayToolWindow::Procedure(HWND window, UINT message, WPARAM wPa
             for (auto& icon : self->icons_) {
                 if (icon != nullptr) { DestroyIcon(icon); icon = nullptr; }
             }
+            for (auto& icon : self->toolIcons_) {
+                if (icon != nullptr) { DestroyIcon(icon); icon = nullptr; }
+            }
+            if (IsWindow(self->tooltip_)) { DestroyWindow(self->tooltip_); }
+            self->tooltip_ = nullptr;
+            self->toolIconDpi_ = 0;
+            self->toolIconColor_ = CLR_INVALID;
+            self->wordWrap_ = false;
+            self->wordWrapButton_ = nullptr;
             if (self->font_ != nullptr) { DeleteObject(self->font_); self->font_ = nullptr; }
             if (self->outputFont_ != nullptr) { DeleteObject(self->outputFont_); self->outputFont_ = nullptr; }
             self->status_ = self->note_ = self->output_ = self->copy_ = self->close_ = nullptr;
@@ -480,6 +541,23 @@ bool SmokeTestXrayTools(HWND owner, const std::filesystem::path& root)
             format.cbSize = sizeof(format);
             SendMessageW(output, EM_GETCHARFORMAT, SCF_SELECTION, reinterpret_cast<LPARAM>(&format));
             if (format.crTextColor != PaletteFor(dark).text) { return fail(L"readable result text theme"); }
+            const HWND copy = GetDlgItem(tool.Window(), kCopyId);
+            const HWND wrap = GetDlgItem(tool.Window(), kWordWrapId);
+            RECT copyBounds{}, wrapBounds{}, outputBounds{}, closeBounds{};
+            GetWindowRect(copy, &copyBounds);
+            GetWindowRect(wrap, &wrapBounds);
+            GetWindowRect(output, &outputBounds);
+            GetWindowRect(GetDlgItem(tool.Window(), IDCANCEL), &closeBounds);
+            if ((GetWindowLongPtrW(copy, GWL_STYLE) & BS_ICON) == 0 ||
+                (GetWindowLongPtrW(wrap, GWL_STYLE) & (BS_PUSHLIKE | BS_AUTOCHECKBOX)) !=
+                    (BS_PUSHLIKE | BS_AUTOCHECKBOX) ||
+                copyBounds.right + UiScale(copy, 8) != wrapBounds.left ||
+                copyBounds.top != wrapBounds.top || wrapBounds.right != outputBounds.right ||
+                wrapBounds.bottom >= outputBounds.top || copyBounds.top >= closeBounds.top ||
+                SendMessageW(wrap, BM_GETCHECK, 0, 0) != BST_UNCHECKED ||
+                !SmokeTestNativeControl(copy) || !SmokeTestNativeControl(wrap)) {
+                return fail(L"native copy/wrap toolbar, default state, alignment, or theme");
+            }
         }
     }
     settings.configFiles = {L".\\tool-large.conf"};
@@ -525,9 +603,34 @@ bool SmokeTestXrayTools(HWND owner, const std::filesystem::path& root)
     if (copied != nullptr) { GlobalUnlock(data); }
     CloseClipboard();
     if (!completeCopy) { return fail(L"Copy all copied only a selection or truncated the result"); }
+    const HWND wrap = GetDlgItem(tool.Window(), kWordWrapId);
+    SendMessageW(wrap, BM_CLICK, 0, 0);
+    CHARRANGE afterWrap{};
+    SendMessageW(output, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&afterWrap));
+    SendMessageW(output, EM_GETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&scrolled));
+    if (SendMessageW(wrap, BM_GETCHECK, 0, 0) != BST_CHECKED ||
+        text(output) != before || afterWrap.cpMin != selection.cpMin ||
+        afterWrap.cpMax != selection.cpMax || scrolled.x != 0 ||
+        !SmokeTestNativeControl(wrap)) {
+        return fail(L"tool word wrapping changed the complete output or selection");
+    }
+    SendMessageW(tool.Window(), WM_COMMAND, MAKEWPARAM(kCopyId, BN_CLICKED), 0);
+    if (!OpenClipboard(owner)) { return fail(L"clipboard unavailable after wrapping"); }
+    const HANDLE wrappedData = GetClipboardData(CF_UNICODETEXT);
+    const auto wrappedCopy = wrappedData != nullptr ? static_cast<const wchar_t*>(GlobalLock(wrappedData)) : nullptr;
+    const bool sameCopy = wrappedCopy != nullptr && std::wstring_view(wrappedCopy).find(L"tool line 11999:") != std::wstring::npos &&
+        std::wstring_view(wrappedCopy).ends_with(L"tool output end") &&
+        static_cast<size_t>(std::count(wrappedCopy, wrappedCopy + std::wcslen(wrappedCopy), L'\n')) ==
+            static_cast<size_t>(std::count(before.begin(), before.end(), L'\n'));
+    if (wrappedCopy != nullptr) { GlobalUnlock(wrappedData); }
+    CloseClipboard();
+    if (!sameCopy) { return fail(L"word wrapping inserted line breaks into copied output"); }
 
     settings.configFiles = {L".\\tool-fail.conf"};
     tool.Open(owner, XrayToolKind::Check, settings, true, true, true);
+    if (SendMessageW(GetDlgItem(tool.Window(), kWordWrapId), BM_GETCHECK, 0, 0) != BST_CHECKED) {
+        return fail(L"tool word wrap was lost during the same window lifetime");
+    }
     if (!wait() || text(GetDlgItem(tool.Window(), kStatusId)).find(L"23") == std::wstring::npos ||
         text(GetDlgItem(tool.Window(), kOutputId)).find(L"expected failure") == std::wstring::npos) {
         return fail(L"failure exit code and original diagnostic");
@@ -560,6 +663,10 @@ bool SmokeTestXrayTools(HWND owner, const std::filesystem::path& root)
     SendMessageW(active, WM_CLOSE, 0, 0);
     if (tool.Window() != nullptr || tool.Running() || !IsWindowEnabled(owner)) {
         return fail(L"closing the result cancels only its task");
+    }
+    tool.Open(owner, XrayToolKind::Version, settings, true, false, true);
+    if (!wait() || SendMessageW(GetDlgItem(tool.Window(), kWordWrapId), BM_GETCHECK, 0, 0) != BST_UNCHECKED) {
+        return fail(L"closing and reopening the result must reset word wrap to off");
     }
     return true;
 }

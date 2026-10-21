@@ -12,6 +12,9 @@ public:
     void SetFilter(int filter);
     void Clear();
     void ScrollToEnd();
+    void SetWordWrap(bool enabled);
+    bool Following() const;
+    std::wstring CopyText() const;
     void InvalidateFormat(HFONT font);
     void SetTheme(const ThemePalette& palette);
     void Refresh(bool latest = false);
@@ -29,6 +32,7 @@ private:
     Logs& logs_;
     int filter_ = 0;
     bool formatAll_ = true;
+    bool wordWrap_ = true;
     ThemePalette palette_ = PaletteFor(false);
     std::array<LONG, 2> indentTwips_{};
     uint64_t revision_ = UINT64_MAX;

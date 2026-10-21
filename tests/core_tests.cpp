@@ -508,7 +508,7 @@ void TestSettings(const std::filesystem::path& root)
 {
     std::filesystem::create_directories(root);
     Check(LoadSettings(root).success && LoadSettings(root).settings.language == Language::Automatic &&
-        LoadSettings(root).settings.theme == ThemeMode::System,
+        LoadSettings(root).settings.theme == ThemeMode::System && LoadSettings(root).settings.logWordWrap,
         "Missing settings should use automatic language, system appearance, and defaults.");
     Settings settings;
     settings.executable = L"..\\bin\\xray.exe";
@@ -534,6 +534,30 @@ void TestSettings(const std::filesystem::path& root)
     }
     Check(!bytes.starts_with("\xEF\xBB\xBF") && bytes.find("\r\n") != std::string::npos,
         "Settings must be UTF-8 without BOM and use CRLF.");
+    for (const bool wrap : {false, true}) {
+        auto changed = settings;
+        changed.logWordWrap = wrap;
+        Check(SaveSettings(root, changed, error) && LoadSettings(root).success &&
+            LoadSettings(root).settings.logWordWrap == wrap, "Log word wrap did not round-trip.");
+    }
+    const auto wrapLine = bytes.find("LogWordWrap=1\r\n");
+    Check(wrapLine != std::string::npos, "The log word wrap key was not saved.");
+    auto oldWrap = bytes;
+    oldWrap.erase(wrapLine, std::string_view("LogWordWrap=1\r\n").size());
+    {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file << oldWrap;
+    }
+    Check(LoadSettings(root).success && LoadSettings(root).settings.logWordWrap &&
+        LoadSettings(root).settings.configFiles == settings.configFiles,
+        "Older settings must default to wrapping and preserve paths.");
+    auto invalidWrap = bytes;
+    invalidWrap.replace(wrapLine, std::string_view("LogWordWrap=1").size(), "LogWordWrap=invalid");
+    {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file << invalidWrap;
+    }
+    Check(!LoadSettings(root).success, "An invalid log word wrap value was accepted.");
     for (const auto theme : {ThemeMode::System, ThemeMode::Light, ThemeMode::Dark}) {
         auto changed = settings;
         changed.theme = theme;

@@ -7,6 +7,7 @@
 #include "theme_window.h"
 #include "menu_theme.h"
 #include "log_view.h"
+#include "text_view.h"
 #include "xray_process.h"
 #include "settings_dialog.h"
 #include "xray_tool_window.h"
@@ -42,7 +43,7 @@ constexpr UINT kExitMessage = WM_APP + 43;
 constexpr UINT kRuntimeFailureTestMessage = WM_APP + 49;
 constexpr DWORD kWindowStyle = WS_OVERLAPPEDWINDOW;
 enum ControlId { Run = 2001, Stop, Restart, SettingsButton, FileList, OpenFile,
-    OpenFileDirectory, OpenDirectory, Filter, ClearLogs, ScrollToEnd, ShowGui, ExitApp, CheckConfig, PreviewConfig, ShowVersion };
+    OpenFileDirectory, OpenDirectory, Filter, ClearLogs, ScrollToEnd, ShowGui, ExitApp, CheckConfig, PreviewConfig, ShowVersion, CopyLogs, WordWrap };
 enum IconId { StoppedTrayIcon, RunningTrayIcon, StoppedStatusIcon, RunningStatusIcon,
     SmallWindowIcon, LargeWindowIcon, IconCount };
 
@@ -250,11 +251,14 @@ public:
         openDirectory_ = child(0, L"BUTTON", L"", WS_TABSTOP, OpenDirectory);
         filterLabel_ = child(0, L"STATIC", L"", SS_CENTERIMAGE);
         filter_ = child(0, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, Filter);
-        scrollToEnd_ = child(0, L"BUTTON", L"", WS_TABSTOP | BS_ICON, ScrollToEnd);
+        copyLogs_ = child(0, L"BUTTON", L"", WS_TABSTOP | BS_ICON, CopyLogs);
         clearLogs_ = child(0, L"BUTTON", L"", WS_TABSTOP | BS_ICON, ClearLogs);
+        scrollToEnd_ = child(0, L"BUTTON", L"", WS_TABSTOP | BS_ICON | BS_CHECKBOX | BS_PUSHLIKE, ScrollToEnd);
+        wordWrap_ = child(0, L"BUTTON", L"", WS_TABSTOP | BS_ICON | BS_AUTOCHECKBOX | BS_PUSHLIKE, WordWrap);
         CreateTooltips();
         logWindow_ = child(WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
-            ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_NOHIDESEL | WS_VSCROLL | WS_TABSTOP);
+            ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL | ES_AUTOVSCROLL | ES_NOHIDESEL | ES_DISABLENOSCROLL |
+            WS_VSCROLL | WS_HSCROLL | WS_TABSTOP);
         view_ = std::make_unique<LogView>(logWindow_, logs_);
         if (smokeTest_) {
             std::fwprintf(stderr, L"Smoke: configuring fonts and icons.\n");
@@ -272,6 +276,7 @@ public:
         if (smokeTest_) {
             settings_.theme = ThemeMode::Light;
         }
+        view_->SetWordWrap(settings_.logWordWrap);
         ApplyLanguage(settings_.language);
         ApplyUiText();
         themeMonitor_ = std::make_unique<ThemeMonitor>(window_);
@@ -333,8 +338,12 @@ public:
         const int filterY = Scale(134), filterHeight = Scale(32);
         move(filterLabel_, margin, filterY + (filterHeight - Scale(26)) / 2, labelWidth, Scale(26));
         move(filter_, inputX, filterY + (filterHeight - ComboBoxHeight(filter_)) / 2, Scale(136), Scale(180));
-        move(scrollToEnd_, width - margin - Scale(72), filterY, Scale(32), filterHeight);
-        move(clearLogs_, width - margin - Scale(32), filterY, Scale(32), filterHeight);
+        const int iconButton = Scale(32);
+        int toolX = width - margin - iconButton * 4 - gap * 3;
+        for (const auto control : {copyLogs_, clearLogs_, scrollToEnd_, wordWrap_}) {
+            move(control, toolX, filterY, iconButton, filterHeight);
+            toolX += iconButton + gap;
+        }
         move(logWindow_, margin, Scale(174), width - margin * 2,
             static_cast<int>(client.bottom) - Scale(190));
     }
@@ -370,6 +379,7 @@ public:
             UpdateTray();
         }
         view_->Refresh();
+        UpdateLogButtonState();
         if (failureSmokePending_ && process_.Pid() != 0) {
             failureSmokePending_ = false;
             std::fwprintf(stderr, L"Smoke: runtime failure child PID %lu.\n", process_.Pid());
@@ -384,7 +394,7 @@ public:
         const bool button = notification == BN_CLICKED &&
             (id == Run || id == Stop || id == Restart || id == SettingsButton ||
                 id == OpenFile || id == OpenFileDirectory || id == OpenDirectory ||
-                id == ClearLogs || id == ScrollToEnd || id == ExitApp ||
+                id == CopyLogs || id == WordWrap || id == ClearLogs || id == ScrollToEnd || id == ExitApp ||
                 id == CheckConfig || id == PreviewConfig || id == ShowVersion);
         const bool selection = notification == CBN_SELCHANGE && (id == FileList || id == Filter);
         // Native controls notify their parent during creation and programmatic updates.
@@ -413,6 +423,16 @@ public:
                 UpdateTheme(themeMonitor_->SystemDark());
                 UpdatePaths();
             }
+        } else if (id == CopyLogs) {
+            try {
+                CopyTextToClipboard(window_, view_->CopyText());
+            } catch (const std::exception& exception) {
+                if (smokeTest_) { throw; }
+                const auto error = FromUtf8(exception.what());
+                MessageBoxW(window_, error.c_str(), Text(L"Copy all", L"复制全部"), MB_OK | MB_ICONERROR);
+            }
+        } else if (id == WordWrap) {
+            SetLogWordWrap(SendMessageW(wordWrap_, BM_GETCHECK, 0, 0) == BST_CHECKED);
         } else if (id == ClearLogs || id == ScrollToEnd) {
             SendMessageW(tooltip_, TTM_POP, 0, 0);
             if (id == ClearLogs) {
@@ -774,6 +794,47 @@ private:
         return passed;
     }
 
+    void UpdateLogButtonState()
+    {
+        for (const auto& [control, checked] : std::array{
+            std::pair{scrollToEnd_, view_->Following()},
+            std::pair{wordWrap_, settings_.logWordWrap}}) {
+            const auto state = checked ? BST_CHECKED : BST_UNCHECKED;
+            if (SendMessageW(control, BM_GETCHECK, 0, 0) != state) {
+                SendMessageW(control, BM_SETCHECK, state, 0);
+            }
+        }
+        const bool hasText = GetWindowTextLengthW(logWindow_) != 0;
+        if ((IsWindowEnabled(copyLogs_) != FALSE) != hasText) {
+            EnableWindow(copyLogs_, hasText);
+        }
+    }
+
+    bool SetLogWordWrap(bool enabled, bool persist = true)
+    {
+        if (persist) {
+            auto next = settings_;
+            next.logWordWrap = enabled;
+            std::wstring error;
+            if (!settingsValid_ || !SaveSettings(root_, next, error)) {
+                if (!settingsValid_) {
+                    error = Text(L"Cannot save word wrapping until the settings have been repaired in File > Settings.",
+                        L"请先在“文件 → 设置”中修复并保存设置，然后再切换自动换行。");
+                }
+                UpdateLogButtonState();
+                if (!smokeTest_) {
+                    MessageBoxW(window_, error.c_str(), Text(L"Word wrap", L"自动换行"), MB_OK | MB_ICONERROR);
+                }
+                return false;
+            }
+        }
+        view_->SetWordWrap(enabled);
+        settings_.logWordWrap = enabled;
+        UpdateLogButtonState();
+        UpdateTooltips();
+        return true;
+    }
+
     void CreateTooltips()
     {
         tooltip_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE, TOOLTIPS_CLASSW, nullptr,
@@ -784,7 +845,7 @@ private:
                 Text(L"Cannot create log button tooltips", L"无法创建日志按钮提示"))));
         }
         // Without a Common Controls v6 manifest, TOOLINFO must exclude the v6-only field.
-        for (const auto control : {scrollToEnd_, clearLogs_, files_, directory_}) {
+        for (const auto control : {copyLogs_, clearLogs_, scrollToEnd_, wordWrap_, files_, directory_}) {
             TOOLINFOW tool{};
             tool.cbSize = TTTOOLINFOW_V2_SIZE;
             tool.hwnd = window_;
@@ -809,6 +870,8 @@ private:
         for (const auto& [control, label] : std::array{
             std::pair{scrollToEnd_, Text(L"Scroll to end", L"滚动至底部")},
             std::pair{clearLogs_, Text(L"Clear logs", L"清空日志")},
+            std::pair{copyLogs_, Text(L"Copy all", L"复制全部")},
+            std::pair{wordWrap_, WordWrapCaption(settings_.logWordWrap)},
             std::pair{files_, fileTooltip_.c_str()},
             std::pair{directory_, directoryTooltip_.c_str()}}) {
             TOOLINFOW tool{};
@@ -836,17 +899,20 @@ private:
 
     void UpdateToolIcons(SvgIconRenderer& renderer)
     {
-        IconBatch<4> next;
+        IconBatch<8> next;
         const auto& colors = theme_.Colors();
-        next.values[0] = renderer.CreateIcon(SvgIcon::ClearLogs, Scale(20), colors.text);
-        next.values[1] = renderer.CreateIcon(SvgIcon::ClearLogs, Scale(20), colors.disabled);
-        next.values[2] = renderer.CreateIcon(SvgIcon::ScrollToEnd, Scale(20), colors.text);
-        next.values[3] = renderer.CreateIcon(SvgIcon::ScrollToEnd, Scale(20), colors.disabled);
-        IconBatch<4> old;
+        const std::array kinds{SvgIcon::ClearLogs, SvgIcon::ScrollToEnd, SvgIcon::CopyAll, SvgIcon::WordWrap};
+        for (size_t index = 0; index < kinds.size(); ++index) {
+            next.values[index * 2] = renderer.CreateIcon(kinds[index], Scale(20), colors.text);
+            next.values[index * 2 + 1] = renderer.CreateIcon(kinds[index], Scale(20), colors.disabled);
+        }
+        IconBatch<8> old;
         old.values = toolIcons_;
         toolIcons_ = next.Release();
         SetButtonIcons(clearLogs_, toolIcons_[0], toolIcons_[1], Scale(20));
         SetButtonIcons(scrollToEnd_, toolIcons_[2], toolIcons_[3], Scale(20));
+        SetButtonIcons(copyLogs_, toolIcons_[4], toolIcons_[5], Scale(20));
+        SetButtonIcons(wordWrap_, toolIcons_[6], toolIcons_[7], Scale(20));
         toolIconDpi_ = dpi_;
         toolIconColor_ = colors.text;
         toolDisabledColor_ = colors.disabled;
@@ -976,7 +1042,9 @@ private:
             std::pair{openDirectory_, Text(L"Open folder", L"打开配置目录")},
             std::pair{filterLabel_, Text(L"Log source:", L"日志来源：")},
             std::pair{clearLogs_, Text(L"Clear logs", L"清空日志")},
-            std::pair{scrollToEnd_, Text(L"Scroll to end", L"滚动至底部")}
+            std::pair{scrollToEnd_, Text(L"Scroll to end", L"滚动至底部")},
+            std::pair{copyLogs_, Text(L"Copy all", L"复制全部")},
+            std::pair{wordWrap_, Text(L"Word wrap", L"自动换行")}
         };
         for (const auto& [control, text] : captions) {
             SetWindowTextW(control, text);
@@ -1085,7 +1153,8 @@ private:
             }
         }
         SvgIconRenderer renderer;
-        for (const auto kind : {SvgIcon::Application, SvgIcon::ClearLogs, SvgIcon::ScrollToEnd, SvgIcon::TrayApplication}) {
+        for (const auto kind : {SvgIcon::Application, SvgIcon::ClearLogs, SvgIcon::ScrollToEnd,
+            SvgIcon::CopyAll, SvgIcon::WordWrap, SvgIcon::TrayApplication}) {
             for (const int side : {16, 20, 24, 28, 32}) {
                 const auto white = renderer.Render(kind, side, RGB(255, 255, 255));
                 for (const COLORREF color : {kRunningIconColor, kStoppedIconColor}) {
@@ -1155,12 +1224,50 @@ private:
             }
             return true;
         };
-        return nativeImages(clearLogs_) && nativeImages(scrollToEnd_);
+        return nativeImages(copyLogs_) && nativeImages(clearLogs_) && nativeImages(scrollToEnd_) && nativeImages(wordWrap_);
     }
 
     bool SmokeTestLogButtons()
     {
-        std::fwprintf(stderr, L"Smoke: icon button tooltips and filtered scroll-to-end behavior.\n");
+        std::fwprintf(stderr, L"Smoke: word wrap, filtered complete copy, and native auto-follow state.\n");
+        const auto fail = [](const wchar_t* reason) {
+            std::fwprintf(stderr, L"Smoke: log toolbar failed: %ls.\n", reason);
+            return false;
+        };
+        for (const auto control : {scrollToEnd_, wordWrap_}) {
+            if ((GetWindowLongPtrW(control, GWL_STYLE) & BS_PUSHLIKE) == 0 ||
+                (GetWindowLongPtrW(control, GWL_STYLE) & BS_ICON) == 0) {
+                return fail(L"native stateful icon button style");
+            }
+        }
+        logs_.Clear();
+        logs_.Tray(L"word wrap 中文");
+        logs_.Xray("long line " + std::string(1600, 'x') + "\n");
+        view_->Refresh(true);
+        const auto document = WindowText(logWindow_);
+        CHARRANGE selectedWrap{0, 4}, afterWrap{};
+        SendMessageW(logWindow_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&selectedWrap));
+        SendMessageW(logWindow_, WM_VSCROLL, SB_TOP, 0);
+        const auto wrappedLines = SendMessageW(logWindow_, EM_GETLINECOUNT, 0, 0);
+        SetLogWordWrap(false, false);
+        const auto unwrappedLines = SendMessageW(logWindow_, EM_GETLINECOUNT, 0, 0);
+        SendMessageW(logWindow_, WM_HSCROLL, SB_RIGHT, 0);
+        POINT horizontal{};
+        SendMessageW(logWindow_, EM_GETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&horizontal));
+        SendMessageW(logWindow_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&afterWrap));
+        if (wrappedLines <= unwrappedLines || horizontal.x <= 0 || WindowText(logWindow_) != document ||
+            afterWrap.cpMin != 0 || afterWrap.cpMax != 4 ||
+            SendMessageW(wordWrap_, BM_GETCHECK, 0, 0) != BST_UNCHECKED ||
+            TooltipText(wordWrap_) != WordWrapCaption(false)) {
+            return fail(L"unwrapped horizontal scrolling, selection, text, or tooltip");
+        }
+        SetLogWordWrap(true, false);
+        if (WindowText(logWindow_) != document ||
+            SendMessageW(logWindow_, EM_GETLINECOUNT, 0, 0) != wrappedLines ||
+            SendMessageW(wordWrap_, BM_GETCHECK, 0, 0) != BST_CHECKED ||
+            TooltipText(wordWrap_) != WordWrapCaption(true)) {
+            return fail(L"wrapped display or text changed on a round trip");
+        }
         if ((GetWindowLongPtrW(clearLogs_, GWL_STYLE) & BS_ICON) == 0 ||
             (GetWindowLongPtrW(scrollToEnd_, GWL_STYLE) & BS_ICON) == 0 ||
             TooltipText(clearLogs_) != Text(L"Clear logs", L"清空日志") ||
@@ -1193,7 +1300,34 @@ private:
             SendMessageW(logWindow_, WM_VSCROLL, SB_TOP, 0);
             const auto text = WindowText(logWindow_);
             const auto revision = logs_.Revision();
+            Refresh();
+            if (SendMessageW(scrollToEnd_, BM_GETCHECK, 0, 0) != BST_UNCHECKED) {
+                return fail(L"scrolling up did not pause auto-follow");
+            }
+            const auto expected = view_->CopyText();
+            Command(CopyLogs, BN_CLICKED);
+            if (!OpenClipboard(window_)) { return fail(L"clipboard unavailable"); }
+            const HANDLE data = GetClipboardData(CF_UNICODETEXT);
+            const auto copied = data != nullptr ? static_cast<const wchar_t*>(GlobalLock(data)) : nullptr;
+            const bool complete = copied != nullptr && std::wstring_view(copied) == expected &&
+                expected.find(L"\r\n") != std::wstring::npos &&
+                (filter == 2 || expected.find(L"[XTRAY] scroll tray 89") != std::wstring::npos) &&
+                (filter == 1 || expected.find(L"[XRAY] scroll xray 89") != std::wstring::npos) &&
+                (filter != 1 || expected.find(L"[XRAY]") == std::wstring::npos) &&
+                (filter != 2 || expected.find(L"[XTRAY]") == std::wstring::npos);
+            if (copied != nullptr) { GlobalUnlock(data); }
+            CloseClipboard();
+            CHARRANGE afterCopy{};
+            SendMessageW(logWindow_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&afterCopy));
+            if (!complete || afterCopy.cpMin != selected.cpMin || afterCopy.cpMax != selected.cpMax ||
+                SendMessageW(logWindow_, EM_GETFIRSTVISIBLELINE, 0, 0) != 0) {
+                return fail(L"filtered full copy changed the selection or included hidden sources");
+            }
             Command(ScrollToEnd, BN_CLICKED);
+            SendMessageW(scrollToEnd_, BM_CLICK, 0, 0);
+            if (SendMessageW(scrollToEnd_, BM_GETCHECK, 0, 0) != BST_CHECKED) {
+                return fail(L"clicking the active follow button disabled following");
+            }
             if (!tailSelected() || WindowText(logWindow_) != text || logs_.Revision() != revision ||
                 SendMessageW(filter_, CB_GETCURSEL, 0, 0) != filter) {
                 return false;
@@ -1208,12 +1342,27 @@ private:
             SendMessageW(logWindow_, WM_VSCROLL, SB_TOP, 0);
             logs_.Tray(L"reading tray");
             logs_.Xray("reading xray\n");
-            view_->Refresh();
+            Refresh();
             CHARRANGE after{};
             SendMessageW(logWindow_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&after));
             if (after.cpMin != selected.cpMin || after.cpMax != selected.cpMax ||
+                SendMessageW(logWindow_, EM_GETFIRSTVISIBLELINE, 0, 0) != 0 ||
+                SendMessageW(scrollToEnd_, BM_GETCHECK, 0, 0) != BST_UNCHECKED) {
+                return fail(L"new output disturbed reading or resumed following");
+            }
+            CHARRANGE caret{selected.cpMax, selected.cpMax};
+            SendMessageW(logWindow_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&caret));
+            SendMessageW(logWindow_, WM_VSCROLL, SB_BOTTOM, 0);
+            Refresh();
+            if (SendMessageW(scrollToEnd_, BM_GETCHECK, 0, 0) != BST_CHECKED) {
+                return fail(L"scrolling to the bottom did not resume following");
+            }
+            SendMessageW(logWindow_, WM_VSCROLL, SB_TOP, 0);
+            logs_.Tray(L"paused without selection");
+            Refresh();
+            if (SendMessageW(scrollToEnd_, BM_GETCHECK, 0, 0) != BST_UNCHECKED ||
                 SendMessageW(logWindow_, EM_GETFIRSTVISIBLELINE, 0, 0) != 0) {
-                return false;
+                return fail(L"scrolling up without selecting text did not pause following");
             }
         }
         SendMessageW(filter_, CB_SETCURSEL, 0, 0);
@@ -1256,10 +1405,10 @@ private:
         return rowAligned(std::array{statusIcon_, status_, run_, stop_, restart_}, L"status") &&
             rowAligned(std::array{fileLabel_, files_, openFile_, openFileDirectory_}, L"config files") &&
             rowAligned(std::array{directoryLabel_, directory_, openDirectory_}, L"config directory") &&
-            rowAligned(std::array{filterLabel_, filter_, scrollToEnd_, clearLogs_}, L"log source") &&
+            rowAligned(std::array{filterLabel_, filter_, copyLogs_, clearLogs_, scrollToEnd_, wordWrap_}, L"log source") &&
             columnAligned(std::array{statusIcon_, fileLabel_, directoryLabel_, filterLabel_, logWindow_}, false) &&
             columnAligned(std::array{files_, directory_, filter_}, false) &&
-            columnAligned(std::array{restart_, openFileDirectory_, openDirectory_, clearLogs_, logWindow_}, true);
+            columnAligned(std::array{restart_, openFileDirectory_, openDirectory_, wordWrap_, logWindow_}, true);
     }
 
     bool SmokeTestUiChanges()
@@ -1281,9 +1430,16 @@ private:
         for (const int adjustment : {17, 0}) {
             SetWindowPos(window_, nullptr, 0, 0, bounds.right - bounds.left + adjustment,
                 bounds.bottom - bounds.top, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
-            GetWindowRect(clearLogs_, &clear);
+            GetWindowRect(wordWrap_, &clear);
             GetWindowRect(logWindow_, &logBounds);
             GetWindowRect(scrollToEnd_, &scrollButton);
+            RECT copy{}, clearButton{};
+            GetWindowRect(copyLogs_, &copy);
+            GetWindowRect(clearLogs_, &clearButton);
+            if (copy.right + Scale(8) != clearButton.left || clearButton.right + Scale(8) != scrollButton.left ||
+                copy.top != clear.top || clearButton.top != clear.top) {
+                return false;
+            }
             if (clear.right != logBounds.right || clear.right - clear.left != Scale(32) ||
                 clear.bottom - clear.top != Scale(32) || scrollButton.bottom != clear.bottom ||
                 scrollButton.right + Scale(8) != clear.left) {
@@ -1647,7 +1803,7 @@ private:
             if (GetPixel(canvas.device, 2, 2) != palette.window) {
                 return fail(L"native window background");
             }
-            for (const auto control : {run_, clearLogs_, scrollToEnd_, filter_, files_}) {
+            for (const auto control : {run_, copyLogs_, clearLogs_, scrollToEnd_, wordWrap_, filter_, files_}) {
                 if (!SmokeTestNativeControl(control)) {
                     return fail(L"system-rendered button and combo controls");
                 }
@@ -2001,7 +2157,7 @@ private:
         }
         const std::array controls{status_, run_, stop_, restart_, fileLabel_,
             files_, openFile_, openFileDirectory_, directoryLabel_, directory_, openDirectory_,
-            filterLabel_, filter_, scrollToEnd_, clearLogs_};
+            filterLabel_, filter_, copyLogs_, clearLogs_, scrollToEnd_, wordWrap_};
         for (const auto control : controls) {
             SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         }
@@ -2122,11 +2278,12 @@ private:
     HWND fileLabel_ = nullptr, files_ = nullptr, openFile_ = nullptr, openFileDirectory_ = nullptr;
     HWND directoryLabel_ = nullptr, directory_ = nullptr, openDirectory_ = nullptr;
     HWND filterLabel_ = nullptr, filter_ = nullptr, scrollToEnd_ = nullptr, clearLogs_ = nullptr;
+    HWND copyLogs_ = nullptr, wordWrap_ = nullptr;
     HWND logWindow_ = nullptr, tooltip_ = nullptr;
     std::wstring fileTooltip_, directoryTooltip_;
     HFONT font_ = nullptr, logFont_ = nullptr;
     std::array<HICON, IconCount> icons_{};
-    std::array<HICON, 4> toolIcons_{};
+    std::array<HICON, 8> toolIcons_{};
     UINT toolIconDpi_ = 0;
     COLORREF toolIconColor_ = CLR_INVALID, toolDisabledColor_ = CLR_INVALID;
     mutable std::array<MSAAMENUINFO, 5> menuCaptions_{};
