@@ -150,7 +150,7 @@ void XrayToolWindow::Initialize()
     status_ = child(L"STATIC", 0, SS_LEFT | SS_NOPREFIX, kStatusId);
     note_ = child(L"STATIC", 0, SS_LEFT | SS_NOPREFIX, 0);
     output_ = child(MSFTEDIT_CLASS, WS_EX_CLIENTEDGE,
-        ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL | ES_AUTOVSCROLL | ES_NOHIDESEL |
+        ES_MULTILINE | ES_READONLY | ES_AUTOHSCROLL | ES_AUTOVSCROLL | ES_NOHIDESEL | ES_DISABLENOSCROLL |
         WS_VSCROLL | WS_HSCROLL | WS_TABSTOP, kOutputId);
     SendMessageW(output_, EM_EXLIMITTEXT, 0, (std::numeric_limits<LONG>::max)() - 1);
     SendMessageW(output_, EM_SETTEXTMODE, TM_PLAINTEXT, 0);
@@ -481,6 +481,18 @@ bool SmokeTestXrayTools(HWND owner, const std::filesystem::path& root)
             static_cast<unsigned long long>(style), before.find(L"tool line 0:") != std::wstring::npos,
             before.find(L"tool line 11999:") != std::wstring::npos, before.ends_with(L"tool output end"));
         return fail(L"complete scrollable preview beyond the runtime log limit");
+    }
+    const LONG end = GetWindowTextLengthW(output);
+    CHARRANGE tail{end, end};
+    SendMessageW(output, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&tail));
+    SendMessageW(output, EM_SCROLLCARET, 0, 0);
+    SendMessageW(output, WM_VSCROLL, SB_BOTTOM, 0);
+    SendMessageW(output, WM_HSCROLL, SB_RIGHT, 0);
+    POINT scrolled{};
+    SendMessageW(output, EM_GETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&scrolled));
+    if (scrolled.x <= 0 || scrolled.y <= 0) {
+        std::fwprintf(stderr, L"Smoke: tool scroll positions (x=%ld, y=%ld).\n", scrolled.x, scrolled.y);
+        return fail(L"native horizontal and vertical result scrolling");
     }
     CHARRANGE selection{0, 4};
     SendMessageW(output, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&selection));
