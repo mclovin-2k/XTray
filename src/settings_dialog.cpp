@@ -8,6 +8,7 @@
 #include <uxtheme.h>
 #include <wrl/client.h>
 
+#include <array>
 #include <cerrno>
 #include <climits>
 #include <cstdlib>
@@ -41,7 +42,28 @@ struct Context {
     int wheelRemainder = 0;
     std::function<void(HWND)> automation;
     std::exception_ptr error;
+    std::array<HICON, 2> icons{};
+    ~Context() { for (const auto icon : icons) { if (icon != nullptr) { DestroyIcon(icon); } } }
 };
+
+void SetDialogIcons(HWND dialog, Context& context)
+{
+    struct Icons {
+        std::array<HICON, 2> values{};
+        ~Icons() { for (const auto icon : values) { if (icon != nullptr) { DestroyIcon(icon); } } }
+    } next;
+    for (size_t index = 0; index < next.values.size(); ++index) {
+        const int size = UiScale(dialog, index == 0 ? 16 : 32);
+        next.values[index] = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),
+            MAKEINTRESOURCEW(IDI_XTRAY), IMAGE_ICON, size, size, 0));
+        if (next.values[index] == nullptr) {
+            throw std::runtime_error("Cannot load settings window icons.");
+        }
+    }
+    next.values.swap(context.icons);
+    SendMessageW(dialog, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(context.icons[0]));
+    SendMessageW(dialog, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(context.icons[1]));
+}
 
 HWND SettingsControl(HWND dialog, int id)
 {
@@ -397,7 +419,7 @@ std::vector<std::wstring> Browse(HWND owner, bool directory, bool multiple)
 
 void SetDialogLanguage(HWND dialog)
 {
-    SetWindowTextW(dialog, Text(L"XTray Settings", L"XTray 设置"));
+    SetWindowTextW(dialog, Text(L"Settings", L"设置"));
     const auto set = [dialog](int id, const wchar_t* text) { SetWindowTextW(SettingsControl(dialog, id), text); };
     set(IDC_LABEL_EXECUTABLE, Text(L"Xray executable:", L"Xray 程序路径："));
     set(IDC_LABEL_CONFIG_FILES, Text(L"Config files (one per line, in load order; optional):",
@@ -433,6 +455,7 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         context = reinterpret_cast<Context*>(lParam);
         SetWindowLongPtrW(dialog, DWLP_USER, lParam);
         context->theme.Attach(dialog);
+        SetDialogIcons(dialog, *context);
         if (CreateDialogParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_SETTINGS_CONTENT),
             dialog, SettingsContentsProcedure, lParam) == nullptr) {
             throw std::runtime_error(Text("Cannot create the settings content area.", "无法创建设置内容区。"));
@@ -492,6 +515,7 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         return FALSE;
     }
     if (message == kRefreshDialogTheme) {
+        SetDialogIcons(dialog, *context);
         context->theme.Apply(context->theme.Colors().dark, true);
         FitSettingsWindow(dialog, *context);
         LayoutSettings(dialog, *context);
@@ -642,6 +666,35 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
         StartupRegistration startup(root, CurrentExecutable(), &registry);
         Context context{root, settings, logs, startup};
         context.automation = [&](HWND window) {
+            const auto checkCaption = [&] {
+                if (WindowText(window) != Text(L"Settings", L"设置") ||
+                    (GetWindowLongPtrW(window, GWL_EXSTYLE) & WS_EX_DLGMODALFRAME) != 0 ||
+                    IsWindowEnabled(owner)) {
+                    std::fwprintf(stderr, L"Smoke: settings caption or modal window style failed.\n");
+                    return false;
+                }
+                for (size_t index = 0; index < context.icons.size(); ++index) {
+                    const auto icon = reinterpret_cast<HICON>(SendMessageW(window, WM_GETICON,
+                        index == 0 ? ICON_SMALL : ICON_BIG, 0));
+                    ICONINFO info{};
+                    if (icon == nullptr || icon != context.icons[index] || !GetIconInfo(icon, &info)) {
+                        std::fwprintf(stderr, L"Smoke: settings caption icon is missing.\n");
+                        return false;
+                    }
+                    BITMAP bitmap{};
+                    const bool read = GetObjectW(info.hbmColor, sizeof(bitmap), &bitmap) == sizeof(bitmap);
+                    if (info.hbmColor != nullptr) { DeleteObject(info.hbmColor); }
+                    if (info.hbmMask != nullptr) { DeleteObject(info.hbmMask); }
+                    const int size = UiScale(window, index == 0 ? 16 : 32);
+                    if (!read || bitmap.bmWidth != size || bitmap.bmHeight != size) {
+                        std::fwprintf(stderr, L"Smoke: settings caption icon DPI size failed (index=%zu).\n", index);
+                        return false;
+                    }
+                }
+                return true;
+            };
+            std::fwprintf(stderr, L"Smoke: localized Settings title, native icon caption, and DPI icon refresh.\n");
+            passed = checkCaption() && passed;
             const HWND languageChoice = SettingsControl(window, IDC_LANGUAGE);
             const HWND themeChoice = SettingsControl(window, IDC_THEME);
             passed = passed && GetFocus() == languageChoice &&
@@ -804,7 +857,8 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
             passed = passed && focused.top >= 0 && focused.bottom <= viewport.bottom &&
                 WindowText(executable) == L".\\bin\\路径 with spaces\\xray.exe";
             context.theme.Apply(true, true);
-            passed = checkInputs() && checkAlignment() && passed &&
+            SendMessageW(window, kRefreshDialogTheme, 0, 0);
+            passed = checkCaption() && checkInputs() && checkAlignment() && passed &&
                 context.contentTheme.Colors().dark && SmokeTestNativeControl(checkbox);
             SendMessageW(window, WM_COMMAND, IDCANCEL, 0);
         };

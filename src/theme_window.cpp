@@ -408,9 +408,9 @@ void ThemeWindow::DrawItem(const DRAWITEMSTRUCT& item)
 {
     SavedDc saved(item.hDC);
     const bool disabled = (item.itemState & (ODS_DISABLED | ODS_GRAYED)) != 0;
-    const bool selected = (item.itemState & ODS_SELECTED) != 0;
-    Fill(item.hDC, item.rcItem, selected ? colors_.selection : colors_.window);
-    SetTextColor(item.hDC, disabled ? colors_.disabled : selected ? colors_.selectionText : colors_.text);
+    const bool selected = !disabled && (item.itemState & (ODS_SELECTED | ODS_HOTLIGHT)) != 0;
+    Fill(item.hDC, item.rcItem, selected ? colors_.hot : colors_.window);
+    SetTextColor(item.hDC, disabled ? colors_.disabled : colors_.text);
     SetBkMode(item.hDC, TRANSPARENT);
     SelectObject(item.hDC, WindowFont(window_, font_));
     const auto* text = MenuText(item.itemData);

@@ -386,7 +386,7 @@ void MenuTheme::Draw(const Item& item, const DRAWITEMSTRUCT& drawing) const
     SavedDc saved(drawing.hDC);
     const bool disabled = (drawing.itemState & (ODS_DISABLED | ODS_GRAYED)) != 0;
     const bool active = !disabled && (drawing.itemState & (ODS_SELECTED | ODS_HOTLIGHT)) != 0;
-    const COLORREF background = active ? item.bar ? colors_.hot : colors_.selection : colors_.window;
+    const COLORREF background = active ? colors_.hot : colors_.window;
     Fill(drawing.hDC, drawing.rcItem, background);
     RECT text = drawing.rcItem;
     if (item.separator) {
@@ -399,8 +399,7 @@ void MenuTheme::Draw(const Item& item, const DRAWITEMSTRUCT& drawing) const
     }
     SelectObject(drawing.hDC, font_);
     SetBkMode(drawing.hDC, TRANSPARENT);
-    SetTextColor(drawing.hDC, disabled ? colors_.disabled
-        : active && !item.bar ? colors_.selectionText : colors_.text);
+    SetTextColor(drawing.hDC, disabled ? colors_.disabled : colors_.text);
     if (!item.bar) {
         text.left += checkColumn_ * 2 + margins_.cxLeftWidth;
         text.right -= arrow_ + margins_.cxRightWidth;
@@ -639,14 +638,15 @@ bool MenuTheme::SmokeTest()
             if (!Handle(WM_DRAWITEM, 0, reinterpret_cast<LPARAM>(&draw), result) || result != TRUE) { return false; }
             GdiFlush();
             const bool active = (state & (ODS_SELECTED | ODS_HOTLIGHT)) != 0;
-            const COLORREF background = active ? item->bar ? colors_.hot : colors_.selection : colors_.window;
-            if (GetPixel(canvas.device, 0, 0) != background) {
-                std::fwprintf(stderr, L"Smoke: main menu background failed (state=%u).\n", state);
+            const COLORREF background = active ? colors_.hot : colors_.window;
+            const bool neutral = GetRValue(background) == GetGValue(background) &&
+                GetGValue(background) == GetBValue(background);
+            if (GetPixel(canvas.device, 0, 0) != background || (active && !neutral)) {
+                std::fwprintf(stderr, L"Smoke: main menu neutral background failed (state=%u).\n", state);
                 return false;
             }
             if (!item->separator) {
-                const auto color = (state & ODS_DISABLED) != 0 ? colors_.disabled
-                    : active && !item->bar ? colors_.selectionText : colors_.text;
+                const auto color = (state & ODS_DISABLED) != 0 ? colors_.disabled : colors_.text;
                 const DWORD expected = (static_cast<DWORD>(GetRValue(color)) << 16) |
                     (static_cast<DWORD>(GetGValue(color)) << 8) | GetBValue(color);
                 const auto* begin = canvas.pixels;

@@ -1687,7 +1687,7 @@ private:
                 draw.itemState = ODS_SELECTED;
                 SendMessageW(window_, WM_DRAWITEM, 0, reinterpret_cast<LPARAM>(&draw));
                 const auto highlighted = GetPixel(canvas.device, 2, 2);
-                if (background != palette.window || highlighted != palette.selection) {
+                if (background != palette.window || highlighted != palette.hot) {
                     DestroyMenu(menu);
                     return fail(L"dark menu background and selection colors");
                 }
