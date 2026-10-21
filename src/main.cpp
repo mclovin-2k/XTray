@@ -726,8 +726,9 @@ private:
             ApplyLanguage(selected);
             for (const bool dark : {false, true, false}) {
                 settings_.theme = dark ? ThemeMode::Dark : ThemeMode::Light;
-                UpdateTheme(false);
+                // Match saving Settings: refresh captions before applying the new appearance.
                 ApplyUiText();
+                UpdateTheme(false);
                 wchar_t title[128]{};
                 GetMenuStringW(xrayMenu_, PreviewConfig, title, static_cast<int>(std::size(title)), MF_BYCOMMAND);
                 const bool caption = std::wstring_view(title) == Text(L"Preview Xray configuration", L"预览 Xray 配置");

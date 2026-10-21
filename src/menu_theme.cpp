@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <cstdlib>
 #include <cwctype>
 #include <iterator>
 
@@ -37,6 +38,133 @@ struct SavedDc {
     int saved;
     explicit SavedDc(HDC value) : device(value), saved(SaveDC(value)) {}
     ~SavedDc() { if (saved != 0) { RestoreDC(device, saved); } }
+};
+
+struct Canvas {
+    HDC device = CreateCompatibleDC(nullptr);
+    HBITMAP bitmap = nullptr;
+    HGDIOBJ previous = nullptr;
+    DWORD* pixels = nullptr;
+    int width, height;
+
+    Canvas(int canvasWidth, int canvasHeight) : width(canvasWidth), height(canvasHeight)
+    {
+        if (device == nullptr || width <= 0 || height <= 0) { return; }
+        BITMAPINFO info{};
+        info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        info.bmiHeader.biWidth = width;
+        info.bmiHeader.biHeight = -height;
+        info.bmiHeader.biPlanes = 1;
+        info.bmiHeader.biBitCount = 32;
+        void* data = nullptr;
+        bitmap = CreateDIBSection(device, &info, DIB_RGB_COLORS, &data, nullptr, 0);
+        if (bitmap != nullptr) {
+            previous = SelectObject(device, bitmap);
+            pixels = static_cast<DWORD*>(data);
+        }
+    }
+    ~Canvas()
+    {
+        if (previous != nullptr && previous != HGDI_ERROR) { SelectObject(device, previous); }
+        if (bitmap != nullptr) { DeleteObject(bitmap); }
+        if (device != nullptr) { DeleteDC(device); }
+    }
+    explicit operator bool() const
+    {
+        return device != nullptr && bitmap != nullptr && pixels != nullptr &&
+            previous != nullptr && previous != HGDI_ERROR;
+    }
+    size_t Ink(RECT bounds, COLORREF background) const
+    {
+        size_t count = 0;
+        for (LONG y = (std::max)(0L, bounds.top); y < (std::min<LONG>)(height, bounds.bottom); ++y) {
+            for (LONG x = (std::max)(0L, bounds.left); x < (std::min<LONG>)(width, bounds.right); ++x) {
+                const DWORD pixel = pixels[static_cast<size_t>(y) * width + x];
+                const int difference = std::abs(static_cast<int>((pixel >> 16) & 255) - GetRValue(background)) +
+                    std::abs(static_cast<int>((pixel >> 8) & 255) - GetGValue(background)) +
+                    std::abs(static_cast<int>(pixel & 255) - GetBValue(background));
+                if (difference > 120) { ++count; }
+            }
+        }
+        return count;
+    }
+};
+
+// Exercise Windows' real popup measurement and painting, including its cached layout.
+struct PopupProbe {
+    static constexpr wchar_t kProperty[] = L"XTray.MenuPaintProbe";
+    static constexpr UINT_PTR kTimer = 0x584d0001;
+    HMENU menu;
+    HWND owner = nullptr;
+    int inset;
+    bool captured = false;
+    std::vector<SIZE> sizes;
+    std::vector<size_t> ink;
+
+    PopupProbe(HMENU value, int textInset) : menu(value), inset(textInset),
+        sizes(static_cast<size_t>(GetMenuItemCount(value))), ink(sizes.size()) {}
+
+    static BOOL CALLBACK Capture(HWND popup, LPARAM parameter)
+    {
+        auto& probe = *reinterpret_cast<PopupProbe*>(parameter);
+        MENUBARINFO bar{sizeof(MENUBARINFO)};
+        RECT window{};
+        if (!GetMenuBarInfo(popup, OBJID_CLIENT, 0, &bar) || bar.hMenu != probe.menu ||
+            !GetWindowRect(popup, &window)) {
+            return TRUE;
+        }
+        Canvas canvas(window.right - window.left, window.bottom - window.top);
+        if (!canvas) { return FALSE; }
+        std::fill_n(canvas.pixels, static_cast<size_t>(canvas.width) * canvas.height, DWORD{0xFF00FF});
+        SendMessageW(popup, WM_PRINT, reinterpret_cast<WPARAM>(canvas.device),
+            PRF_NONCLIENT | PRF_CLIENT | PRF_ERASEBKGND);
+        GdiFlush();
+        for (UINT position = 0; position < probe.sizes.size(); ++position) {
+            MENUITEMINFOW info{sizeof(MENUITEMINFOW)};
+            info.fMask = MIIM_FTYPE;
+            RECT row{};
+            if (!GetMenuItemInfoW(probe.menu, position, TRUE, &info) ||
+                !GetMenuItemRect(probe.owner, probe.menu, position, &row)) {
+                return FALSE;
+            }
+            probe.sizes[position] = {row.right - row.left, row.bottom - row.top};
+            if ((info.fType & MFT_SEPARATOR) != 0) { continue; }
+            OffsetRect(&row, -window.left, -window.top);
+            const COLORREF background = GetPixel(canvas.device, row.right - 4, (row.top + row.bottom) / 2);
+            row.left += probe.inset;
+            row.right -= 8;
+            row.top += 3;
+            row.bottom -= 3;
+            probe.ink[position] = canvas.Ink(row, background);
+        }
+        probe.captured = true;
+        return FALSE;
+    }
+
+    static void CALLBACK Tick(HWND owner, UINT, UINT_PTR timer, DWORD)
+    {
+        KillTimer(owner, timer);
+        if (auto* probe = static_cast<PopupProbe*>(GetPropW(owner, kProperty))) {
+            EnumThreadWindows(GetCurrentThreadId(), Capture, reinterpret_cast<LPARAM>(probe));
+        }
+        EndMenu();
+    }
+
+    bool Run(HWND window)
+    {
+        owner = window;
+        if (!SetPropW(owner, kProperty, this)) { return false; }
+        const UINT_PTR timer = SetTimer(owner, kTimer, 60, Tick);
+        if (timer != 0) {
+            MONITORINFO monitor{sizeof(MONITORINFO)};
+            GetMonitorInfoW(MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST), &monitor);
+            TrackPopupMenuEx(menu, TPM_NONOTIFY | TPM_RETURNCMD | TPM_NOANIMATION,
+                monitor.rcWork.left + 20, monitor.rcWork.top + 20, owner, nullptr);
+            KillTimer(owner, timer);
+        }
+        RemovePropW(owner, kProperty);
+        return timer != 0 && captured;
+    }
 };
 
 } // namespace
@@ -169,7 +297,21 @@ void MenuTheme::SetItems(bool dark)
     for (const auto& item : items_) {
         if (!IsMenu(item->menu)) { continue; }
         MENUITEMINFOW info{sizeof(MENUITEMINFOW)};
-        info.fMask = MIIM_FTYPE | MIIM_DATA;
+        info.fMask = MIIM_ID | MIIM_SUBMENU | MIIM_STATE;
+        if (!GetMenuItemInfoW(item->menu, item->position, TRUE, &info)) {
+            throw std::runtime_error("Cannot read the menu item identity.");
+        }
+        const UINT flags = MF_BYPOSITION | (item->separator ? MF_SEPARATOR : MF_STRING) |
+            (info.hSubMenu != nullptr ? MF_POPUP : 0);
+        const UINT_PTR identity = info.hSubMenu != nullptr
+            ? reinterpret_cast<UINT_PTR>(info.hSubMenu) : info.wID;
+        // Updating only MFT_OWNERDRAW leaves Windows' measured popup layout cached.
+        // A complete native item update invalidates that cache in both directions.
+        if (!ModifyMenuW(item->menu, item->position, flags, identity,
+            item->separator ? nullptr : item->caption.c_str())) {
+            throw std::runtime_error("Cannot refresh the menu item layout.");
+        }
+        info.fMask = MIIM_FTYPE | MIIM_DATA | MIIM_STATE;
         info.fType = (item->separator ? MFT_SEPARATOR : MFT_STRING) | (dark ? MFT_OWNERDRAW : 0);
         info.dwItemData = dark ? reinterpret_cast<ULONG_PTR>(&item->accessible) : 0;
         if (!SetMenuItemInfoW(item->menu, item->position, TRUE, &info)) {
@@ -199,6 +341,12 @@ void MenuTheme::Apply(const ThemePalette& colors)
     }
     SetItems(colors.dark);
     DrawMenuBar(window_);
+    if (colors.dark) {
+        if (const HDC device = GetWindowDC(window_)) {
+            PaintBarBackground(device);
+            ReleaseDC(window_, device);
+        }
+    }
     if (previous != nullptr) { DeleteObject(previous); }
 }
 
@@ -270,19 +418,29 @@ void MenuTheme::PaintBarBackground(HDC device) const
     MENUBARINFO bar{sizeof(MENUBARINFO)};
     RECT window{};
     if (!GetMenuBarInfo(window_, OBJID_MENU, 0, &bar) || !GetWindowRect(window_, &window)) { return; }
-    SavedDc saved(device);
+    POINT client{};
+    if (!ClientToScreen(window_, &client)) { return; }
     RECT bounds = bar.rcBar;
     OffsetRect(&bounds, -window.left, -window.top);
-    for (const auto& item : items_) {
-        if (item->bar) {
-            RECT itemBounds{};
-            if (GetMenuItemRect(window_, menu_, item->position, &itemBounds)) {
-                OffsetRect(&itemBounds, -window.left, -window.top);
-                ExcludeClipRect(device, itemBounds.left, itemBounds.top, itemBounds.right, itemBounds.bottom);
+    bounds.bottom = client.y - window.top;
+    {
+        SavedDc saved(device);
+        for (const auto& item : items_) {
+            if (item->bar) {
+                RECT itemBounds{};
+                if (GetMenuItemRect(window_, menu_, item->position, &itemBounds)) {
+                    OffsetRect(&itemBounds, -window.left, -window.top);
+                    ExcludeClipRect(device, itemBounds.left, itemBounds.top, itemBounds.right, itemBounds.bottom);
+                }
             }
         }
+        FillRect(device, &bounds, background_);
     }
-    FillRect(device, &bounds, background_);
+    // The native bottom border lies outside the menu items' drawing rectangles.
+    RECT edge = bounds;
+    edge.top = (std::max)(bounds.top,
+        bounds.bottom - GetSystemMetricsForDpi(SM_CYBORDER, dpi_));
+    Fill(device, edge, RGB(48, 48, 48));
 }
 
 LRESULT MenuTheme::MenuCharacter(wchar_t character, HMENU menu) const
@@ -358,6 +516,91 @@ bool MenuTheme::Handle(UINT message, WPARAM wParam, LPARAM lParam, LRESULT& resu
     return false;
 }
 
+
+bool MenuTheme::SmokeTestRenderedMenus()
+{
+    std::fwprintf(stderr, L"Smoke: real menu-bar separator contrast and popup text/layout after appearance changes.\n");
+    MENUBARINFO bar{sizeof(MENUBARINFO)};
+    RECT window{};
+    POINT client{};
+    if (!GetWindowRect(window_, &window) || !ClientToScreen(window_, &client) ||
+        !GetMenuBarInfo(window_, OBJID_MENU, 0, &bar)) { return false; }
+    Canvas canvas(window.right - window.left, client.y - window.top);
+    if (!canvas) { return false; }
+    std::fill_n(canvas.pixels, static_cast<size_t>(canvas.width) * canvas.height, DWORD{0xFF00FF});
+    SendMessageW(window_, WM_PRINT, reinterpret_cast<WPARAM>(canvas.device), PRF_NONCLIENT);
+    GdiFlush();
+    if (colors_.dark) {
+        const LONG y = client.y - window.top - 1;
+        for (LONG x = bar.rcBar.left - window.left; x < bar.rcBar.right - window.left; ++x) {
+            const auto color = GetPixel(canvas.device, x, y);
+            const int contrast = (std::max)({
+                std::abs(static_cast<int>(GetRValue(color)) - GetRValue(colors_.window)),
+                std::abs(static_cast<int>(GetGValue(color)) - GetGValue(colors_.window)),
+                std::abs(static_cast<int>(GetBValue(color)) - GetBValue(colors_.window))});
+            if (color == CLR_INVALID || contrast == 0 || contrast > 32) {
+                std::fwprintf(stderr, L"Smoke: main menu separator contrast failed (x=%ld, color=%06lx).\n", x, color);
+                return false;
+            }
+        }
+    }
+    LONG previousRight = bar.rcBar.left;
+    for (const auto& item : items_) {
+        if (!item->bar) { continue; }
+        RECT bounds{};
+        const auto text = Measure(*item);
+        if (!GetMenuItemRect(window_, menu_, item->position, &bounds) ||
+            bounds.left < previousRight || bounds.right - bounds.left < text.cx) {
+            std::fwprintf(stderr, L"Smoke: main menu captions overlap or are clipped.\n");
+            return false;
+        }
+        previousRight = bounds.right;
+        OffsetRect(&bounds, -window.left, -window.top);
+        const auto background = GetPixel(canvas.device, bounds.right - 3, bounds.top + 2);
+        InflateRect(&bounds, -3, -3);
+        if (canvas.Ink(bounds, background) == 0) {
+            std::fwprintf(stderr, L"Smoke: main menu caption is blank (position=%u).\n", item->position);
+            return false;
+        }
+    }
+    for (const auto& menu : menus_) {
+        if (menu.handle == menu_) { continue; }
+        PopupProbe actual(menu.handle, checkColumn_ * 2);
+        if (!actual.Run(window_)) {
+            std::fwprintf(stderr, L"Smoke: cannot capture the real popup menu.\n");
+            return false;
+        }
+        struct NativeMenu {
+            HMENU handle = CreatePopupMenu();
+            ~NativeMenu() { if (handle != nullptr) { DestroyMenu(handle); } }
+        } native;
+        if (native.handle == nullptr) { return false; }
+        for (const auto& item : items_) {
+            if (item->menu == menu.handle && !AppendMenuW(native.handle,
+                item->separator ? MF_SEPARATOR : MF_STRING, item->position + 1,
+                item->separator ? nullptr : item->caption.c_str())) {
+                return false;
+            }
+        }
+        PopupProbe expected(native.handle, checkColumn_ * 2);
+        if (!colors_.dark && !expected.Run(window_)) { return false; }
+        for (const auto& item : items_) {
+            if (item->menu != menu.handle || item->separator) { continue; }
+            const UINT position = item->position;
+            const auto size = actual.sizes[position];
+            const auto reference = expected.sizes[position];
+            if (actual.ink[position] == 0 || (!colors_.dark &&
+                (size.cx != reference.cx || size.cy != reference.cy))) {
+                std::fwprintf(stderr,
+                    L"Smoke: real popup text/layout failed (caption=%ls, ink=%zu, actual=%ldx%ld, native=%ldx%ld).\n",
+                    item->caption.c_str(), actual.ink[position], size.cx, size.cy, reference.cx, reference.cy);
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 bool MenuTheme::SmokeTest()
 {
     std::fwprintf(stderr, L"Smoke: main menu %ls colors, system metrics, accessibility, and keyboard navigation.\n",
@@ -380,30 +623,10 @@ bool MenuTheme::SmokeTest()
             return false;
         }
         const auto measured = Measure(*item);
-        struct Canvas {
-            HDC device = CreateCompatibleDC(nullptr);
-            HBITMAP bitmap = nullptr;
-            HGDIOBJ previous = nullptr;
-            ~Canvas()
-            {
-                if (previous != nullptr) { SelectObject(device, previous); }
-                if (bitmap != nullptr) { DeleteObject(bitmap); }
-                if (device != nullptr) { DeleteDC(device); }
-            }
-        } canvas;
         const int width = (std::max)(1L, measured.cx + checkColumn_ * 2);
         const int height = (std::max)(1L, measured.cy);
-        BITMAPINFO bitmap{};
-        bitmap.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bitmap.bmiHeader.biWidth = width;
-        bitmap.bmiHeader.biHeight = -height;
-        bitmap.bmiHeader.biPlanes = 1;
-        bitmap.bmiHeader.biBitCount = 32;
-        void* pixels = nullptr;
-        canvas.bitmap = CreateDIBSection(canvas.device, &bitmap, DIB_RGB_COLORS, &pixels, nullptr, 0);
-        if (canvas.device == nullptr || canvas.bitmap == nullptr || pixels == nullptr) { return false; }
-        canvas.previous = SelectObject(canvas.device, canvas.bitmap);
-        if (canvas.previous == nullptr || canvas.previous == HGDI_ERROR) { return false; }
+        Canvas canvas(width, height);
+        if (!canvas) { return false; }
         for (const UINT state : {UINT{0}, UINT{ODS_SELECTED}, UINT{ODS_HOTLIGHT},
             UINT{ODS_DISABLED}, UINT{ODS_NOACCEL}}) {
             DRAWITEMSTRUCT draw{};
@@ -426,7 +649,7 @@ bool MenuTheme::SmokeTest()
                     : active && !item->bar ? colors_.selectionText : colors_.text;
                 const DWORD expected = (static_cast<DWORD>(GetRValue(color)) << 16) |
                     (static_cast<DWORD>(GetGValue(color)) << 8) | GetBValue(color);
-                const auto* begin = static_cast<const DWORD*>(pixels);
+                const auto* begin = canvas.pixels;
                 const size_t count = static_cast<size_t>(width) * height;
                 if (std::none_of(begin, begin + count, [expected](DWORD pixel) { return (pixel & 0xFFFFFF) == expected; })) {
                     std::fwprintf(stderr, L"Smoke: main menu text contrast failed (state=%u, caption=%ls).\n",
@@ -463,7 +686,7 @@ bool MenuTheme::SmokeTest()
             }
         }
     }
-    return true;
+    return SmokeTestRenderedMenus();
 }
 
 } // namespace xtray

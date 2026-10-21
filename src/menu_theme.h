@@ -42,6 +42,7 @@ private:
     void Draw(const Item& item, const DRAWITEMSTRUCT& drawing) const;
     void PaintBarBackground(HDC device) const;
     LRESULT MenuCharacter(wchar_t character, HMENU menu) const;
+    bool SmokeTestRenderedMenus();
     HWND window_ = nullptr;
     HMENU menu_ = nullptr;
     ThemePalette colors_ = PaletteFor(false);
