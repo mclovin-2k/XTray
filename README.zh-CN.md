@@ -47,6 +47,8 @@ Xray 原生支持同时使用多个 `-config` 参数和一个 `-confdir` 参数�
 
 XTray 将选定的路径传给 Xray，由 Xray 按照其[多文件配置规则](https://xtls.github.io/config/features/multiple.html)加载和合并。你可以只使用一个文件、多个文件或一个目录，也可以将文件与目录组合使用，按自己的配置组织方式选择即可。
 
+XTray 先传入 `-confdir`，再按文件列表顺序传入 `-config`。参数排列不保证覆盖优先级：已核对的 Xray 版本仍会在单独文件之后合并目录配置。配置存在重叠时，请使用**Xray 工具 → 预览 Xray 配置**确认最终结果。
+
 ## 日常使用
 
 - **运行 / 停止 / 重启**：通过主窗口或托盘菜单控制 Xray。

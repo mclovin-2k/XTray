@@ -167,11 +167,11 @@ void XrayProcess::StartProcess(const Settings& settings)
         return;
     }
     std::wstring command = QuoteArgument(executable.native()) + L" run";
-    for (const auto& config : settings.configFiles) {
-        command += L" -config " + QuoteArgument(config);
-    }
     if (!settings.configDirectory.empty()) {
         command += L" -confdir " + QuoteArgument(settings.configDirectory);
+    }
+    for (const auto& config : settings.configFiles) {
+        command += L" -config " + QuoteArgument(config);
     }
     if (command.size() >= 32767) {
         fail(Text(L"The Xray command exceeds the Windows length limit. Use fewer configuration files or shorter paths.", L"Xray 启动命令超过 Windows 长度限制，请减少配置文件数量或缩短路径。"));

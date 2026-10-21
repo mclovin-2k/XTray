@@ -117,11 +117,11 @@ void XrayTool::Execute(XrayToolKind kind, const Settings& settings, bool setting
         (kind == XrayToolKind::Version ? L" version"
             : kind == XrayToolKind::Check ? L" run -test" : L" run -dump");
     if (kind != XrayToolKind::Version) {
-        for (const auto& config : settings.configFiles) {
-            command += L" -config " + QuoteArgument(config);
-        }
         if (!settings.configDirectory.empty()) {
             command += L" -confdir " + QuoteArgument(settings.configDirectory);
+        }
+        for (const auto& config : settings.configFiles) {
+            command += L" -config " + QuoteArgument(config);
         }
     }
     if (command.size() >= 32767) {

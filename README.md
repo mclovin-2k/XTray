@@ -73,6 +73,11 @@ according to its [multi-file configuration rules](https://xtls.github.io/en/conf
 You can use a single file, multiple files, one directory, or files and a directory
 together, depending on your setup.
 
+XTray passes `-confdir` before the ordered `-config` arguments. Argument placement
+does not guarantee merge precedence: the Xray versions checked still merge the
+directory after explicitly listed files. Use **Xray Tools → Preview Xray
+configuration** to inspect the result when settings overlap.
+
 ## Everyday use
 
 - **Run / Stop / Restart:** control Xray from the main window or the tray menu.

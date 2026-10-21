@@ -82,7 +82,7 @@ int FakeXray(int argc, wchar_t** argv)
         if (flag != L"-config" && flag != L"-confdir") {
             return 96;
         }
-        if (index == 2) {
+        if (flag == L"-config" && first.empty()) {
             first = argv[index + 1];
         }
         Write(output, ToUtf8(std::wstring(flag) + L"=" + argv[index + 1]) + "\n");
@@ -710,16 +710,21 @@ void TestConfigurationPaths(const std::filesystem::path& root)
             }
         }
         std::vector<std::wstring> expectedArguments;
+        std::vector<std::wstring> expectedValues{L"relative-first", L"relative-unicode",
+            L"outside-relative", L"absolute-file", L"relative-unicode"};
+        if (!expected.configDirectory.empty()) {
+            expectedArguments.push_back(L"-confdir=" + expected.configDirectory);
+            expectedValues.insert(expectedValues.begin(), std::wstring(directoryMarker));
+        }
         for (const auto& file : expected.configFiles) {
             expectedArguments.push_back(L"-config=" + file);
         }
-        std::vector<std::wstring> expectedContents{L"loaded[0]=relative-first", L"loaded[1]=relative-unicode",
-            L"loaded[2]=outside-relative", L"loaded[3]=absolute-file", L"loaded[4]=relative-unicode"};
-        if (!expected.configDirectory.empty()) {
-            expectedArguments.push_back(L"-confdir=" + expected.configDirectory);
-            expectedContents.push_back(L"loaded[5]=" + std::wstring(directoryMarker));
+        std::vector<std::wstring> expectedContents;
+        for (size_t index = 0; index < expectedValues.size(); ++index) {
+            expectedContents.push_back(L"loaded[" + std::to_wstring(index) + L"]=" + expectedValues[index]);
         }
-        Check(arguments == expectedArguments, "Configuration path spelling, order, or duplicates changed.");
+        Check(arguments == expectedArguments,
+            "Configuration arguments must put the directory first and preserve file spelling, order, and duplicates.");
         Check(loaded == expectedContents, "Relative or absolute configuration paths selected the wrong files.");
         Check(HasText(logs, LogSource::Xray, L"cwd=" + directory.native()),
             "Configuration inputs used the wrong child working directory.");

@@ -83,12 +83,15 @@ std::optional<int> FakeXrayTool(int argc, wchar_t** argv)
     }
     if (argc < 5 || argc % 2 != 1) { return 92; }
     WriteTool(output, xtray::ToUtf8(argv[2]) + "\n");
+    std::filesystem::path first;
     for (int index = 3; index + 1 < argc; index += 2) {
         const std::wstring_view flag = argv[index];
         if (flag != L"-config" && flag != L"-confdir") { return 91; }
+        if (flag == L"-config" && first.empty()) {
+            first = std::filesystem::path(argv[index + 1]).filename();
+        }
         WriteTool(output, xtray::ToUtf8(std::wstring(flag) + L"=" + argv[index + 1]) + "\n");
     }
-    const auto first = std::filesystem::path(argv[4]).filename();
     if (first == L"tool-hold.conf") {
         for (;;) {
             WriteTool(output, "tool waiting for cancellation\n");
@@ -130,7 +133,7 @@ void TestXrayTools(const std::filesystem::path& root)
         checked.executable == ExecutablePath() &&
         checked.output.find("console=0\n") != std::string::npos &&
         checked.output.find("cwd=" + ToUtf8(root.native()) + "\n") != std::string::npos &&
-        checked.output.find("-test\n-config=.\\tool-ok.conf\n") != std::string::npos &&
+        checked.output.find("-test\n-confdir=..\\shared configs\\\n-config=.\\tool-ok.conf\n") != std::string::npos &&
         checked.output.find(ToUtf8((root / L"external folder" / L"absolute.json").native())) != std::string::npos &&
         checked.output.find("-confdir=..\\shared configs\\\n") != std::string::npos &&
         first != std::string::npos && second > first,
@@ -143,7 +146,7 @@ void TestXrayTools(const std::filesystem::path& root)
     Require(tool.Start(XrayToolKind::Preview, settings), "Cannot start the merged preview.");
     auto large = Result(tool);
     Require(large.exitCode == 0 && large.output.size() > 500000 &&
-        large.output.find("-dump\n") != std::string::npos &&
+        large.output.find("-dump\n-confdir=..\\shared configs\\\n-config=.\\tool-large.conf\n") != std::string::npos &&
         large.output.find("tool line 0:") != std::string::npos &&
         large.output.find("tool line 11999:") != std::string::npos &&
         large.output.ends_with("tool output end"), "Tool preview truncated its full output.");
