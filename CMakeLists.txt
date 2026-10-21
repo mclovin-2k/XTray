@@ -24,6 +24,7 @@ add_library(XTray.Core STATIC
     src/theme.cpp
     src/logs.cpp
     src/xray_process.cpp
+    src/xray_tool.cpp
     src/settings.cpp
     src/startup.cpp
 )
@@ -62,6 +63,7 @@ add_executable(XTray WIN32
     src/log_view.cpp
     src/theme_window.cpp
     src/settings_dialog.cpp
+    src/xray_tool_window.cpp
     resources/XTray.rc
     "${CMAKE_CURRENT_BINARY_DIR}/generated/version.rc"
 )
@@ -72,7 +74,7 @@ target_link_libraries(XTray PRIVATE XTray.Core XTray.Graphics user32 gdi32 shell
 target_link_options(XTray PRIVATE /MANIFEST:NO)
 
 # Test helpers are built only for validation and are never included in the artifact.
-add_executable(XTray.Tests tests/core_tests.cpp tests/startup_tests.cpp)
+add_executable(XTray.Tests tests/core_tests.cpp tests/startup_tests.cpp tests/xray_tool_tests.cpp)
 target_link_libraries(XTray.Tests PRIVATE XTray.Core shell32 user32)
 
 foreach(target XTray.Core XTray.Graphics XTray.IconBuilder XTray XTray.Tests)

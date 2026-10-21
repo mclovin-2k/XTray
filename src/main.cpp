@@ -8,6 +8,7 @@
 #include "log_view.h"
 #include "xray_process.h"
 #include "settings_dialog.h"
+#include "xray_tool_window.h"
 #include "win32.h"
 #include "ui_layout.h"
 
@@ -40,7 +41,7 @@ constexpr UINT kExitMessage = WM_APP + 43;
 constexpr UINT kRuntimeFailureTestMessage = WM_APP + 49;
 constexpr DWORD kWindowStyle = WS_OVERLAPPEDWINDOW;
 enum ControlId { Run = 2001, Stop, Restart, SettingsButton, FileList, OpenFile,
-    OpenFileDirectory, OpenDirectory, Filter, ClearLogs, ScrollToEnd, ShowGui, ExitApp };
+    OpenFileDirectory, OpenDirectory, Filter, ClearLogs, ScrollToEnd, ShowGui, ExitApp, CheckConfig, PreviewConfig, ShowVersion };
 enum IconId { StoppedTrayIcon, RunningTrayIcon, StoppedStatusIcon, RunningStatusIcon,
     SmallWindowIcon, LargeWindowIcon, IconCount };
 
@@ -177,11 +178,12 @@ class Application {
 public:
     Application(std::filesystem::path root, bool smokeTest)
         : root_(std::move(root)), startup_(root_, ExecutablePath()),
-          process_(root_, logs_), smokeTest_(smokeTest),
+          process_(root_, logs_), toolWindow_(root_), smokeTest_(smokeTest),
           tray_(smokeTest ? SmokeNotifyIcon : Shell_NotifyIconW) {}
     ~Application()
     {
         themeMonitor_.reset();
+        toolWindow_.Close();
         process_.Shutdown();
         tray_.Remove();
         if (IsWindow(window_)) {
@@ -237,7 +239,6 @@ public:
         run_ = child(0, L"BUTTON", L"", WS_TABSTOP, Run);
         stop_ = child(0, L"BUTTON", L"", WS_TABSTOP, Stop);
         restart_ = child(0, L"BUTTON", L"", WS_TABSTOP, Restart);
-        settingsButton_ = child(0, L"BUTTON", L"", WS_TABSTOP, SettingsButton);
         fileLabel_ = child(0, L"STATIC", L"", SS_CENTERIMAGE);
         files_ = child(0, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, FileList);
         openFile_ = child(0, L"BUTTON", L"", WS_TABSTOP, OpenFile);
@@ -258,6 +259,7 @@ public:
             std::fwprintf(stderr, L"Smoke: configuring fonts and icons.\n");
         }
         SetFontsAndIcons();
+        CreateMenus();
         if (!smokeTest_) {
             const auto loaded = LoadSettings(root_);
             settings_ = loaded.settings;
@@ -275,7 +277,7 @@ public:
         UpdateTheme(themeMonitor_->SystemDark(), true);
         logs_.SetLimit(settings_.logLines);
         logs_.Tray(settingsValid_
-            ? Text(L"XTray is ready. Configure paths in Settings, then click Run to start Xray.", L"XTray 已就绪；点击“设置”填写路径，再点击“运行”启动 Xray。")
+            ? Text(L"XTray is ready. Configure paths in File > Settings, then click Run to start Xray.", L"XTray 已就绪；打开“文件 → 设置”填写路径，再点击“运行”启动 Xray。")
             : Text(L"Settings could not be loaded. Re-enter and save them in Settings before running Xray.", L"设置尚未成功加载，当前不能运行 Xray；请在“设置”中重新填写并保存。"));
         UpdatePaths();
         Layout();
@@ -300,7 +302,7 @@ public:
             MoveWindow(control, x, y, (std::max)(1, widthValue), height, TRUE);
         };
         int actionX = width - margin;
-        for (const auto control : {settingsButton_, restart_, stop_, run_}) {
+        for (const auto control : {restart_, stop_, run_}) {
             const int buttonWidth = TextButtonWidth(control);
             actionX -= buttonWidth;
             move(control, actionX, Scale(16), buttonWidth, Scale(28));
@@ -381,13 +383,29 @@ public:
         const bool button = notification == BN_CLICKED &&
             (id == Run || id == Stop || id == Restart || id == SettingsButton ||
                 id == OpenFile || id == OpenFileDirectory || id == OpenDirectory ||
-                id == ClearLogs || id == ScrollToEnd);
+                id == ClearLogs || id == ScrollToEnd || id == ExitApp ||
+                id == CheckConfig || id == PreviewConfig || id == ShowVersion);
         const bool selection = notification == CBN_SELCHANGE && (id == FileList || id == Filter);
         // Native controls notify their parent during creation and programmatic updates.
         if (!ready_ || updatingUi_ || (!button && !selection)) {
             return;
         }
-        if (id == SettingsButton) {
+        if (id == ExitApp) {
+            Exit();
+            return;
+        }
+        if (id == CheckConfig || id == PreviewConfig || id == ShowVersion) {
+            const auto kind = id == CheckConfig ? XrayToolKind::Check
+                : id == PreviewConfig ? XrayToolKind::Preview : XrayToolKind::Version;
+            try {
+                toolWindow_.Open(window_, kind, settings_, settingsValid_, theme_.Colors().dark, smokeTest_);
+            } catch (const std::exception& exception) {
+                toolWindow_.Close();
+                if (smokeTest_) { throw; }
+                const auto error = FromUtf8(exception.what());
+                MessageBoxW(window_, error.c_str(), Text(L"Xray tool", L"Xray 工具"), MB_OK | MB_ICONERROR);
+            }
+        } else if (id == SettingsButton) {
             if (EditSettings(window_, root_, settings_, logs_, startup_)) {
                 settingsValid_ = true;
                 ApplyUiText();
@@ -496,6 +514,7 @@ public:
         exiting_ = true;
         KillTimer(window_, 1);
         tray_.Remove();
+        toolWindow_.Close();
         process_.Shutdown();
         DestroyWindow(window_);
     }
@@ -568,6 +587,8 @@ public:
         }
     }
 
+    bool TranslateToolMessage(MSG& message) const { return toolWindow_.Translate(message); }
+
     bool IsExiting() const { return exiting_; }
     std::exception_ptr runtimeError;
     int exitCode = 0;
@@ -631,10 +652,90 @@ public:
             return false;
         }
         return SmokeTestIconResources() && SmokeTestInstanceText() && SmokeTestUiChanges() && SmokeTestLogButtons() &&
-            SmokeTestThemes() && SmokeTestLogon() && SmokeTestTray();
+            SmokeTestThemes() && SmokeTestMenus() && SmokeTestXrayTools(window_, root_) &&
+            SmokeTestLogon() && SmokeTestTray();
     }
 
 private:
+    void CreateMenus()
+    {
+        struct Menu {
+            HMENU value;
+            ~Menu() { if (value != nullptr) { DestroyMenu(value); } }
+            HMENU Release() { return std::exchange(value, nullptr); }
+        };
+        Menu bar{CreateMenu()}, file{CreatePopupMenu()}, tools{CreatePopupMenu()};
+        const auto require = [](bool success) {
+            if (!success) { throw std::runtime_error("Cannot create the application menus."); }
+        };
+        require(bar.value != nullptr && file.value != nullptr && tools.value != nullptr);
+        require(AppendMenuW(file.value, MF_STRING, SettingsButton, L"Settings") != FALSE);
+        require(AppendMenuW(file.value, MF_SEPARATOR, 0, nullptr) != FALSE);
+        require(AppendMenuW(file.value, MF_STRING, ExitApp, L"Exit") != FALSE);
+        require(AppendMenuW(tools.value, MF_STRING, CheckConfig, L"Check Xray configuration") != FALSE);
+        require(AppendMenuW(tools.value, MF_STRING, PreviewConfig, L"Preview Xray configuration") != FALSE);
+        require(AppendMenuW(tools.value, MF_STRING, ShowVersion, L"Show Xray version") != FALSE);
+        fileMenu_ = file.value;
+        xrayMenu_ = tools.value;
+        require(AppendMenuW(bar.value, MF_POPUP, reinterpret_cast<UINT_PTR>(file.value), L"File") != FALSE);
+        file.Release();
+        require(AppendMenuW(bar.value, MF_POPUP, reinterpret_cast<UINT_PTR>(tools.value), L"Xray Tools") != FALSE);
+        tools.Release();
+        require(SetMenu(window_, bar.value) != FALSE);
+        menuBar_ = bar.Release();
+    }
+
+    void UpdateMenus()
+    {
+        ModifyMenuW(menuBar_, 0, MF_BYPOSITION | MF_POPUP | MF_STRING,
+            reinterpret_cast<UINT_PTR>(fileMenu_), Text(L"&File", L"文件"));
+        ModifyMenuW(menuBar_, 1, MF_BYPOSITION | MF_POPUP | MF_STRING,
+            reinterpret_cast<UINT_PTR>(xrayMenu_), Text(L"Xray &Tools", L"Xray 工具"));
+        const std::array captions{
+            std::pair{SettingsButton, Text(L"Settings", L"设置")},
+            std::pair{ExitApp, Text(L"Exit", L"退出")},
+            std::pair{CheckConfig, Text(L"Check Xray configuration", L"检查 Xray 配置")},
+            std::pair{PreviewConfig, Text(L"Preview Xray configuration", L"预览 Xray 配置")},
+            std::pair{ShowVersion, Text(L"Show Xray version", L"显示 Xray 版本")}
+        };
+        for (const auto& [id, caption] : captions) {
+            MENUITEMINFOW item{sizeof(MENUITEMINFOW)};
+            item.fMask = MIIM_STRING;
+            item.dwTypeData = const_cast<wchar_t*>(caption);
+            if (!SetMenuItemInfoW(menuBar_, id, FALSE, &item)) {
+                throw std::runtime_error("Cannot update the application menu language.");
+            }
+        }
+        DrawMenuBar(window_);
+    }
+
+    bool SmokeTestMenus()
+    {
+        std::fwprintf(stderr, L"Smoke: native File and Xray Tools menus, language refresh, and removed Settings button.\n");
+        const auto language = CurrentLanguage();
+        bool passed = GetMenu(window_) == menuBar_ && GetMenuItemCount(menuBar_) == 2 &&
+            GetMenuItemCount(fileMenu_) == 3 && GetMenuItemCount(xrayMenu_) == 3 &&
+            GetMenuItemID(fileMenu_, 0) == SettingsButton && GetMenuItemID(fileMenu_, 2) == ExitApp &&
+            GetDlgItem(window_, SettingsButton) == nullptr;
+        for (const auto selected : {Language::English, Language::Chinese}) {
+            ApplyLanguage(selected);
+            ApplyUiText();
+            wchar_t title[128]{};
+            GetMenuStringW(xrayMenu_, PreviewConfig, title, static_cast<int>(std::size(title)), MF_BYCOMMAND);
+            passed = passed && std::wstring_view(title) == Text(L"Preview Xray configuration", L"预览 Xray 配置");
+            for (int position = 0; position < 3; ++position) {
+                MENUITEMINFOW item{sizeof(MENUITEMINFOW)};
+                item.fMask = MIIM_FTYPE | MIIM_ID;
+                passed = passed && GetMenuItemInfoW(xrayMenu_, position, TRUE, &item) &&
+                    (item.fType & MFT_OWNERDRAW) == 0 &&
+                    item.wID == static_cast<UINT>(CheckConfig + position);
+            }
+        }
+        ApplyLanguage(language);
+        ApplyUiText();
+        return passed;
+    }
+
     void CreateTooltips()
     {
         tooltip_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE, TOOLTIPS_CLASSW, nullptr,
@@ -731,6 +832,7 @@ private:
             view_->SetTheme(theme_.Colors());
         }
         theme_.ApplyOwned(dark);
+        toolWindow_.SetAppearance(dark);
     }
 
     void UpdateTray()
@@ -823,7 +925,6 @@ private:
             std::pair{run_, Text(L"Run", L"运行")},
             std::pair{stop_, Text(L"Stop", L"停止")},
             std::pair{restart_, Text(L"Restart", L"重启")},
-            std::pair{settingsButton_, Text(L"Settings", L"设置")},
             std::pair{fileLabel_, Text(L"Config files:", L"配置文件：")},
             std::pair{openFile_, Text(L"Open file", L"打开配置文件")},
             std::pair{openFileDirectory_, Text(L"Open file folder", L"打开配置文件目录")},
@@ -844,6 +945,8 @@ private:
         }
         SendMessageW(filter_, CB_SETCURSEL, selected == CB_ERR ? 0 : selected, 0);
         UpdateTooltips();
+        UpdateMenus();
+        toolWindow_.RefreshLanguage();
         shownPid_ = MAXDWORD;
         updatingUi_ = false;
         Layout();
@@ -1106,13 +1209,13 @@ private:
             }
             return true;
         };
-        return rowAligned(std::array{statusIcon_, status_, run_, stop_, restart_, settingsButton_}, L"status") &&
+        return rowAligned(std::array{statusIcon_, status_, run_, stop_, restart_}, L"status") &&
             rowAligned(std::array{fileLabel_, files_, openFile_, openFileDirectory_}, L"config files") &&
             rowAligned(std::array{directoryLabel_, directory_, openDirectory_}, L"config directory") &&
             rowAligned(std::array{filterLabel_, filter_, scrollToEnd_, clearLogs_}, L"log source") &&
             columnAligned(std::array{statusIcon_, fileLabel_, directoryLabel_, filterLabel_, logWindow_}, false) &&
             columnAligned(std::array{files_, directory_, filter_}, false) &&
-            columnAligned(std::array{settingsButton_, openFileDirectory_, openDirectory_, clearLogs_, logWindow_}, true);
+            columnAligned(std::array{restart_, openFileDirectory_, openDirectory_, clearLogs_, logWindow_}, true);
     }
 
     bool SmokeTestUiChanges()
@@ -1164,7 +1267,7 @@ private:
                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
                 if (!SmokeTestControlAlignment()) { return false; }
             }
-            for (const auto control : {run_, stop_, restart_, settingsButton_, openFile_, openFileDirectory_, openDirectory_}) {
+            for (const auto control : {run_, stop_, restart_, openFile_, openFileDirectory_, openDirectory_}) {
                 RECT button{};
                 GetWindowRect(control, &button);
                 const LONG padding = button.right - button.left - ControlTextSize(control).cx;
@@ -1852,7 +1955,7 @@ private:
             }
             throw std::runtime_error(Text("Cannot create window fonts.", "无法创建窗口字体。"));
         }
-        const std::array controls{status_, run_, stop_, restart_, settingsButton_, fileLabel_,
+        const std::array controls{status_, run_, stop_, restart_, fileLabel_,
             files_, openFile_, openFileDirectory_, directoryLabel_, directory_, openDirectory_,
             filterLabel_, filter_, scrollToEnd_, clearLogs_};
         for (const auto control : controls) {
@@ -1946,6 +2049,7 @@ private:
     StartupRegistration startup_;
     Logs logs_;
     XrayProcess process_;
+    XrayToolWindow toolWindow_;
     bool smokeTest_;
     TrayIcon tray_;
     ThemeWindow theme_;
@@ -1964,7 +2068,8 @@ private:
     UINT dpi_ = 96;
     HWND window_ = nullptr;
     HWND statusIcon_ = nullptr, status_ = nullptr;
-    HWND run_ = nullptr, stop_ = nullptr, restart_ = nullptr, settingsButton_ = nullptr;
+    HWND run_ = nullptr, stop_ = nullptr, restart_ = nullptr;
+    HMENU menuBar_ = nullptr, fileMenu_ = nullptr, xrayMenu_ = nullptr;
     HWND fileLabel_ = nullptr, files_ = nullptr, openFile_ = nullptr, openFileDirectory_ = nullptr;
     HWND directoryLabel_ = nullptr, directory_ = nullptr, openDirectory_ = nullptr;
     HWND filterLabel_ = nullptr, filter_ = nullptr, scrollToEnd_ = nullptr, clearLogs_ = nullptr;
@@ -2001,7 +2106,7 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             const UINT dpi = GetDpiForWindow(window);
             RECT bounds{0, 0, MulDiv(640, static_cast<int>(dpi), 96),
                 MulDiv(400, static_cast<int>(dpi), 96)};
-            if (AdjustWindowRectExForDpi(&bounds, kWindowStyle, FALSE, 0, dpi)) {
+            if (AdjustWindowRectExForDpi(&bounds, kWindowStyle, TRUE, 0, dpi)) {
                 auto* limits = reinterpret_cast<MINMAXINFO*>(lParam);
                 limits->ptMinTrackSize = {bounds.right - bounds.left, bounds.bottom - bounds.top};
                 MONITORINFO monitor{};
@@ -2161,7 +2266,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
         const RECT workArea = monitor.rcWork;
         const UINT dpi = GetDpiForSystem();
         RECT bounds{0, 0, MulDiv(800, static_cast<int>(dpi), 96), MulDiv(600, static_cast<int>(dpi), 96)};
-        if (!AdjustWindowRectExForDpi(&bounds, kWindowStyle, FALSE, 0, dpi)) {
+        if (!AdjustWindowRectExForDpi(&bounds, kWindowStyle, TRUE, 0, dpi)) {
             return ReportStartupError(smokeTest, WindowsError(Text(L"Cannot calculate the window size", L"计算窗口尺寸失败")));
         }
         LONG width = bounds.right - bounds.left;
@@ -2182,7 +2287,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
         const UINT windowDpi = GetDpiForWindow(window);
         bounds = {0, 0, MulDiv(800, static_cast<int>(windowDpi), 96),
             MulDiv(600, static_cast<int>(windowDpi), 96)};
-        if (!AdjustWindowRectExForDpi(&bounds, kWindowStyle, FALSE, 0, windowDpi)) {
+        if (!AdjustWindowRectExForDpi(&bounds, kWindowStyle, TRUE, 0, windowDpi)) {
             return ReportStartupError(smokeTest, WindowsError(
                 Text(L"Cannot calculate the window size", L"计算窗口尺寸失败")));
         }
@@ -2214,7 +2319,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
         MSG message{};
         BOOL result;
         while ((result = GetMessageW(&message, nullptr, 0, 0)) > 0) {
-            if (!IsDialogMessageW(window, &message)) {
+            if (!app.TranslateToolMessage(message) && !IsDialogMessageW(window, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }

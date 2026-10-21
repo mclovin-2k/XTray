@@ -17,6 +17,8 @@
 #include <iterator>
 
 void TestStartup(const std::filesystem::path& root);
+void TestXrayTools(const std::filesystem::path& root);
+std::optional<int> FakeXrayTool(int argc, wchar_t** argv);
 
 namespace {
 
@@ -923,6 +925,7 @@ void TestAbnormalExit(const std::filesystem::path& root)
 int wmain(int argc, wchar_t** argv)
 {
     try {
+        if (const auto tool = FakeXrayTool(argc, argv)) { return *tool; }
         if (argc > 1 && std::wstring_view(argv[1]) == L"run") {
             return FakeXray(argc, argv);
         }
@@ -959,6 +962,7 @@ int wmain(int argc, wchar_t** argv)
         TestStartup(root / L"startup");
         TestConfigurationPaths(root);
         TestProcesses(root);
+        TestXrayTools(root);
         TestAbnormalExit(root);
         TestRuntimeFailure();
         std::puts("All core tests passed. No real Xray process or network listener was started.");

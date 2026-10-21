@@ -42,7 +42,7 @@ with different listening ports. Each copy manages one Xray process.
 1. Place `XTray.exe` in a folder where your Windows account can write files.
 2. Extract the Xray-core package into a `bin` subfolder beside `XTray.exe`, keeping
    its accompanying files.
-3. Open `XTray.exe`, then open **Settings**.
+3. Open `XTray.exe`, then choose **File → Settings**.
 4. Confirm the Xray executable path (`.\bin\xray.exe` by default), add configuration
    files (one per line) and/or select one configuration directory, then click **Save**.
 5. Click **Run** to start Xray.
@@ -79,7 +79,7 @@ together, depending on your setup.
 - **Status:** the GUI status icon and system tray icon are green while Xray is
   running and red when it is stopped or fails to start.
 - **Show or hide the window:** click the tray icon to show the window. Closing
-  the window keeps XTray and Xray running. Choose **Exit** in the tray menu to
+  the window keeps XTray and Xray running. Choose **File → Exit** or **Exit** in the tray menu to
   stop this copy's Xray and quit XTray.
 - **Configuration shortcuts:** open a saved configuration file, its containing
   folder or the configured directory from the main window.
@@ -92,6 +92,25 @@ together, depending on your setup.
 
 If Xray fails to start, read the displayed error and Xray output, correct the
 executable path or your configuration, then try again.
+
+## Xray tools
+
+The **Xray Tools** menu uses the Xray executable and settings saved in
+**File → Settings**:
+
+- **Check Xray configuration:** runs Xray's configuration check and shows the
+  original output and exit code. It does not start the proxy server.
+- **Preview Xray configuration:** shows the merged configuration from the
+  saved sources currently on disk. This is a read-only preview, not the
+  running process's in-memory configuration.
+- **Show Xray version:** shows the executable path and Xray's version/build
+  information. Configuration files are not required.
+
+Tools run independently of the managed proxy, with one tool task at a time.
+The result window provides horizontal and vertical scrolling and **Copy all**;
+its full output is separate from the runtime log limit. Closing the result
+window cancels an unfinished task. Results are kept only in memory until that
+window is closed.
 
 ## Start when you sign in
 
