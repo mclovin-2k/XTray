@@ -802,7 +802,7 @@ void TestProcesses(const std::filesystem::path& root)
         HasText(logs, LogSource::Tray, L"退出码 23") &&
         HasText(logs, LogSource::Xray, L"\uFFFD"), "Early failure output or exit code was lost.");
     const auto failed = process.RunInfo();
-    Check(failed.pid != 0 && failed.started && failed.ended && failed.exitCode == 23 && failed.error.empty(),
+    Check(failed.pid != 0 && failed.started && failed.ended && failed.exitCode == DWORD{23} && failed.error.empty(),
         "An early-exit run lost its PID, timestamps, or actual exit code.");
 
     auto settings = FakeSettings(root);
@@ -868,7 +868,7 @@ void TestProcesses(const std::filesystem::path& root)
         "Stop did not finish.");
     const auto stopped = process.RunInfo();
     Check(stopped.pid == restarted.pid && stopped.started == restarted.started && stopped.ended &&
-        stopped.exitCode == ERROR_CANCELLED && stopped.elapsed >= restarted.elapsed &&
+        stopped.exitCode == static_cast<DWORD>(ERROR_CANCELLED) && stopped.elapsed >= restarted.elapsed &&
         process.RunInfo().elapsed == stopped.elapsed && stopped.commandLine == restarted.commandLine,
         "Stopping lost the last run or kept increasing its duration.");
     Check(HasText(logs, LogSource::Tray, L"Stopping Xray.") &&
