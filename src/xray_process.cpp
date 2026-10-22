@@ -139,7 +139,7 @@ void XrayProcess::Worker()
         }
         StopProcess();
     } catch (const std::exception& exception) {
-        const auto error = Text(L"Process management error: ", L"进程管理错误：") + FromUtf8(exception.what()) + Text(L"; exit XTray and open it again.", L"；请退出 XTray 后重新打开。"));
+        const auto error = Text(L"Process management error: ", L"进程管理错误：") + FromUtf8(exception.what()) + Text(L"; exit XTray and open it again.", L"；请退出 XTray 后重新打开。");
         logs_.Tray(error);
         {
             std::lock_guard lock(infoMutex_);
