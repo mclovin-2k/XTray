@@ -11,14 +11,66 @@
 #include <cstdio>
 #include <cstring>
 #include <cwchar>
+#include <ctime>
 #include <limits>
 
 namespace xtray {
 namespace {
 
 constexpr wchar_t kToolClass[] = L"XTray.XrayTool";
-constexpr int kOutputId = 4101, kCopyId = 4102, kStatusId = 4103, kWordWrapId = 4104;
+constexpr int kOutputId = 4101, kCopyId = 4102, kStatusId = 4103, kWordWrapId = 4104, kNoteId = 4105;
 constexpr DWORD kToolStyle = WS_OVERLAPPEDWINDOW;
+
+const wchar_t* RunStatus(const XrayRunInfo& info)
+{
+    if (!info.attempted) { return Text(L"No run recorded yet.", L"尚无运行记录。"); }
+    if (info.state == ProcessState::Starting) { return Text(L"Starting", L"正在启动"); }
+    if (info.state == ProcessState::Stopping) { return Text(L"Stopping", L"正在停止"); }
+    if (!info.started && !info.error.empty()) { return Text(L"Start failed", L"启动失败"); }
+    return info.ended || info.state == ProcessState::Stopped
+        ? Text(L"Stopped", L"已停止") : Text(L"Running", L"运行中");
+}
+
+std::wstring RunDocument(const XrayRunInfo& info)
+{
+    if (!info.attempted) { return RunStatus(info); }
+    const auto time = [](const std::optional<std::chrono::system_clock::time_point>& point) -> std::wstring {
+        if (!point) { return L"—"; }
+        const auto value = std::chrono::system_clock::to_time_t(*point);
+        std::tm local{};
+        wchar_t text[64]{};
+        if (localtime_s(&local, &value) != 0 || std::wcsftime(text, std::size(text), L"%Y-%m-%d %H:%M:%S", &local) == 0) {
+            return L"—";
+        }
+        return text;
+    };
+    std::wstring text;
+    const auto field = [&](const wchar_t* name, const std::wstring& value) {
+        text += name;
+        text += L": ";
+        text += value.empty() ? L"—" : value;
+        text += L"\r\n";
+    };
+    field(Text(L"Status", L"状态"), RunStatus(info));
+    field(Text(L"Executable", L"程序路径"), info.executable.native());
+    field(Text(L"Command line", L"完整启动命令行"), info.commandLine);
+    field(Text(L"Working directory", L"工作目录"), info.workingDirectory.native());
+    field(L"PID", info.pid == 0 ? L"—" : std::to_wstring(info.pid));
+    field(Text(L"Started (local time)", L"启动时间（本地时间）"), time(info.started));
+    std::wstring elapsed = L"—";
+    if (info.started) {
+        const auto seconds = static_cast<unsigned long long>(
+            std::chrono::duration_cast<std::chrono::seconds>(info.elapsed).count());
+        wchar_t duration[64]{};
+        swprintf_s(duration, L"%llu:%02llu:%02llu", seconds / 3600, seconds / 60 % 60, seconds % 60);
+        elapsed = duration;
+    }
+    field(Text(L"Run duration (h:mm:ss)", L"运行时长（时:分:秒）"), elapsed);
+    field(Text(L"Ended (local time)", L"结束时间（本地时间）"), time(info.ended));
+    field(Text(L"Exit code", L"退出码"), info.exitCode ? std::to_wstring(*info.exitCode) : L"—");
+    if (!info.error.empty()) { field(Text(L"Error", L"错误"), info.error); }
+    return text;
+}
 
 std::wstring DisplayOutput(std::string_view bytes)
 {
@@ -55,13 +107,19 @@ XrayToolWindow::~XrayToolWindow() { Close(); }
 
 const wchar_t* XrayToolWindow::Title() const
 {
-    return kind_ == XrayToolKind::Check ? Text(L"Check Xray configuration", L"检查 Xray 配置")
-        : kind_ == XrayToolKind::Preview ? Text(L"Preview Xray configuration", L"预览 Xray 配置")
-        : Text(L"Show Xray version", L"显示 Xray 版本");
+    if (process_ != nullptr) { return Text(L"Xray run information", L"Xray 运行信息"); }
+    if (kind_ == XrayToolKind::Version) { return Text(L"Show Xray version", L"显示 Xray 版本"); }
+    if (source_ == XrayToolSource::SettingsDraft) {
+        return kind_ == XrayToolKind::Check ? Text(L"Check current configuration", L"检查当前配置")
+            : Text(L"Preview current configuration", L"预览当前配置");
+    }
+    return kind_ == XrayToolKind::Check ? Text(L"Check saved configuration", L"检查已保存配置")
+        : Text(L"Preview saved configuration", L"预览已保存配置");
 }
 
 std::wstring XrayToolWindow::Status() const
 {
+    if (process_ != nullptr) { return RunStatus(process_->RunInfo()); }
     if (!result_) {
         return kind_ == XrayToolKind::Check ? Text(L"Checking configuration...", L"正在检查配置…")
             : Text(L"Reading Xray output...", L"正在读取 Xray 输出…");
@@ -78,7 +136,7 @@ std::wstring XrayToolWindow::Status() const
 }
 
 void XrayToolWindow::Open(HWND owner, XrayToolKind kind, const Settings& settings,
-    bool settingsValid, bool dark, bool quiet)
+    bool settingsValid, bool dark, bool quiet, XrayToolSource source)
 {
     if (window_ != nullptr && task_.Running()) {
         if (!quiet) {
@@ -87,9 +145,51 @@ void XrayToolWindow::Open(HWND owner, XrayToolKind kind, const Settings& setting
         }
         return;
     }
+    process_ = nullptr;
+    kind_ = kind;
+    source_ = source;
+    Prepare(owner, dark, quiet);
+    RefreshLanguage();
+    SetAppearance(dark);
+    SetDocument();
+    if (!task_.Start(kind, settings, settingsValid)) {
+        throw std::runtime_error("The Xray tool is already running.");
+    }
+    if (SetTimer(window_, 1, 50, nullptr) == 0) {
+        Close();
+        throw std::runtime_error(ToUtf8(WindowsError(Text(L"Cannot start the result timer", L"启动结果计时器失败"))));
+    }
+    Show();
+}
+
+void XrayToolWindow::OpenRunInfo(HWND owner, XrayProcess& process, bool dark, bool quiet)
+{
+    if (window_ == nullptr) {
+        process_ = &process;
+        Prepare(owner, dark, quiet);
+        RefreshLanguage();
+        SetAppearance(dark);
+        if (SetTimer(window_, 1, 1000, nullptr) == 0) {
+            Close();
+            throw std::runtime_error(ToUtf8(WindowsError(Text(L"Cannot start the result timer", L"启动结果计时器失败"))));
+        }
+    }
+    Poll();
+    Show();
+}
+
+void XrayToolWindow::Show()
+{
+    if (!quiet_) {
+        ShowWindow(window_, IsIconic(window_) ? SW_RESTORE : SW_SHOW);
+        SetForegroundWindow(window_);
+    }
+}
+
+void XrayToolWindow::Prepare(HWND owner, bool dark, bool quiet)
+{
     owner_ = owner;
     quiet_ = quiet;
-    kind_ = kind;
     dark_ = dark;
     result_.reset();
     document_.clear();
@@ -126,19 +226,12 @@ void XrayToolWindow::Open(HWND owner, XrayToolKind kind, const Settings& setting
             throw std::runtime_error(ToUtf8(WindowsError(Text(L"Cannot create the result window", L"创建结果窗口失败"))));
         }
     }
-    RefreshLanguage();
-    SetAppearance(dark);
-    SetDocument();
-    if (!task_.Start(kind, settings, settingsValid)) {
-        throw std::runtime_error("The Xray tool is already running.");
-    }
-    if (SetTimer(window_, 1, 50, nullptr) == 0) {
-        Close();
-        throw std::runtime_error(ToUtf8(WindowsError(Text(L"Cannot start the result timer", L"启动结果计时器失败"))));
-    }
-    if (!quiet) {
-        ShowWindow(window_, IsIconic(window_) ? SW_RESTORE : SW_SHOW);
-        SetForegroundWindow(window_);
+    if (GetWindow(window_, GW_OWNER) != owner) {
+        SetLastError(ERROR_SUCCESS);
+        if (SetWindowLongPtrW(window_, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(owner)) == 0 &&
+            GetLastError() != ERROR_SUCCESS) {
+            throw std::runtime_error(ToUtf8(WindowsError(Text(L"Cannot set the result window owner", L"设置结果窗口归属失败"))));
+        }
     }
 }
 
@@ -152,7 +245,7 @@ void XrayToolWindow::Initialize()
         return control;
     };
     status_ = child(L"STATIC", 0, SS_LEFT | SS_NOPREFIX, kStatusId);
-    note_ = child(L"STATIC", 0, SS_LEFT | SS_NOPREFIX, 0);
+    note_ = child(L"STATIC", 0, SS_LEFT | SS_NOPREFIX, kNoteId);
     copy_ = child(L"BUTTON", 0, WS_TABSTOP | BS_ICON, kCopyId);
     wordWrapButton_ = child(L"BUTTON", 0, WS_TABSTOP | BS_ICON | BS_AUTOCHECKBOX | BS_PUSHLIKE, kWordWrapId);
     output_ = child(MSFTEDIT_CLASS, WS_EX_CLIENTEDGE,
@@ -228,15 +321,25 @@ void XrayToolWindow::RefreshLanguage()
     if (window_ == nullptr) { return; }
     SetWindowTextW(window_, Title());
     SetWindowTextW(status_, Status().c_str());
-    SetWindowTextW(note_, kind_ == XrayToolKind::Preview
-        ? Text(L"Preview of the saved configuration sources on disk; not the running process's in-memory configuration.",
-            L"预览已保存配置来源在磁盘上的当前内容，不代表运行中进程的内存配置。")
-        : Text(L"Uses the saved settings. The running Xray instance is unaffected.",
-            L"使用已保存设置执行，不影响正在运行的 Xray 实例。"));
+    std::wstring note;
+    if (process_ != nullptr) {
+        note = Text(L"Actual launch information for the latest attempt in this XTray session.",
+            L"本次 XTray 会话中最近一次启动尝试的实际运行信息。");
+    } else {
+        note = source_ == XrayToolSource::SettingsDraft
+            ? Text(L"Uses the current settings form without saving. ", L"使用设置窗口当前填写的内容执行，无需先保存。")
+            : Text(L"Uses the saved settings. ", L"使用已保存设置执行。");
+        note += kind_ == XrayToolKind::Preview
+            ? Text(L"Reads the sources on disk, not the running process's in-memory configuration.",
+                L"读取磁盘上的配置，不代表运行中进程的内存配置。")
+            : Text(L"The running Xray instance is unaffected.", L"不影响正在运行的 Xray 实例。");
+    }
+    SetWindowTextW(note_, note.c_str());
     SetWindowTextW(copy_, Text(L"Copy all", L"复制全部"));
     SetWindowTextW(close_, Text(L"Close", L"关闭"));
     UpdateToolbar();
     Layout();
+    if (process_ != nullptr) { Poll(); }
 }
 
 void XrayToolWindow::Layout()
@@ -294,8 +397,22 @@ void XrayToolWindow::SetAppearance(bool dark)
     }
 }
 
-void XrayToolWindow::SetDocument()
+void XrayToolWindow::SetDocument(bool preserveView)
 {
+    CHARRANGE selected{};
+    POINT scroll{};
+    if (preserveView) {
+        SendMessageW(output_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&selected));
+        SendMessageW(output_, EM_GETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&scroll));
+    }
+    struct Redraw {
+        HWND window;
+        ~Redraw() {
+            SendMessageW(window, WM_SETREDRAW, TRUE, 0);
+            RedrawWindow(window, nullptr, nullptr, RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN);
+        }
+    } redraw{output_};
+    SendMessageW(output_, WM_SETREDRAW, FALSE, 0);
     TextStream text{document_};
     EDITSTREAM stream{reinterpret_cast<DWORD_PTR>(&text), 0, TextStream::Read};
     SendMessageW(output_, EM_STREAMIN, SF_TEXT | SF_UNICODE, reinterpret_cast<LPARAM>(&stream));
@@ -303,15 +420,29 @@ void XrayToolWindow::SetDocument()
         throw std::runtime_error(Text("Cannot display the complete tool output; Copy all still contains the full result.",
             "无法完整显示工具输出；“复制全部”仍包含完整结果。"));
     }
-    CHARRANGE start{0, 0};
-    SendMessageW(output_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&start));
-    SendMessageW(output_, EM_SCROLLCARET, 0, 0);
+    SendMessageW(output_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&selected));
+    if (preserveView) {
+        SendMessageW(output_, EM_SETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&scroll));
+    } else {
+        SendMessageW(output_, EM_SCROLLCARET, 0, 0);
+    }
     ApplyTextColors();
     EnableWindow(copy_, !document_.empty());
 }
 
 void XrayToolWindow::Poll()
 {
+    if (process_ != nullptr) {
+        const auto info = process_->RunInfo();
+        SetWindowTextW(status_, RunStatus(info));
+        auto text = RunDocument(info);
+        if (document_ != text) {
+            const bool preserve = !document_.empty();
+            document_ = std::move(text);
+            SetDocument(preserve);
+        }
+        return;
+    }
     if (auto result = task_.TakeResult()) {
         KillTimer(window_, 1);
         result_ = std::move(*result);
@@ -370,7 +501,18 @@ void XrayToolWindow::UpdateToolbar()
 
 bool XrayToolWindow::Translate(MSG& message) const
 {
-    return window_ != nullptr && IsDialogMessageW(window_, &message) != FALSE;
+    return window_ != nullptr && (message.hwnd == window_ || IsChild(window_, message.hwnd)) &&
+        IsDialogMessageW(window_, &message) != FALSE;
+}
+
+bool XrayToolWindow::TranslateAny(MSG& message)
+{
+    const HWND root = GetAncestor(message.hwnd, GA_ROOT);
+    wchar_t name[64]{};
+    if (root == nullptr || !GetClassNameW(root, name, static_cast<int>(std::size(name))) ||
+        std::wstring_view(name) != kToolClass) { return false; }
+    const auto* self = reinterpret_cast<XrayToolWindow*>(GetWindowLongPtrW(root, GWLP_USERDATA));
+    return self != nullptr && self->Translate(message);
 }
 
 void XrayToolWindow::Close()
@@ -380,6 +522,12 @@ void XrayToolWindow::Close()
     if (window_ != nullptr) { DestroyWindow(window_); }
     result_.reset();
     std::wstring{}.swap(document_);
+    process_ = nullptr;
+}
+
+void XrayToolWindow::CloseOwned(HWND owner)
+{
+    if (owner != nullptr && window_ != nullptr && GetWindow(window_, GW_OWNER) == owner) { Close(); }
 }
 
 LRESULT CALLBACK XrayToolWindow::Procedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam)
@@ -476,6 +624,7 @@ LRESULT CALLBACK XrayToolWindow::Procedure(HWND window, UINT message, WPARAM wPa
         self->error_ = std::current_exception();
         if (message == WM_CREATE) { return -1; }
         self->task_.Cancel();
+        KillTimer(window, 1);
         EnableWindow(self->copy_, !self->document_.empty());
         const auto text = Text(L"Cannot complete this operation. The full captured result can still be copied.",
             L"无法完成此操作，仍可复制已捕获的完整结果。");
@@ -536,7 +685,7 @@ bool SmokeTestXrayTools(HWND owner, const std::filesystem::path& root)
             reused = tool.Window();
             if (!IsWindowEnabled(owner) || !wait()) { return fail(L"responsive modeless check"); }
             const auto output = GetDlgItem(tool.Window(), kOutputId);
-            if (text(tool.Window()) != Text(L"Check Xray configuration", L"检查 Xray 配置") ||
+            if (text(tool.Window()) != Text(L"Check saved configuration", L"检查已保存配置") ||
                 text(GetDlgItem(tool.Window(), kStatusId)).find(Text(L"passed", L"通过")) == std::wstring::npos ||
                 text(output).find(L"中文 tool stdout") == std::wstring::npos ||
                 text(output).find(L"tool stderr") == std::wstring::npos) {
@@ -692,6 +841,67 @@ bool SmokeTestXrayTools(HWND owner, const std::filesystem::path& root)
     if (!wait() || SendMessageW(GetDlgItem(tool.Window(), kWordWrapId), BM_GETCHECK, 0, 0) != BST_UNCHECKED) {
         return fail(L"closing and reopening the result must reset word wrap to off");
     }
+
+    std::fwprintf(stderr, L"Smoke: actual run information, live state, retained exit data, and independent windows.\n");
+    Logs logs;
+    XrayProcess process(root, logs);
+    XrayToolWindow info(root);
+    for (const auto language : {Language::English, Language::Chinese}) {
+        ApplyLanguage(language);
+        for (const bool dark : {false, true}) {
+            info.OpenRunInfo(owner, process, dark, true);
+            info.RefreshLanguage();
+            info.SetAppearance(dark);
+            if (text(info.Window()) != Text(L"Xray run information", L"Xray 运行信息") ||
+                text(GetDlgItem(info.Window(), kOutputId)) != Text(L"No run recorded yet.", L"尚无运行记录。") ||
+                info.Window() == tool.Window() || !IsWindowEnabled(owner)) {
+                return fail(L"empty run record, language, or independent information window");
+            }
+        }
+    }
+    settings.configFiles = {L".\\hold.conf"};
+    if (!process.Run(settings)) { return fail(L"starting the run information test child"); }
+    const auto deadline = GetTickCount64() + 4000;
+    while (process.State() != ProcessState::Running && GetTickCount64() < deadline) { Sleep(5); }
+    if (process.State() != ProcessState::Running) { return fail(L"run information child did not start"); }
+    const auto running = process.RunInfo();
+    SendMessageW(info.Window(), WM_TIMER, 1, 0);
+    auto details = text(GetDlgItem(info.Window(), kOutputId));
+    if (details.find(running.commandLine) == std::wstring::npos ||
+        details.find(std::to_wstring(running.pid)) == std::wstring::npos ||
+        details.find(root.native()) == std::wstring::npos) {
+        return fail(L"actual launch metadata in the information window");
+    }
+    info.Close();
+    if (process.Pid() != running.pid || process.State() != ProcessState::Running) {
+        return fail(L"closing run information affected the proxy");
+    }
+    info.OpenRunInfo(owner, process, true, true);
+    const HWND infoOutput = GetDlgItem(info.Window(), kOutputId);
+    CHARRANGE selected{0, 7}, after{};
+    SendMessageW(infoOutput, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&selected));
+    if (!process.Stop()) { return fail(L"stopping the run information test child"); }
+    const auto stopDeadline = GetTickCount64() + 4000;
+    while (process.State() != ProcessState::Stopped && GetTickCount64() < stopDeadline) { Sleep(5); }
+    if (process.State() != ProcessState::Stopped) { return fail(L"run information child did not stop"); }
+    SendMessageW(info.Window(), WM_TIMER, 1, 0);
+    SendMessageW(infoOutput, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&after));
+    details = text(infoOutput);
+    if (after.cpMin != selected.cpMin || after.cpMax != selected.cpMax ||
+        details.find(std::to_wstring(ERROR_CANCELLED)) == std::wstring::npos ||
+        details.find(running.commandLine) == std::wstring::npos) {
+        return fail(L"retained exit information or selection during live updates");
+    }
+    SendMessageW(GetDlgItem(info.Window(), kWordWrapId), BM_CLICK, 0, 0);
+    if (text(GetDlgItem(info.Window(), kOutputId)) != details) { return fail(L"run information word wrap changed metadata"); }
+    SendMessageW(GetDlgItem(info.Window(), kCopyId), BM_CLICK, 0, 0);
+    if (!OpenClipboard(owner)) { return fail(L"reading copied run information"); }
+    const HANDLE infoData = GetClipboardData(CF_UNICODETEXT);
+    const auto infoCopy = infoData != nullptr ? static_cast<const wchar_t*>(GlobalLock(infoData)) : nullptr;
+    const bool copiedInfo = infoCopy != nullptr && std::wstring_view(infoCopy) == details;
+    if (infoCopy != nullptr) { GlobalUnlock(infoData); }
+    CloseClipboard();
+    if (!copiedInfo) { return fail(L"complete run information copy"); }
     return true;
 }
 

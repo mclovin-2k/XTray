@@ -3,6 +3,7 @@
 #include "win32.h"
 #include "theme_window.h"
 #include "ui_layout.h"
+#include "xray_tool_window.h"
 
 #include <shobjidl.h>
 #include <uxtheme.h>
@@ -33,6 +34,11 @@ struct Context {
     Settings& settings;
     Logs& logs;
     StartupRegistration& startup;
+    XrayToolWindow localTools{root};
+    XrayToolWindow* tools = &localTools;
+    HWND dialog = nullptr;
+    HHOOK messageFilter = nullptr;
+    bool quietTools = false;
     bool startupAvailable = false;
     ThemeWindow theme;
     ThemeWindow contentTheme;
@@ -43,8 +49,54 @@ struct Context {
     std::function<void(HWND)> automation;
     std::exception_ptr error;
     std::array<HICON, 2> icons{};
-    ~Context() { for (const auto icon : icons) { if (icon != nullptr) { DestroyIcon(icon); } } }
+    ~Context();
 };
+
+thread_local Context* activeSettings = nullptr;
+
+Context::~Context()
+{
+    tools->CloseOwned(dialog);
+    if (messageFilter != nullptr) { UnhookWindowsHookEx(messageFilter); }
+    if (activeSettings == this) { activeSettings = nullptr; }
+    for (const auto icon : icons) { if (icon != nullptr) { DestroyIcon(icon); } }
+}
+
+LRESULT CALLBACK SettingsMessageFilter(int code, WPARAM wParam, LPARAM lParam)
+{
+    if (code == MSGF_DIALOGBOX && activeSettings != nullptr) {
+        try {
+            // DialogBox owns the message loop while modeless result windows remain open.
+            if (XrayToolWindow::TranslateAny(*reinterpret_cast<MSG*>(lParam))) { return TRUE; }
+        } catch (...) {
+            activeSettings->error = std::current_exception();
+            EndDialog(activeSettings->dialog, -1);
+            return TRUE;
+        }
+    }
+    return CallNextHookEx(nullptr, code, wParam, lParam);
+}
+
+Settings ConfigDraft(HWND dialog, const Settings& saved)
+{
+    Settings draft = saved;
+    const HWND body = GetDlgItem(dialog, IDC_SETTINGS_BODY);
+    draft.executable = WindowText(GetDlgItem(body, IDC_EXECUTABLE));
+    draft.configDirectory = WindowText(GetDlgItem(body, IDC_CONFIG_DIRECTORY));
+    draft.configFiles = SplitConfigFiles(WindowText(GetDlgItem(body, IDC_CONFIG_FILES)));
+    return draft;
+}
+
+void UpdateConfigTools(Context& context)
+{
+    const HWND result = context.tools->Window();
+    const bool available = !context.tools->Running() ||
+        (result != nullptr && GetWindow(result, GW_OWNER) == context.dialog);
+    for (const int id : {IDC_CHECK_CONFIG, IDC_PREVIEW_CONFIG}) {
+        const HWND button = GetDlgItem(context.contents, id);
+        if ((IsWindowEnabled(button) != FALSE) != available) { EnableWindow(button, available); }
+    }
+}
 
 void SetDialogIcons(HWND dialog, Context& context)
 {
@@ -116,24 +168,32 @@ void LayoutSettingsContent(Context& context)
                 buttonX - gap - margin, height);
             y += (std::max)(height, rowHeight) + sectionGap;
         };
-        const auto languageLabel = ControlTextSize(GetDlgItem(body, IDC_LABEL_LANGUAGE));
-        const auto themeLabel = ControlTextSize(GetDlgItem(body, IDC_LABEL_THEME));
-        const int half = (available - sectionGap) / 2;
-        const bool stacked = half < (std::max)(languageLabel.cx, themeLabel.cx) + gap + UiScale(body, 96);
-        const int groupWidth = stacked ? available : half;
-        const LONG languageWidth = stacked ? (std::max)(languageLabel.cx, themeLabel.cx) : languageLabel.cx;
-        const LONG themeWidth = stacked ? languageWidth : themeLabel.cx;
-        place(IDC_LABEL_LANGUAGE, margin, y + (rowHeight - languageLabel.cy) / 2,
-            languageLabel.cx, languageLabel.cy);
-        place(IDC_LANGUAGE, margin + languageWidth + gap,
-            y + (rowHeight - ComboBoxHeight(GetDlgItem(body, IDC_LANGUAGE))) / 2,
-            groupWidth - languageWidth - gap, rowHeight + UiScale(body, 160));
-        if (stacked) { y += rowHeight + gap; }
-        const int themeX = stacked ? margin : margin + half + sectionGap;
-        place(IDC_LABEL_THEME, themeX, y + (rowHeight - themeLabel.cy) / 2, themeLabel.cx, themeLabel.cy);
-        place(IDC_THEME, themeX + themeWidth + gap,
-            y + (rowHeight - ComboBoxHeight(GetDlgItem(body, IDC_THEME))) / 2,
-            available + margin - themeX - themeWidth - gap, rowHeight + UiScale(body, 160));
+        const std::array groups{std::pair{IDC_LABEL_LANGUAGE, IDC_LANGUAGE},
+            std::pair{IDC_LABEL_THEME, IDC_THEME}, std::pair{IDC_LABEL_LOG_LINES, IDC_LOG_LINES}};
+        std::array<SIZE, 3> sizes{};
+        const int column = (available - sectionGap * 2) / 3;
+        bool stacked = false;
+        LONG labelColumn = 0;
+        for (size_t index = 0; index < groups.size(); ++index) {
+            sizes[index] = ControlTextSize(GetDlgItem(body, groups[index].first));
+            labelColumn = (std::max)(labelColumn, sizes[index].cx);
+            stacked = stacked || column < sizes[index].cx + gap +
+                UiScale(body, groups[index].second == IDC_LOG_LINES ? 64 : 96);
+        }
+        for (size_t index = 0; index < groups.size(); ++index) {
+            const auto [labelId, inputId] = groups[index];
+            const int x = margin + (stacked ? 0 : static_cast<int>(index) * (column + sectionGap));
+            const int groupWidth = stacked ? available : index + 1 == groups.size()
+                ? available - static_cast<int>(index) * (column + sectionGap) : column;
+            const LONG labelWidth = stacked ? labelColumn : sizes[index].cx;
+            const HWND input = GetDlgItem(body, inputId);
+            const bool number = inputId == IDC_LOG_LINES;
+            const int height = number ? SingleLineControlHeight(input) : ComboBoxHeight(input);
+            place(labelId, x, y + (rowHeight - sizes[index].cy) / 2, sizes[index].cx, sizes[index].cy);
+            place(inputId, x + labelWidth + gap, y + (rowHeight - height) / 2,
+                groupWidth - labelWidth - gap, number ? height : rowHeight + UiScale(body, 160));
+            if (stacked && index + 1 != groups.size()) { y += rowHeight + gap; }
+        }
         y += rowHeight + sectionGap;
         label(IDC_LABEL_EXECUTABLE);
         pathRow(IDC_EXECUTABLE, IDC_BROWSE_EXECUTABLE, SingleLineControlHeight(GetDlgItem(body, IDC_EXECUTABLE)));
@@ -143,13 +203,16 @@ void LayoutSettingsContent(Context& context)
         pathRow(IDC_CONFIG_FILES, IDC_ADD_FILES, static_cast<int>(units.bottom));
         label(IDC_LABEL_CONFIG_DIRECTORY);
         pathRow(IDC_CONFIG_DIRECTORY, IDC_BROWSE_DIRECTORY, SingleLineControlHeight(GetDlgItem(body, IDC_CONFIG_DIRECTORY)));
-        const auto logLabel = ControlTextSize(GetDlgItem(body, IDC_LABEL_LOG_LINES));
-        const int logHeight = SingleLineControlHeight(GetDlgItem(body, IDC_LOG_LINES));
-        const int logRow = (std::max)(static_cast<int>(logLabel.cy), logHeight);
-        place(IDC_LABEL_LOG_LINES, margin, y + (logRow - logLabel.cy) / 2, logLabel.cx, logLabel.cy);
-        place(IDC_LOG_LINES, margin + logLabel.cx + gap, y + (logRow - logHeight) / 2,
-            (std::min)(UiScale(body, 112), available - static_cast<int>(logLabel.cx) - gap), logHeight);
-        y += logRow + sectionGap;
+        const int checkWidth = TextButtonWidth(GetDlgItem(body, IDC_CHECK_CONFIG));
+        const int previewWidth = TextButtonWidth(GetDlgItem(body, IDC_PREVIEW_CONFIG));
+        place(IDC_CHECK_CONFIG, margin, y, (std::min)(available, checkWidth), rowHeight);
+        const bool stackTools = checkWidth + gap + previewWidth > available;
+        if (stackTools) { y += rowHeight + gap; }
+        place(IDC_PREVIEW_CONFIG, stackTools ? margin : margin + checkWidth + gap,
+            y, (std::min)(available, previewWidth), rowHeight);
+        y += rowHeight + gap;
+        label(IDC_HINT_CONFIG_TOOLS);
+        y += sectionGap - gap;
         place(IDC_LOGON_STARTUP, margin, y, available, rowHeight);
         y += rowHeight + sectionGap;
         label(IDC_HINT_RELATIVE);
@@ -432,6 +495,10 @@ void SetDialogLanguage(HWND dialog)
     set(IDC_BROWSE_EXECUTABLE, Text(L"Browse...", L"浏览…"));
     set(IDC_ADD_FILES, Text(L"Add files...", L"添加文件…"));
     set(IDC_BROWSE_DIRECTORY, Text(L"Browse...", L"浏览…"));
+    set(IDC_CHECK_CONFIG, Text(L"Check current configuration", L"检查当前配置"));
+    set(IDC_PREVIEW_CONFIG, Text(L"Preview current configuration", L"预览当前配置"));
+    set(IDC_HINT_CONFIG_TOOLS, Text(L"Uses this form's current contents without saving.",
+        L"使用本窗口当前填写的内容执行，无需先保存。"));
     set(IDC_HINT_RELATIVE, Text(L"Relative paths use the XTray.exe directory.",
         L"相对路径以 XTray.exe 所在目录为基准。"));
     set(IDC_HINT_APPLY, Text(L"Paths apply on the next run/restart; at least one config source is required.",
@@ -454,6 +521,13 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
     if (message == WM_INITDIALOG) {
         context = reinterpret_cast<Context*>(lParam);
         SetWindowLongPtrW(dialog, DWLP_USER, lParam);
+        context->dialog = dialog;
+        activeSettings = context;
+        context->messageFilter = SetWindowsHookExW(WH_MSGFILTER, SettingsMessageFilter, nullptr, GetCurrentThreadId());
+        if (context->messageFilter == nullptr) {
+            throw std::runtime_error(ToUtf8(WindowsError(Text(L"Cannot enable result window keyboard navigation",
+                L"无法初始化结果窗口键盘操作"))));
+        }
         context->theme.Attach(dialog);
         SetDialogIcons(dialog, *context);
         if (CreateDialogParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_SETTINGS_CONTENT),
@@ -489,6 +563,10 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         FitSettingsWindow(dialog, *context);
         LayoutSettings(dialog, *context);
         SetFocus(SettingsControl(dialog, IDC_LANGUAGE));
+        UpdateConfigTools(*context);
+        if (SetTimer(dialog, 1, 100, nullptr) == 0) {
+            throw std::runtime_error(ToUtf8(WindowsError(Text(L"Cannot update settings tools", L"无法更新设置工具状态"))));
+        }
         if (context->automation) {
             PostMessageW(dialog, kAutomateDialog, 0, 0);
         }
@@ -498,6 +576,13 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         return FALSE;
     }
     if (message == WM_NCDESTROY) {
+        context->tools->CloseOwned(dialog);
+        KillTimer(dialog, 1);
+        if (context->messageFilter != nullptr) {
+            UnhookWindowsHookEx(context->messageFilter);
+            context->messageFilter = nullptr;
+        }
+        if (activeSettings == context) { activeSettings = nullptr; }
         context->theme.Detach();
         SetWindowLongPtrW(dialog, DWLP_USER, 0);
         return FALSE;
@@ -505,6 +590,10 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
     if (message == WM_SIZE) {
         LayoutSettings(dialog, *context);
         return FALSE;
+    }
+    if (message == WM_TIMER && wParam == 1) {
+        UpdateConfigTools(*context);
+        return TRUE;
     }
     if (message == WM_MOUSEWHEEL) {
         SendMessageW(context->contents, message, wParam, lParam);
@@ -541,6 +630,20 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         return FALSE;
     }
     switch (LOWORD(wParam)) {
+    case IDC_CHECK_CONFIG:
+    case IDC_PREVIEW_CONFIG: {
+        try {
+            const auto kind = LOWORD(wParam) == IDC_CHECK_CONFIG ? XrayToolKind::Check : XrayToolKind::Preview;
+            context->tools->Open(dialog, kind, ConfigDraft(dialog, context->settings), true,
+                context->theme.Colors().dark, context->quietTools, XrayToolSource::SettingsDraft);
+        } catch (const std::exception& exception) {
+            context->tools->CloseOwned(dialog);
+            if (context->quietTools) { throw; }
+            const auto error = FromUtf8(exception.what());
+            MessageBoxW(dialog, error.c_str(), Text(L"Xray tool", L"Xray 工具"), MB_OK | MB_ICONERROR);
+        }
+        return TRUE;
+    }
     case IDC_BROWSE_EXECUTABLE:
     case IDC_ADD_FILES:
     case IDC_BROWSE_DIRECTORY: {
@@ -565,14 +668,11 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         return TRUE;
     }
     case IDOK: {
-        Settings draft = context->settings;
+        Settings draft = ConfigDraft(dialog, context->settings);
         draft.language = static_cast<Language>(
             SendMessageW(SettingsControl(dialog, IDC_LANGUAGE), CB_GETCURSEL, 0, 0));
         draft.theme = static_cast<ThemeMode>(
             SendMessageW(SettingsControl(dialog, IDC_THEME), CB_GETCURSEL, 0, 0));
-        draft.executable = WindowText(SettingsControl(dialog, IDC_EXECUTABLE));
-        draft.configDirectory = WindowText(SettingsControl(dialog, IDC_CONFIG_DIRECTORY));
-        draft.configFiles = SplitConfigFiles(WindowText(SettingsControl(dialog, IDC_CONFIG_FILES)));
         const auto number = WindowText(SettingsControl(dialog, IDC_LOG_LINES));
         wchar_t* end = nullptr;
         errno = 0;
@@ -630,9 +730,10 @@ std::wstring WindowText(HWND window)
 }
 
 bool EditSettings(HWND owner, const std::filesystem::path& root, Settings& settings, Logs& logs,
-    StartupRegistration& startup)
+    StartupRegistration& startup, XrayToolWindow* tools)
 {
     Context context{root, settings, logs, startup};
+    if (tools != nullptr) { context.tools = tools; }
     const INT_PTR result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_SETTINGS),
         owner, SettingsProcedure, reinterpret_cast<LPARAM>(&context));
     if (result == -1) {
@@ -655,6 +756,7 @@ bool EditSettings(HWND owner, const std::filesystem::path& root, Settings& setti
 bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
 {
     std::fwprintf(stderr, L"Smoke: settings scroll viewport, fixed footer, and text-sized buttons.\n");
+    std::filesystem::create_directories(root);
     const auto language = CurrentLanguage();
     bool passed = true;
     for (const auto selected : {Language::English, Language::Chinese}) {
@@ -665,6 +767,7 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
         MemoryStartupRegistry registry;
         StartupRegistration startup(root, CurrentExecutable(), &registry);
         Context context{root, settings, logs, startup};
+        context.quietTools = true;
         context.automation = [&](HWND window) {
             const auto checkCaption = [&] {
                 if (WindowText(window) != Text(L"Settings", L"设置") ||
@@ -699,7 +802,8 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
             const HWND themeChoice = SettingsControl(window, IDC_THEME);
             passed = passed && GetFocus() == languageChoice &&
                 GetNextDlgTabItem(window, languageChoice, FALSE) == themeChoice &&
-                GetNextDlgTabItem(window, themeChoice, FALSE) == SettingsControl(window, IDC_EXECUTABLE);
+                GetNextDlgTabItem(window, themeChoice, FALSE) == SettingsControl(window, IDC_LOG_LINES) &&
+                GetNextDlgTabItem(window, SettingsControl(window, IDC_LOG_LINES), FALSE) == SettingsControl(window, IDC_EXECUTABLE);
             const auto dispatchFocusMessages = [&] {
                 MSG pending{};
                 while (PeekMessageW(&pending, context.contents, kEnsureSettingVisible, kEnsureSettingVisible, PM_REMOVE)) {
@@ -713,7 +817,7 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
             };
             const auto checkAlignment = [&] {
                 for (const auto& [labelId, inputId] : {std::pair{IDC_LABEL_LANGUAGE, IDC_LANGUAGE},
-                    std::pair{IDC_LABEL_THEME, IDC_THEME}}) {
+                    std::pair{IDC_LABEL_THEME, IDC_THEME}, std::pair{IDC_LABEL_LOG_LINES, IDC_LOG_LINES}}) {
                     RECT label{}, input{};
                     GetWindowRect(SettingsControl(window, labelId), &label);
                     GetWindowRect(SettingsControl(window, inputId), &input);
@@ -731,11 +835,26 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                 GetWindowRect(themeChoice, &themeInput);
                 GetWindowRect(SettingsControl(window, IDOK), &save);
                 GetWindowRect(SettingsControl(window, IDCANCEL), &cancel);
+                RECT logLabel{}, logInput{};
+                GetWindowRect(SettingsControl(window, IDC_LABEL_LOG_LINES), &logLabel);
+                GetWindowRect(SettingsControl(window, IDC_LOG_LINES), &logInput);
                 if (languageLabel.left == themeLabel.left) {
                     if (languageInput.left != themeInput.left || languageInput.right != themeInput.right ||
-                        themeLabel.top <= languageInput.bottom) { return false; }
-                } else if (std::abs(languageInput.top + languageInput.bottom - themeInput.top - themeInput.bottom) > 1) {
-                    return false;
+                        logInput.left != languageInput.left || logInput.right != languageInput.right ||
+                        logLabel.left != languageLabel.left || themeLabel.top <= languageInput.bottom ||
+                        logLabel.top <= themeInput.bottom) { return false; }
+                } else {
+                    const LONG firstWidth = languageInput.right - languageLabel.left;
+                    const LONG secondWidth = themeInput.right - themeLabel.left;
+                    const LONG thirdWidth = logInput.right - logLabel.left;
+                    if (std::abs(languageInput.top + languageInput.bottom - themeInput.top - themeInput.bottom) > 1 ||
+                        std::abs(languageInput.top + languageInput.bottom - logInput.top - logInput.bottom) > 1 ||
+                        std::abs(firstWidth - secondWidth) > 2 || std::abs(firstWidth - thirdWidth) > 2 ||
+                        themeLabel.left - languageInput.right != UiScale(window, 14) ||
+                        logLabel.left - themeInput.right != UiScale(window, 14)) {
+                        std::fwprintf(stderr, L"Smoke: settings top row is not three equal columns.\n");
+                        return false;
+                    }
                 }
                 RECT browse{};
                 GetWindowRect(SettingsControl(window, IDC_BROWSE_EXECUTABLE), &browse);
@@ -860,11 +979,66 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
             SendMessageW(window, kRefreshDialogTheme, 0, 0);
             passed = checkCaption() && checkInputs() && checkAlignment() && passed &&
                 context.contentTheme.Colors().dark && SmokeTestNativeControl(checkbox);
+
+            std::fwprintf(stderr, L"Smoke: settings draft tools, saved-settings isolation, keyboard navigation, and owner cancellation.\n");
+            const auto original = settings;
+            SetWindowTextW(executable, (CurrentExecutable().parent_path() / L"XTray.Tests.exe").c_str());
+            SetWindowTextW(SettingsControl(window, IDC_CONFIG_FILES), L".\\tool-ok.conf\r\n.\\重复 ;= config.json");
+            SetWindowTextW(SettingsControl(window, IDC_CONFIG_DIRECTORY), L"..\\draft configs\\");
+            SetWindowTextW(SettingsControl(window, IDC_LOG_LINES), L"0");
+            SendMessageW(SettingsControl(window, IDC_CHECK_CONFIG), BM_CLICK, 0, 0);
+            SetWindowTextW(SettingsControl(window, IDC_CONFIG_FILES), L".\\tool-fail.conf");
+            const auto waitTool = [&] {
+                const auto until = GetTickCount64() + 4000;
+                while (context.tools->Running() && GetTickCount64() < until) {
+                    MSG pending{};
+                    while (PeekMessageW(&pending, nullptr, 0, 0, PM_REMOVE)) {
+                        if (pending.message == WM_QUIT) {
+                            PostQuitMessage(static_cast<int>(pending.wParam));
+                            return false;
+                        }
+                        if (!context.tools->Translate(pending) && !IsDialogMessageW(window, &pending)) {
+                            TranslateMessage(&pending);
+                            DispatchMessageW(&pending);
+                        }
+                    }
+                    Sleep(5);
+                }
+                SendMessageW(context.tools->Window(), WM_TIMER, 1, 0);
+                return !context.tools->Running();
+            };
+            passed = waitTool() && passed;
+            const HWND result = context.tools->Window();
+            passed = passed && result != nullptr && GetWindow(result, GW_OWNER) == window &&
+                WindowText(result) == Text(L"Check current configuration", L"检查当前配置") &&
+                WindowText(GetDlgItem(result, 4103)).find(Text(L"passed", L"通过")) != std::wstring::npos &&
+                WindowText(GetDlgItem(result, 4101)).find(L"-config=.\\tool-ok.conf") != std::wstring::npos &&
+                WindowText(GetDlgItem(result, 4105)).find(Text(L"current settings form", L"设置窗口当前填写")) != std::wstring::npos;
+            ShowWindow(result, SW_SHOWNOACTIVATE);
+            SetFocus(GetDlgItem(result, 4102));
+            MSG tabTool{};
+            tabTool.hwnd = GetDlgItem(result, 4102);
+            tabTool.message = WM_KEYDOWN;
+            tabTool.wParam = VK_TAB;
+            passed = CallMsgFilterW(&tabTool, MSGF_DIALOGBOX) &&
+                GetFocus() == GetDlgItem(result, 4104) && passed;
+            SetFocus(executable);
+            SetWindowTextW(SettingsControl(window, IDC_CONFIG_FILES), L".\\tool-ok.conf");
+            SendMessageW(SettingsControl(window, IDC_PREVIEW_CONFIG), BM_CLICK, 0, 0);
+            passed = waitTool() && passed;
+            passed = passed && WindowText(context.tools->Window()) == Text(L"Preview current configuration", L"预览当前配置") &&
+                WindowText(GetDlgItem(context.tools->Window(), 4101)).find(L"-dump\r\n") != std::wstring::npos &&
+                settings.executable == original.executable && settings.configFiles == original.configFiles &&
+                settings.configDirectory == original.configDirectory && settings.logLines == original.logLines &&
+                registry.writes == 0 && !std::filesystem::exists(root / L"data" / L"settings.ini");
+            SetWindowTextW(SettingsControl(window, IDC_CONFIG_FILES), L".\\tool-hold.conf");
+            SendMessageW(SettingsControl(window, IDC_PREVIEW_CONFIG), BM_CLICK, 0, 0);
             SendMessageW(window, WM_COMMAND, IDCANCEL, 0);
         };
         const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_SETTINGS),
             owner, SettingsProcedure, reinterpret_cast<LPARAM>(&context));
-        if (result != IDCANCEL || context.error || !passed || registry.writes != 0) {
+        if (result != IDCANCEL || context.error || !passed || registry.writes != 0 ||
+            context.tools->Window() != nullptr || context.tools->Running()) {
             ApplyLanguage(language);
             return false;
         }
@@ -889,7 +1063,8 @@ bool SmokeTestSettingsTheme(HWND owner, const std::filesystem::path& root)
                 static_cast<LRESULT>(expected);
             std::fwprintf(stderr, L"Smoke: settings native buttons, checkbox, and combo boxes.\n");
             for (const int id : {IDOK, IDCANCEL, IDC_BROWSE_EXECUTABLE, IDC_ADD_FILES,
-                IDC_BROWSE_DIRECTORY, IDC_LOGON_STARTUP, IDC_LANGUAGE, IDC_THEME}) {
+                IDC_BROWSE_DIRECTORY, IDC_CHECK_CONFIG, IDC_PREVIEW_CONFIG,
+                IDC_LOGON_STARTUP, IDC_LANGUAGE, IDC_THEME}) {
                 passed = SmokeTestNativeControl(SettingsControl(window, id)) && passed;
             }
             const auto before = context.theme.Colors();

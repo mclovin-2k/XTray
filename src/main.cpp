@@ -43,7 +43,7 @@ constexpr UINT kExitMessage = WM_APP + 43;
 constexpr UINT kRuntimeFailureTestMessage = WM_APP + 49;
 constexpr DWORD kWindowStyle = WS_OVERLAPPEDWINDOW;
 enum ControlId { Run = 2001, Stop, Restart, SettingsButton, FileList, OpenFile,
-    OpenFileDirectory, OpenDirectory, Filter, ClearLogs, ScrollToEnd, ShowGui, ExitApp, CheckConfig, PreviewConfig, ShowVersion, CopyLogs, WordWrap };
+    OpenFileDirectory, OpenDirectory, Filter, ClearLogs, ScrollToEnd, ShowGui, ExitApp, CheckConfig, PreviewConfig, ShowVersion, CopyLogs, WordWrap, ShowRunInfo };
 enum IconId { StoppedTrayIcon, RunningTrayIcon, StoppedStatusIcon, RunningStatusIcon,
     SmallWindowIcon, LargeWindowIcon, IconCount };
 
@@ -180,12 +180,13 @@ class Application {
 public:
     Application(std::filesystem::path root, bool smokeTest)
         : root_(std::move(root)), startup_(root_, ExecutablePath()),
-          process_(root_, logs_), toolWindow_(root_), smokeTest_(smokeTest),
+          process_(root_, logs_), toolWindow_(root_), runInfoWindow_(root_), smokeTest_(smokeTest),
           tray_(smokeTest ? SmokeNotifyIcon : Shell_NotifyIconW) {}
     ~Application()
     {
         themeMonitor_.reset();
         toolWindow_.Close();
+        runInfoWindow_.Close();
         process_.Shutdown();
         tray_.Remove();
         if (IsWindow(window_)) {
@@ -396,7 +397,7 @@ public:
             (id == Run || id == Stop || id == Restart || id == SettingsButton ||
                 id == OpenFile || id == OpenFileDirectory || id == OpenDirectory ||
                 id == CopyLogs || id == WordWrap || id == ClearLogs || id == ScrollToEnd || id == ExitApp ||
-                id == CheckConfig || id == PreviewConfig || id == ShowVersion);
+                id == CheckConfig || id == PreviewConfig || id == ShowVersion || id == ShowRunInfo);
         const bool selection = notification == CBN_SELCHANGE && (id == FileList || id == Filter);
         // Native controls notify their parent during creation and programmatic updates.
         if (!ready_ || updatingUi_ || (!button && !selection)) {
@@ -406,7 +407,16 @@ public:
             Exit();
             return;
         }
-        if (id == CheckConfig || id == PreviewConfig || id == ShowVersion) {
+        if (id == ShowRunInfo) {
+            try {
+                runInfoWindow_.OpenRunInfo(window_, process_, theme_.Colors().dark, smokeTest_);
+            } catch (const std::exception& exception) {
+                runInfoWindow_.Close();
+                if (smokeTest_) { throw; }
+                const auto error = FromUtf8(exception.what());
+                MessageBoxW(window_, error.c_str(), Text(L"Xray run information", L"Xray 运行信息"), MB_OK | MB_ICONERROR);
+            }
+        } else if (id == CheckConfig || id == PreviewConfig || id == ShowVersion) {
             const auto kind = id == CheckConfig ? XrayToolKind::Check
                 : id == PreviewConfig ? XrayToolKind::Preview : XrayToolKind::Version;
             try {
@@ -418,7 +428,7 @@ public:
                 MessageBoxW(window_, error.c_str(), Text(L"Xray tool", L"Xray 工具"), MB_OK | MB_ICONERROR);
             }
         } else if (id == SettingsButton) {
-            if (EditSettings(window_, root_, settings_, logs_, startup_)) {
+            if (EditSettings(window_, root_, settings_, logs_, startup_, &toolWindow_)) {
                 settingsValid_ = true;
                 ApplyUiText();
                 UpdateTheme(themeMonitor_->SystemDark());
@@ -546,6 +556,7 @@ public:
         KillTimer(window_, 1);
         tray_.Remove();
         toolWindow_.Close();
+        runInfoWindow_.Close();
         process_.Shutdown();
         DestroyWindow(window_);
     }
@@ -619,7 +630,10 @@ public:
         }
     }
 
-    bool TranslateToolMessage(MSG& message) const { return toolWindow_.Translate(message); }
+    bool TranslateToolMessage(MSG& message) const
+    {
+        return toolWindow_.Translate(message) || runInfoWindow_.Translate(message);
+    }
 
     bool IsExiting() const { return exiting_; }
     std::exception_ptr runtimeError;
@@ -704,8 +718,10 @@ private:
         require(AppendMenuW(file.value, MF_STRING, SettingsButton, L"Settings") != FALSE);
         require(AppendMenuW(file.value, MF_SEPARATOR, 0, nullptr) != FALSE);
         require(AppendMenuW(file.value, MF_STRING, ExitApp, L"Exit") != FALSE);
-        require(AppendMenuW(tools.value, MF_STRING, CheckConfig, L"Check Xray configuration") != FALSE);
-        require(AppendMenuW(tools.value, MF_STRING, PreviewConfig, L"Preview Xray configuration") != FALSE);
+        require(AppendMenuW(tools.value, MF_STRING, ShowRunInfo, L"Show run information") != FALSE);
+        require(AppendMenuW(tools.value, MF_SEPARATOR, 0, nullptr) != FALSE);
+        require(AppendMenuW(tools.value, MF_STRING, CheckConfig, L"Check saved configuration") != FALSE);
+        require(AppendMenuW(tools.value, MF_STRING, PreviewConfig, L"Preview saved configuration") != FALSE);
         require(AppendMenuW(tools.value, MF_STRING, ShowVersion, L"Show Xray version") != FALSE);
         fileMenu_ = file.value;
         xrayMenu_ = tools.value;
@@ -739,8 +755,9 @@ private:
         const std::array captions{
             std::pair{SettingsButton, Text(L"Settings", L"设置")},
             std::pair{ExitApp, Text(L"Exit", L"退出")},
-            std::pair{CheckConfig, Text(L"Check Xray configuration", L"检查 Xray 配置")},
-            std::pair{PreviewConfig, Text(L"Preview Xray configuration", L"预览 Xray 配置")},
+            std::pair{ShowRunInfo, Text(L"Show run information", L"查看运行信息")},
+            std::pair{CheckConfig, Text(L"Check saved configuration", L"检查已保存配置")},
+            std::pair{PreviewConfig, Text(L"Preview saved configuration", L"预览已保存配置")},
             std::pair{ShowVersion, Text(L"Show Xray version", L"显示 Xray 版本")}
         };
         for (const auto& [id, caption] : captions) {
@@ -760,7 +777,9 @@ private:
         const auto language = CurrentLanguage();
         const auto appearance = settings_.theme;
         bool passed = GetMenu(window_) == menuBar_ && GetMenuItemCount(menuBar_) == 2 &&
-            GetMenuItemCount(fileMenu_) == 3 && GetMenuItemCount(xrayMenu_) == 3 &&
+            GetMenuItemCount(fileMenu_) == 3 && GetMenuItemCount(xrayMenu_) == 5 &&
+            GetMenuItemID(xrayMenu_, 0) == ShowRunInfo &&
+            (GetMenuState(xrayMenu_, 1, MF_BYPOSITION) & MF_SEPARATOR) != 0 &&
             GetMenuItemID(fileMenu_, 0) == SettingsButton && GetMenuItemID(fileMenu_, 2) == ExitApp &&
             GetDlgItem(window_, SettingsButton) == nullptr;
         for (const auto selected : {Language::English, Language::Chinese}) {
@@ -772,17 +791,17 @@ private:
                 UpdateTheme(false);
                 wchar_t title[128]{};
                 GetMenuStringW(xrayMenu_, PreviewConfig, title, static_cast<int>(std::size(title)), MF_BYCOMMAND);
-                const bool caption = std::wstring_view(title) == Text(L"Preview Xray configuration", L"预览 Xray 配置");
+                const bool caption = std::wstring_view(title) == Text(L"Preview saved configuration", L"预览已保存配置");
                 if (!caption) {
                     std::fwprintf(stderr, L"Smoke: main menu language failed (dark=%d, caption=%ls).\n", dark, title);
                 }
                 passed = caption && passed;
-                for (int position = 0; position < 3; ++position) {
+                for (int position = 2; position < 5; ++position) {
                     MENUITEMINFOW item{sizeof(MENUITEMINFOW)};
                     item.fMask = MIIM_FTYPE | MIIM_ID;
                     passed = GetMenuItemInfoW(xrayMenu_, position, TRUE, &item) &&
                         ((item.fType & MFT_OWNERDRAW) != 0) == dark &&
-                        item.wID == static_cast<UINT>(CheckConfig + position) && passed;
+                        item.wID == static_cast<UINT>(CheckConfig + position - 2) && passed;
                 }
                 const bool rendering = menuTheme_.SmokeTest();
                 passed = rendering && passed;
@@ -957,6 +976,7 @@ private:
         }
         theme_.ApplyOwned(dark);
         toolWindow_.SetAppearance(dark);
+        runInfoWindow_.SetAppearance(dark);
         UpdateMenus();
     }
 
@@ -1074,6 +1094,7 @@ private:
         UpdateTooltips();
         UpdateMenus();
         toolWindow_.RefreshLanguage();
+        runInfoWindow_.RefreshLanguage();
         shownPid_ = MAXDWORD;
         updatingUi_ = false;
         Layout();
@@ -2267,6 +2288,7 @@ private:
     Logs logs_;
     XrayProcess process_;
     XrayToolWindow toolWindow_;
+    XrayToolWindow runInfoWindow_;
     bool smokeTest_;
     TrayIcon tray_;
     ThemeWindow theme_;

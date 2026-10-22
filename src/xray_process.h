@@ -5,6 +5,7 @@
 #include "win32.h"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <mutex>
 #include <optional>
@@ -13,6 +14,19 @@
 namespace xtray {
 
 enum class ProcessState { Stopped, Starting, Running, Stopping };
+
+struct XrayRunInfo {
+    bool attempted = false;
+    std::filesystem::path executable;
+    std::wstring commandLine;
+    std::filesystem::path workingDirectory;
+    ProcessState state = ProcessState::Stopped;
+    DWORD pid = 0;
+    std::optional<std::chrono::system_clock::time_point> started, ended;
+    std::chrono::steady_clock::duration elapsed{};
+    std::optional<DWORD> exitCode;
+    std::wstring error;
+};
 
 class XrayProcess {
 public:
@@ -26,6 +40,7 @@ public:
     void Shutdown();
     ProcessState State() const { return state_.load(); }
     DWORD Pid() const { return pid_.load(); }
+    XrayRunInfo RunInfo() const;
 private:
     enum class Operation { Run, Stop, Restart };
     struct Command { Operation operation; Settings settings; };
@@ -39,6 +54,9 @@ private:
     Logs& logs_;
     std::atomic<ProcessState> state_{ProcessState::Stopped};
     std::atomic<DWORD> pid_{0};
+    mutable std::mutex infoMutex_;
+    XrayRunInfo info_;
+    std::chrono::steady_clock::time_point startedAt_{};
     std::mutex mutex_;
     std::condition_variable wake_;
     std::optional<Command> pending_;

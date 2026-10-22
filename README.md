@@ -51,6 +51,11 @@ Both configuration inputs start empty. Select at least one configuration file or
 one configuration directory before running. Multiple configuration files and a
 configuration directory can be used together.
 
+Language, appearance and the per-source log line limit share three equal columns
+at the top of Settings. **Check current configuration** and **Preview current
+configuration**, below the configuration directory, use the paths currently
+entered in the form without saving or changing the running Xray process.
+
 You can choose files outside the XTray folder or enter relative paths. Relative
 paths are resolved from the folder containing `XTray.exe`.
 
@@ -75,8 +80,9 @@ together, depending on your setup.
 
 XTray passes `-confdir` before the ordered `-config` arguments. Argument placement
 does not guarantee merge precedence: the Xray versions checked still merge the
-directory after explicitly listed files. Use **Xray Tools → Preview Xray
-configuration** to inspect the result when settings overlap.
+directory after explicitly listed files. Use **Xray Tools → Preview saved
+configuration**, or **Preview current configuration** in Settings, to inspect
+the result when settings overlap.
 
 ## Everyday use
 
@@ -106,22 +112,37 @@ executable path or your configuration, then try again.
 ## Xray tools
 
 The **Xray Tools** menu uses the Xray executable and settings saved in
-**File → Settings**:
+**File → Settings** for configuration checks, previews and version queries:
 
-- **Check Xray configuration:** runs Xray's configuration check and shows the
-  original output and exit code. It does not start the proxy server.
-- **Preview Xray configuration:** shows the merged configuration from the
+- **Show run information:** the first menu item shows the actual executable,
+  full command line, working directory, status, PID, start time and run duration
+  for the latest launch attempt in this XTray session. After the process exits,
+  its end time and exit code remain available. Failed launches show their error;
+  before the first attempt, there is no record. Editing settings does not alter
+  a recorded launch. This independent window does not stop Xray when closed;
+  the record is released when XTray exits.
+- **Check saved configuration:** runs Xray's configuration check using the saved
+  executable and configuration paths, and shows the original output and exit
+  code. It does not start the proxy server.
+- **Preview saved configuration:** shows the merged configuration from the
   saved sources currently on disk. This is a read-only preview, not the
   running process's in-memory configuration.
 - **Show Xray version:** shows the executable path and Xray's version/build
   information. Configuration files are not required.
 
+**Check current configuration** and **Preview current configuration** in Settings
+use a snapshot of the form at the time of the click. Later edits do not change
+an active task. These actions do not save settings. All checks, previews and
+version queries share one tool task and result window. Results identify whether
+they use saved settings or the current form. A result opened from Settings closes
+with that dialog and cancels any unfinished task.
+
 Tools run independently of the managed proxy, with one tool task at a time.
-The result window has **Copy all** and a word-wrap toggle above the output.
+The run information and result windows have **Copy all** and a word-wrap toggle above the output.
 Word wrap starts off for each new result window; its setting is kept only until
 that window closes. With wrapping off, horizontal scrolling is available.
 Copying always includes the full result with its original line breaks.
-The full output is separate from the runtime log limit. Closing the result
+The full output is separate from the runtime log limit. Closing a command result
 window cancels an unfinished task. Results are kept only in memory until that
 window is closed.
 

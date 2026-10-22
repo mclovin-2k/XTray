@@ -769,10 +769,15 @@ void TestProcesses(const std::filesystem::path& root)
 {
     Logs logs(64);
     XrayProcess process(root, logs);
+    Check(!process.RunInfo().attempted, "A new process manager reported a nonexistent run.");
     process.Run(Settings{});
     Check(WaitUntil([&] { return process.State() == ProcessState::Stopped; }) &&
         HasText(logs, LogSource::Tray, L"至少设置") && process.Pid() == 0,
         "Empty configuration sources did not fail before launch.");
+    const auto invalid = process.RunInfo();
+    Check(invalid.attempted && !invalid.started && !invalid.ended && invalid.pid == 0 &&
+        !invalid.exitCode && !invalid.error.empty() && invalid.workingDirectory == root,
+        "A rejected launch fabricated process data or lost its diagnostic.");
 
     for (int retry = 0; retry < 20; ++retry) {
         Check(process.Run(Settings{}), "A completed operation still rejects the next command.");
@@ -785,12 +790,20 @@ void TestProcesses(const std::filesystem::path& root)
     process.Run(missing);
     Check(WaitUntil([&] { return process.State() == ProcessState::Stopped; }) &&
         HasText(logs, LogSource::Tray, L"启动 Xray 失败"), "CreateProcess failure was not logged.");
+    const auto missingInfo = process.RunInfo();
+    Check(missingInfo.executable == ResolvePath(root, missing.executable) &&
+        missingInfo.commandLine.find(L"-confdir " + QuoteArgument(missing.configDirectory)) != std::wstring::npos &&
+        missingInfo.pid == 0 && !missingInfo.started && !missingInfo.exitCode && !missingInfo.error.empty(),
+        "CreateProcess failure lost its attempted executable, arguments, or error.");
 
     process.Run(FakeSettings(root, L"fail.conf"));
     Check(WaitUntil([&] { return process.State() == ProcessState::Stopped; }) &&
         HasText(logs, LogSource::Xray, L"错误: fake failure") &&
         HasText(logs, LogSource::Tray, L"退出码 23") &&
         HasText(logs, LogSource::Xray, L"\uFFFD"), "Early failure output or exit code was lost.");
+    const auto failed = process.RunInfo();
+    Check(failed.pid != 0 && failed.started && failed.ended && failed.exitCode == 23 && failed.error.empty(),
+        "An early-exit run lost its PID, timestamps, or actual exit code.");
 
     auto settings = FakeSettings(root);
     const std::wstring alternateDrive = root.root_name().native() == L"Z:" ? L"Y:" : L"Z:";
@@ -800,6 +813,18 @@ void TestProcesses(const std::filesystem::path& root)
         "Live partial stdout was not received.");
     Check(process.State() == ProcessState::Running && process.Pid() != 0,
         "Running status is incorrect.");
+    const auto runningInfo = process.RunInfo();
+    Check(runningInfo.attempted && runningInfo.pid == process.Pid() && runningInfo.started &&
+        !runningInfo.ended && !runningInfo.exitCode && runningInfo.error.empty() &&
+        runningInfo.executable == ExecutablePath() && runningInfo.workingDirectory == root &&
+        runningInfo.commandLine.starts_with(QuoteArgument(ExecutablePath().native()) + L" run -confdir ") &&
+        runningInfo.commandLine.find(L"-config " + QuoteArgument(settings.configFiles[2])) != std::wstring::npos,
+        "Run information does not describe the actual executable, PID, cwd, and arguments.");
+    const auto originalFiles = settings.configFiles;
+    settings.configFiles = {L"edited after launch.json"};
+    Check(process.RunInfo().commandLine == runningInfo.commandLine,
+        "Editing settings retroactively changed the actual launch record.");
+    settings.configFiles = originalFiles;
     Check(HasText(logs, LogSource::Xray, L"console=0"), "The child acquired a console.");
     Check(HasText(logs, LogSource::Xray, L"cwd=" + root.native()), "Child working directory is incorrect.");
     Check(HasText(logs, LogSource::Xray, L"-config=" + settings.configFiles[0]) &&
@@ -830,6 +855,10 @@ void TestProcesses(const std::filesystem::path& root)
         process.Pid() != oldPid; }), "Restart did not create a new process.");
     Check(old && WaitForSingleObject(old.Get(), 0) == WAIT_OBJECT_0,
         "Restart created a replacement before the old process exited.");
+    const auto restarted = process.RunInfo();
+    Check(restarted.pid == process.Pid() && restarted.pid != runningInfo.pid &&
+        restarted.started && !restarted.ended && !restarted.exitCode,
+        "Restart did not replace the previous run record.");
     Check(HasText(logs, LogSource::Tray, L"retained tray marker"), "Restart removed XTray logs.");
     Check(WaitUntil([&] { return HasText(logs, LogSource::Xray, L"中文 stdout"); }),
         "The restarted child did not produce output before the language switch.");
@@ -837,6 +866,11 @@ void TestProcesses(const std::filesystem::path& root)
     Check(WaitUntil([&] { return process.Stop(); }), "Stop request was rejected.");
     Check(WaitUntil([&] { return process.State() == ProcessState::Stopped; }),
         "Stop did not finish.");
+    const auto stopped = process.RunInfo();
+    Check(stopped.pid == restarted.pid && stopped.started == restarted.started && stopped.ended &&
+        stopped.exitCode == ERROR_CANCELLED && stopped.elapsed >= restarted.elapsed &&
+        process.RunInfo().elapsed == stopped.elapsed && stopped.commandLine == restarted.commandLine,
+        "Stopping lost the last run or kept increasing its duration.");
     Check(HasText(logs, LogSource::Tray, L"Stopping Xray.") &&
         HasText(logs, LogSource::Tray, L"Xray 已启动") &&
         HasText(logs, LogSource::Xray, L"中文 stdout"),

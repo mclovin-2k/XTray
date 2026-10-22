@@ -41,6 +41,17 @@ XrayProcess::~XrayProcess()
     Shutdown();
 }
 
+XrayRunInfo XrayProcess::RunInfo() const
+{
+    std::lock_guard lock(infoMutex_);
+    auto result = info_;
+    result.state = State();
+    if (result.started && !result.ended) {
+        result.elapsed = std::chrono::steady_clock::now() - startedAt_;
+    }
+    return result;
+}
+
 bool XrayProcess::Run(Settings settings)
 {
     return Enqueue({Operation::Run, std::move(settings)});
@@ -128,7 +139,12 @@ void XrayProcess::Worker()
         }
         StopProcess();
     } catch (const std::exception& exception) {
-        logs_.Tray(Text(L"Process management error: ", L"进程管理错误：") + FromUtf8(exception.what()) + Text(L"; exit XTray and open it again.", L"；请退出 XTray 后重新打开。"));
+        const auto error = Text(L"Process management error: ", L"进程管理错误：") + FromUtf8(exception.what()) + Text(L"; exit XTray and open it again.", L"；请退出 XTray 后重新打开。"));
+        logs_.Tray(error);
+        {
+            std::lock_guard lock(infoMutex_);
+            info_.error = error;
+        }
         std::lock_guard lock(mutex_);
         quit_ = true;
         busy_ = false;
@@ -139,6 +155,11 @@ void XrayProcess::Worker()
         WaitForSingleObject(process_.Get(), 5000);
         DrainOutput();
         logs_.FinishXray();
+        std::lock_guard lock(infoMutex_);
+        info_.ended = std::chrono::system_clock::now();
+        info_.elapsed = std::chrono::steady_clock::now() - startedAt_;
+        DWORD code = 0;
+        if (GetExitCodeProcess(process_.Get(), &code) && code != STILL_ACTIVE) { info_.exitCode = code; }
     }
     output_.Reset();
     process_.Reset();
@@ -149,7 +170,28 @@ void XrayProcess::Worker()
 void XrayProcess::StartProcess(const Settings& settings)
 {
     logs_.ClearXray();
+    const auto executable = settings.executable.empty() ? std::filesystem::path{}
+        : ResolvePath(root_, settings.executable);
+    std::wstring command = QuoteArgument(executable.native()) + L" run";
+    if (!settings.configDirectory.empty()) {
+        command += L" -confdir " + QuoteArgument(settings.configDirectory);
+    }
+    for (const auto& config : settings.configFiles) {
+        command += L" -config " + QuoteArgument(config);
+    }
+    {
+        std::lock_guard lock(infoMutex_);
+        info_ = {};
+        info_.attempted = true;
+        info_.executable = executable;
+        info_.commandLine = command;
+        info_.workingDirectory = root_;
+    }
     const auto fail = [this](const std::wstring& error) {
+        {
+            std::lock_guard lock(infoMutex_);
+            info_.error = error;
+        }
         logs_.Tray(error);
     };
     if (settings.configFiles.empty() && settings.configDirectory.empty()) {
@@ -161,17 +203,9 @@ void XrayProcess::StartProcess(const Settings& settings)
         return;
     }
 
-    const auto executable = ResolvePath(root_, settings.executable);
     if (!executable.is_absolute()) {
         fail(Text(L"Cannot resolve the Xray executable path. Use an absolute path or a path relative to XTray.", L"无法解析 Xray 程序路径，请使用绝对路径或相对于 XTray 目录的路径。"));
         return;
-    }
-    std::wstring command = QuoteArgument(executable.native()) + L" run";
-    if (!settings.configDirectory.empty()) {
-        command += L" -confdir " + QuoteArgument(settings.configDirectory);
-    }
-    for (const auto& config : settings.configFiles) {
-        command += L" -config " + QuoteArgument(config);
     }
     if (command.size() >= 32767) {
         fail(Text(L"The Xray command exceeds the Windows length limit. Use fewer configuration files or shorter paths.", L"Xray 启动命令超过 Windows 长度限制，请减少配置文件数量或缩短路径。"));
@@ -247,6 +281,12 @@ void XrayProcess::StartProcess(const Settings& settings)
     job_ = std::move(job);
     output_ = std::move(output);
     input.Reset();
+    {
+        std::lock_guard lock(infoMutex_);
+        info_.pid = information.dwProcessId;
+        info_.started = std::chrono::system_clock::now();
+        startedAt_ = std::chrono::steady_clock::now();
+    }
     pid_ = information.dwProcessId;
     logs_.Tray(Text(L"Xray started, PID ", L"Xray 已启动，PID ") + std::to_wstring(information.dwProcessId) + Text(L".", L"。"));
 }
@@ -288,8 +328,15 @@ void XrayProcess::DrainOutput()
 void XrayProcess::FinishProcess()
 {
     DWORD code = 0;
-    if (!GetExitCodeProcess(process_.Get(), &code)) {
+    const bool hasCode = GetExitCodeProcess(process_.Get(), &code) != FALSE;
+    if (!hasCode) {
         logs_.Tray(WindowsError(Text(L"Cannot read the Xray exit code", L"读取 Xray 退出码失败")));
+    }
+    {
+        std::lock_guard lock(infoMutex_);
+        info_.ended = std::chrono::system_clock::now();
+        info_.elapsed = std::chrono::steady_clock::now() - startedAt_;
+        if (hasCode) { info_.exitCode = code; }
     }
     job_.Reset();
     DrainOutput();
