@@ -390,8 +390,9 @@ void MenuTheme::Draw(const Item& item, const DRAWITEMSTRUCT& drawing) const
     Fill(drawing.hDC, drawing.rcItem, background);
     RECT text = drawing.rcItem;
     if (item.separator) {
-        text.left += checkColumn_ * 2 + margins_.cxLeftWidth;
-        text.right -= margins_.cxRightWidth;
+        const int inset = (std::max)(margins_.cxLeftWidth, margins_.cxRightWidth);
+        text.left += inset;
+        text.right -= inset;
         text.top = (text.top + text.bottom) / 2;
         text.bottom = text.top + 1;
         Fill(drawing.hDC, text, colors_.border);
@@ -622,7 +623,8 @@ bool MenuTheme::SmokeTest()
             return false;
         }
         const auto measured = Measure(*item);
-        const int width = (std::max)(1L, measured.cx + checkColumn_ * 2);
+        const int width = item->separator ? MulDiv(240, dpi_, 96) :
+            (std::max)(1L, measured.cx + checkColumn_ * 2);
         const int height = (std::max)(1L, measured.cy);
         Canvas canvas(width, height);
         if (!canvas) { return false; }
@@ -645,7 +647,23 @@ bool MenuTheme::SmokeTest()
                 std::fwprintf(stderr, L"Smoke: main menu neutral background failed (state=%u).\n", state);
                 return false;
             }
-            if (!item->separator) {
+            if (item->separator) {
+                int first = width, last = -1, count = 0;
+                for (int x = 0; x < width; ++x) {
+                    if (GetPixel(canvas.device, x, height / 2) == colors_.border) {
+                        first = (std::min)(first, x);
+                        last = x;
+                        ++count;
+                    }
+                }
+                if (last < first || first != width - last - 1 || first > width / 8 ||
+                    count != last - first + 1) {
+                    std::fwprintf(stderr,
+                        L"Smoke: popup separator span failed (first=%d, last=%d, width=%d, pixels=%d).\n",
+                        first, last, width, count);
+                    return false;
+                }
+            } else {
                 const auto color = (state & ODS_DISABLED) != 0 ? colors_.disabled : colors_.text;
                 const DWORD expected = (static_cast<DWORD>(GetRValue(color)) << 16) |
                     (static_cast<DWORD>(GetGValue(color)) << 8) | GetBValue(color);
