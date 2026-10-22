@@ -3,11 +3,13 @@
 #include "theme.h"
 #include "logs.h"
 #include "xray_process.h"
+#include "xray_config.h"
 #include "settings.h"
 #include "win32.h"
 
 #include <shellapi.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
@@ -18,7 +20,32 @@
 
 void TestStartup(const std::filesystem::path& root);
 void TestXrayTools(const std::filesystem::path& root);
+void TestXrayToolConfigurationOrder(const std::filesystem::path& root,
+    const xtray::Settings& settings, const std::vector<std::wstring>& expectedFiles);
 std::optional<int> FakeXrayTool(int argc, wchar_t** argv);
+
+void WriteConfigurationTestEnvironment(HANDLE output)
+{
+    if (GetEnvironmentVariableW(L"XTRAY_TEST_CONFIG_MARKER", nullptr, 0) == 0) { return; }
+    for (const auto* name : {L"xray.location.confdir", L"XRAY_LOCATION_CONFDIR", L"XTRAY_TEST_CONFIG_MARKER"}) {
+        const DWORD capacity = GetEnvironmentVariableW(name, nullptr, 0);
+        std::wstring value = L"<unset>";
+        if (capacity != 0) {
+            value.resize(capacity);
+            const DWORD size = GetEnvironmentVariableW(name, value.data(), capacity);
+            if (size >= capacity) { ExitProcess(94); }
+            value.resize(size);
+        }
+        const auto bytes = xtray::ToUtf8(std::wstring(L"env[") + name + L"]=" + value + L"\n");
+        size_t offset = 0;
+        while (offset < bytes.size()) {
+            DWORD copied = 0;
+            if (!WriteFile(output, bytes.data() + offset, static_cast<DWORD>(bytes.size() - offset),
+                &copied, nullptr) || copied == 0) { ExitProcess(97); }
+            offset += copied;
+        }
+    }
+}
 
 namespace {
 
@@ -87,6 +114,7 @@ int FakeXray(int argc, wchar_t** argv)
         }
         Write(output, ToUtf8(std::wstring(flag) + L"=" + argv[index + 1]) + "\n");
     }
+    WriteConfigurationTestEnvironment(output);
     if (first.filename() == L"fail.conf") {
         Write(output, "before failure\n");
         Write(error, "\xE9\x94");
@@ -508,12 +536,14 @@ void TestSettings(const std::filesystem::path& root)
 {
     std::filesystem::create_directories(root);
     Check(LoadSettings(root).success && LoadSettings(root).settings.language == Language::Automatic &&
-        LoadSettings(root).settings.theme == ThemeMode::System && LoadSettings(root).settings.logWordWrap,
+        LoadSettings(root).settings.theme == ThemeMode::System && LoadSettings(root).settings.logWordWrap &&
+        !LoadSettings(root).settings.configDirectoryFirst,
         "Missing settings should use automatic language, system appearance, and defaults.");
     Settings settings;
     settings.executable = L"..\\bin\\xray.exe";
     settings.configFiles = {L".\\配置;=一.json", L"C:\\文件 with spaces\\二.json", L".\\配置;=一.json"};
     settings.configDirectory = L"..\\config directory\\";
+    settings.configDirectoryFirst = true;
     settings.logLines = 17;
     settings.language = Language::Chinese;
     settings.theme = ThemeMode::Dark;
@@ -523,6 +553,7 @@ void TestSettings(const std::filesystem::path& root)
     Check(loaded.success && loaded.settings.executable == settings.executable &&
         loaded.settings.configFiles == settings.configFiles &&
         loaded.settings.configDirectory == settings.configDirectory &&
+        loaded.settings.configDirectoryFirst == settings.configDirectoryFirst &&
         loaded.settings.logLines == settings.logLines &&
         loaded.settings.language == settings.language && loaded.settings.theme == settings.theme,
         "Settings round-trip failed.");
@@ -534,6 +565,41 @@ void TestSettings(const std::filesystem::path& root)
     }
     Check(!bytes.starts_with("\xEF\xBB\xBF") && bytes.find("\r\n") != std::string::npos,
         "Settings must be UTF-8 without BOM and use CRLF.");
+    for (const bool directoryFirst : {false, true}) {
+        auto changed = settings;
+        changed.configDirectoryFirst = directoryFirst;
+        const auto saved = SaveSettings(root, changed, error);
+        const auto restored = LoadSettings(root);
+        Check(saved && restored.success && restored.settings.configDirectoryFirst == directoryFirst &&
+            restored.settings.configFiles == settings.configFiles,
+            "The configuration loading order did not round-trip.");
+    }
+    const auto orderLine = bytes.find("ConfigDirectoryFirst=1\r\n");
+    Check(orderLine != std::string::npos, "The configuration loading order key was not saved.");
+    auto legacyOrder = bytes;
+    legacyOrder.erase(orderLine, std::string_view("ConfigDirectoryFirst=1\r\n").size());
+    {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file << legacyOrder;
+    }
+    const auto legacyLoaded = LoadSettings(root);
+    Check(legacyLoaded.success && !legacyLoaded.settings.configDirectoryFirst &&
+        legacyLoaded.settings.configDirectory == settings.configDirectory &&
+        legacyLoaded.settings.configFiles == settings.configFiles,
+        "Older settings must retain native loading order and all configuration paths.");
+    auto invalidOrder = bytes;
+    invalidOrder.replace(orderLine, std::string_view("ConfigDirectoryFirst=1").size(), "ConfigDirectoryFirst=invalid");
+    {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file << invalidOrder;
+    }
+    Check(!LoadSettings(root).success, "An invalid configuration loading order was accepted.");
+    {
+        std::ifstream file(path, std::ios::binary);
+        const std::string preserved(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>{});
+        Check(preserved == invalidOrder, "Reading an invalid loading order modified the original settings.");
+    }
+    Check(SaveSettings(root, settings, error), "Cannot restore settings after loading-order tests.");
     for (const bool wrap : {false, true}) {
         auto changed = settings;
         changed.logWordWrap = wrap;
@@ -763,6 +829,190 @@ void TestConfigurationPaths(const std::filesystem::path& root)
         HasText(logs, LogSource::Xray, L"Cannot open path probe input: " + missing.configFiles[1]) &&
         HasText(logs, LogSource::Tray, L"退出码 95"); }),
         "A missing relative configuration path did not preserve the child error and exit code.");
+}
+
+void TestConfigurationOrder(const std::filesystem::path& root)
+{
+    std::puts("Configuration order: opt-in expansion, native defaults, Unicode ordering, child environment, and re-enumeration.");
+    struct Environment {
+        const wchar_t* name;
+        std::optional<std::wstring> previous;
+        Environment(const wchar_t* key, const wchar_t* value) : name(key)
+        {
+            SetLastError(ERROR_SUCCESS);
+            const DWORD capacity = GetEnvironmentVariableW(name, nullptr, 0);
+            if (capacity != 0) {
+                previous.emplace(capacity, L'\0');
+                const DWORD size = GetEnvironmentVariableW(name, previous->data(), capacity);
+                Check(size < capacity, "Cannot snapshot a configuration test environment value.");
+                previous->resize(size);
+            } else if (GetLastError() != ERROR_ENVVAR_NOT_FOUND) {
+                previous.emplace();
+            }
+            Check(SetEnvironmentVariableW(name, value) != FALSE, "Cannot set a configuration test environment value.");
+        }
+        ~Environment() { SetEnvironmentVariableW(name, previous ? previous->c_str() : nullptr); }
+    } confdir(L"xRaY.lOcAtIoN.cOnFdIr", L"inherited dotted directory"),
+        alternate(L"xRaY_LoCaTiOn_CoNfDiR", L"inherited normalized directory"),
+        marker(L"XTRAY_TEST_CONFIG_MARKER", L"保留 Unicode ;=value");
+
+    const auto base = root / L"loading order cases";
+    const auto directory = base / L"基础 配置";
+    std::filesystem::create_directories(directory / L"nested");
+    const auto write = [](const std::filesystem::path& path) {
+        std::ofstream file(path, std::ios::binary);
+        file << "{}";
+        Check(static_cast<bool>(file), "Cannot write a loading-order fixture.");
+    };
+    const std::vector<std::wstring> names{L"10-first.json", L"2-next.jsonc", L"30-next.toml",
+        L"40-next.yaml", L"50-next.yml", L"\uE000.json", L"\U00010000.json"};
+    for (const auto& name : names) { write(directory / name); }
+    for (const auto* ignored : {L"ignored.txt", L"ignored.JSON", L".json"}) { write(directory / ignored); }
+    write(directory / L"nested" / L"00-must-not-recurse.json");
+    write(root / L"absolute override.json");
+    Settings settings;
+    settings.executable = ExecutablePath().native();
+    settings.configDirectory = L".\\基础 配置\\";
+    settings.configFiles = {L".\\independent 中文.json", L"..\\unchanged\\..\\extra.json",
+        (root / L"absolute override.json").native(), L".\\independent 中文.json"};
+    const auto arguments = [](const Settings& value, const std::vector<std::wstring>& files, bool expanded) {
+        std::wstring result;
+        if (!expanded && !value.configDirectory.empty()) {
+            result += L" -confdir " + QuoteArgument(value.configDirectory);
+        }
+        for (const auto& file : files) { result += L" -config " + QuoteArgument(file); }
+        return result;
+    };
+    std::vector<std::wstring> expanded;
+    for (const auto& name : names) {
+        expanded.push_back(settings.configDirectory + L"/" + name);
+    }
+    expanded.insert(expanded.end(), settings.configFiles.begin(), settings.configFiles.end());
+    const auto native = PrepareXrayConfigArguments(base, settings);
+    Check(native.arguments == arguments(settings, settings.configFiles, false) && native.environment.empty(),
+        "Default loading order unexpectedly enumerated a directory or replaced the inherited environment.");
+    settings.configDirectoryFirst = true;
+    const auto prepared = PrepareXrayConfigArguments(base, settings);
+    Check(prepared.arguments == arguments(settings, expanded, true),
+        "Directory expansion changed filtering, UTF-8 filename ordering, raw paths, explicit order, or duplicates.");
+    Check(prepared.environment.size() >= 2 && prepared.environment.back() == L'\0' &&
+        prepared.environment[prepared.environment.size() - 2] == L'\0',
+        "The private child environment must end with a double NUL.");
+    std::vector<std::wstring> childEnvironment;
+    for (const wchar_t* entry = prepared.environment.data(); *entry != L'\0'; entry += std::wcslen(entry) + 1) {
+        childEnvironment.emplace_back(entry);
+    }
+    struct EnvironmentStrings {
+        LPWCH values = GetEnvironmentStringsW();
+        ~EnvironmentStrings() { if (values != nullptr) { FreeEnvironmentStringsW(values); } }
+    } parent;
+    Check(parent.values != nullptr, "Cannot inspect the parent environment for the preservation test.");
+    size_t expectedEntries = 0;
+    for (const wchar_t* entry = parent.values; *entry != L'\0'; entry += std::wcslen(entry) + 1) {
+        const std::wstring_view text(entry);
+        const auto name = text.substr(0, text.find(L'='));
+        if (CompareStringOrdinal(name.data(), static_cast<int>(name.size()), L"xray.location.confdir", -1, TRUE) == CSTR_EQUAL ||
+            CompareStringOrdinal(name.data(), static_cast<int>(name.size()), L"XRAY_LOCATION_CONFDIR", -1, TRUE) == CSTR_EQUAL) {
+            continue;
+        }
+        ++expectedEntries;
+        Check(std::find(childEnvironment.begin(), childEnvironment.end(), text) != childEnvironment.end(),
+            "The private child environment lost an unrelated or hidden drive entry.");
+    }
+    Check(childEnvironment.size() == expectedEntries,
+        "The private child environment retained a confdir alias or added unexpected entries.");
+
+    Logs logs;
+    XrayProcess process(base, logs);
+    const auto launch = [&](const Settings& value, const std::vector<std::wstring>& files, bool isExpanded, bool restart = false) {
+        const DWORD oldPid = process.Pid();
+        Check(WaitUntil([&] { return restart ? process.Restart(value) : process.Run(value); }),
+            "The configuration-order process request was rejected.");
+        Check(WaitUntil([&] { return process.State() == ProcessState::Running && process.Pid() != oldPid &&
+            HasText(logs, LogSource::Xray, L"partial without newline"); }),
+            "The configuration-order child did not publish its arguments and environment.");
+        std::vector<std::wstring> received;
+        for (const auto& line : logs.Snapshot().lines) {
+            if (line->source != LogSource::Xray) { continue; }
+            auto text = std::wstring_view(line->text);
+            while (!text.empty() && (text.back() == L'\r' || text.back() == L'\n')) { text.remove_suffix(1); }
+            if (text.starts_with(L"-config=") || text.starts_with(L"-confdir=")) { received.emplace_back(text); }
+        }
+        std::vector<std::wstring> expected;
+        if (!isExpanded && !value.configDirectory.empty()) { expected.push_back(L"-confdir=" + value.configDirectory); }
+        for (const auto& file : files) { expected.push_back(L"-config=" + file); }
+        Check(received == expected && process.RunInfo().commandLine ==
+            QuoteArgument(ExecutablePath().native()) + L" run" + arguments(value, files, isExpanded),
+            "The child arguments or actual run information disagreed with the selected loading order.");
+        Check(HasText(logs, LogSource::Xray, isExpanded ? L"env[xray.location.confdir]=<unset>"
+                : L"env[xray.location.confdir]=inherited dotted directory") &&
+            HasText(logs, LogSource::Xray, isExpanded ? L"env[XRAY_LOCATION_CONFDIR]=<unset>"
+                : L"env[XRAY_LOCATION_CONFDIR]=inherited normalized directory") &&
+            HasText(logs, LogSource::Xray, L"env[XTRAY_TEST_CONFIG_MARKER]=保留 Unicode ;=value"),
+            "The child inherited a directory twice, lost unrelated Unicode environment, or default inheritance changed.");
+    };
+    const auto stop = [&] {
+        Check(WaitUntil([&] { return process.Stop(); }) &&
+            WaitUntil([&] { return process.State() == ProcessState::Stopped; }), "Cannot stop the order-test child.");
+    };
+    launch(settings, expanded, true);
+    write(directory / L"00-added.json");
+    const auto added = settings.configDirectory + L"/00-added.json";
+    expanded.insert(expanded.begin(), added);
+    launch(settings, expanded, true, true);
+    stop();
+    auto unchanged = settings;
+    unchanged.configDirectoryFirst = false;
+    launch(unchanged, unchanged.configFiles, false);
+    stop();
+    auto onlyDirectory = settings;
+    onlyDirectory.configFiles.clear();
+    Check(PrepareXrayConfigArguments(base, onlyDirectory).environment.empty(),
+        "Directory-only settings replaced the inherited environment.");
+    launch(onlyDirectory, {}, false);
+    stop();
+    auto onlyFiles = settings;
+    onlyFiles.configDirectory.clear();
+    Check(PrepareXrayConfigArguments(base, onlyFiles).environment.empty(),
+        "File-only settings replaced the inherited environment.");
+    launch(onlyFiles, onlyFiles.configFiles, false);
+    stop();
+    auto empty = settings;
+    std::filesystem::create_directories(base / L"empty directory");
+    empty.configDirectory = L".\\empty directory";
+    Check(PrepareXrayConfigArguments(base, empty).arguments == arguments(empty, empty.configFiles, true),
+        "An empty configuration directory prevented explicitly listed files from loading.");
+    auto absolute = settings;
+    absolute.configDirectory = directory.native();
+    Check(PrepareXrayConfigArguments(base, absolute).arguments.starts_with(
+        L" -config " + QuoteArgument(directory.native() + L"/00-added.json")),
+        "An absolute configuration directory changed its argument path form.");
+    std::filesystem::create_directories(base / L"tail");
+    auto forward = settings;
+    forward.configDirectory = L"./tail/../基础 配置";
+    std::vector<std::wstring> forwardFiles{L"基础 配置/00-added.json"};
+    for (const auto& name : names) { forwardFiles.push_back(L"基础 配置/" + name); }
+    forwardFiles.insert(forwardFiles.end(), settings.configFiles.begin(), settings.configFiles.end());
+    Check(PrepareXrayConfigArguments(base, forward).arguments == arguments(forward, forwardFiles, true),
+        "Generated directory paths did not match native forward-slash cleaning and changed tail semantics.");
+    launch(forward, forwardFiles, true);
+    stop();
+    for (const bool tooLong : {false, true}) {
+        auto invalid = settings;
+        if (tooLong) { invalid.configFiles = {std::wstring(32768, L'x') + L".json"}; }
+        else { invalid.configDirectory = L".\\missing directory"; }
+        Check(WaitUntil([&] { return process.Run(invalid); }), "An invalid order-test request was rejected before validation.");
+        Check(WaitUntil([&] { return process.State() == ProcessState::Stopped && !process.RunInfo().error.empty(); }) &&
+            process.Pid() == 0 && process.RunInfo().pid == 0 && !process.RunInfo().started,
+            "A missing directory or excessive expanded command silently launched a child.");
+    }
+    TestXrayToolConfigurationOrder(base, settings, expanded);
+    wchar_t parentValue[128]{};
+    Check(GetEnvironmentVariableW(L"xray.location.confdir", parentValue, 128) != 0 &&
+        std::wstring_view(parentValue) == L"inherited dotted directory" &&
+        GetEnvironmentVariableW(L"XRAY_LOCATION_CONFDIR", parentValue, 128) != 0 &&
+        std::wstring_view(parentValue) == L"inherited normalized directory",
+        "Preparing or launching child processes changed the parent confdir environment.");
 }
 
 void TestProcesses(const std::filesystem::path& root)
@@ -1024,6 +1274,7 @@ int wmain(int argc, wchar_t** argv)
         TestSettings(root / L"settings");
         TestStartup(root / L"startup");
         TestConfigurationPaths(root);
+        TestConfigurationOrder(root);
         TestProcesses(root);
         TestXrayTools(root);
         TestAbnormalExit(root);

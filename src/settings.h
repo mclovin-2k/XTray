@@ -13,6 +13,7 @@ struct Settings {
     std::wstring executable = L".\\bin\\xray.exe";
     std::vector<std::wstring> configFiles;
     std::wstring configDirectory;
+    bool configDirectoryFirst = false;
     size_t logLines = 5000;
     Language language = Language::Automatic;
     ThemeMode theme = ThemeMode::System;

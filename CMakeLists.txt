@@ -23,6 +23,7 @@ add_library(XTray.Core STATIC
     src/language.cpp
     src/theme.cpp
     src/logs.cpp
+    src/xray_config.cpp
     src/xray_process.cpp
     src/xray_tool.cpp
     src/settings.cpp

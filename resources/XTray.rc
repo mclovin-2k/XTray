@@ -40,11 +40,13 @@ BEGIN
     EDITTEXT IDC_CONFIG_DIRECTORY, 12, 191, 328, 15, ES_AUTOHSCROLL
     PUSHBUTTON "Browse...", IDC_BROWSE_DIRECTORY, 347, 191, 70, 15
 
+    CONTROL "Load config directory before config files", IDC_CONFIG_DIRECTORY_FIRST, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 211, 405, 14
+    LTEXT "Applies when both are set; later inputs follow Xray's merge rules.", IDC_HINT_CONFIG_ORDER, 12, 228, 405, 12
     PUSHBUTTON "Check current configuration", IDC_CHECK_CONFIG, 12, 214, 100, 15
     PUSHBUTTON "Preview current configuration", IDC_PREVIEW_CONFIG, 118, 214, 110, 15
     LTEXT "Uses this form without saving.", IDC_HINT_CONFIG_TOOLS, 12, 232, 405, 12
     CONTROL "Start XTray and Xray when I sign in", IDC_LOGON_STARTUP, "Button", BS_AUTOCHECKBOX | WS_TABSTOP, 12, 234, 405, 14
     LTEXT "Relative paths use the XTray.exe directory.", IDC_HINT_RELATIVE, 12, 256, 400, 12
-    LTEXT "Paths apply on the next run/restart; at least one config source is required.", IDC_HINT_APPLY, 12, 269, 405, 12
+    LTEXT "Paths and load order apply on the next run/restart; at least one config source is required.", IDC_HINT_APPLY, 12, 269, 405, 12
 
 END

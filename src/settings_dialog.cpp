@@ -89,6 +89,7 @@ Settings ConfigDraft(HWND dialog, const Settings& saved)
     draft.executable = WindowText(GetDlgItem(body, IDC_EXECUTABLE));
     draft.configDirectory = WindowText(GetDlgItem(body, IDC_CONFIG_DIRECTORY));
     draft.configFiles = SplitConfigFiles(WindowText(GetDlgItem(body, IDC_CONFIG_FILES)));
+    draft.configDirectoryFirst = SendMessageW(GetDlgItem(body, IDC_CONFIG_DIRECTORY_FIRST), BM_GETCHECK, 0, 0) == BST_CHECKED;
     return draft;
 }
 
@@ -208,6 +209,10 @@ void LayoutSettingsContent(Context& context)
         pathRow(IDC_CONFIG_FILES, IDC_ADD_FILES, static_cast<int>(units.bottom));
         label(IDC_LABEL_CONFIG_DIRECTORY);
         pathRow(IDC_CONFIG_DIRECTORY, IDC_BROWSE_DIRECTORY, SingleLineControlHeight(GetDlgItem(body, IDC_CONFIG_DIRECTORY)));
+        place(IDC_CONFIG_DIRECTORY_FIRST, margin, y, available, rowHeight);
+        y += rowHeight + gap;
+        label(IDC_HINT_CONFIG_ORDER);
+        y += sectionGap - gap;
         const int checkWidth = TextButtonWidth(GetDlgItem(body, IDC_CHECK_CONFIG));
         const int previewWidth = TextButtonWidth(GetDlgItem(body, IDC_PREVIEW_CONFIG));
         place(IDC_CHECK_CONFIG, margin, y, (std::min)(available, checkWidth), rowHeight);
@@ -493,6 +498,9 @@ void SetDialogLanguage(HWND dialog)
     set(IDC_LABEL_CONFIG_FILES, Text(L"Config files (one per line, in load order; optional):",
         L"配置文件（每行一个，按顺序加载；可留空）："));
     set(IDC_LABEL_CONFIG_DIRECTORY, Text(L"Config directory (optional):", L"配置目录（可留空）："));
+    set(IDC_CONFIG_DIRECTORY_FIRST, Text(L"Load config directory before config files", L"先加载配置目录，再加载配置文件"));
+    set(IDC_HINT_CONFIG_ORDER, Text(L"Applies when both are set. Later inputs override or supplement earlier ones under Xray's rules.",
+        L"仅同时配置目录和文件时生效；后加载内容按 Xray 规则覆盖或补充。"));
     set(IDC_LABEL_LOG_LINES, Text(L"Log lines per source:", L"每类日志保留行数："));
     set(IDC_LABEL_LANGUAGE, Text(L"Language:", L"语言："));
     set(IDC_LABEL_THEME, Text(L"Appearance:", L"外观："));
@@ -506,8 +514,8 @@ void SetDialogLanguage(HWND dialog)
         L"使用本窗口当前填写的内容执行，无需先保存。"));
     set(IDC_HINT_RELATIVE, Text(L"Relative paths use the XTray.exe directory.",
         L"相对路径以 XTray.exe 所在目录为基准。"));
-    set(IDC_HINT_APPLY, Text(L"Paths apply on the next run/restart; at least one config source is required.",
-        L"路径下次运行或重启生效；运行前至少设置一种配置来源。"));
+    set(IDC_HINT_APPLY, Text(L"Paths and load order apply on the next run/restart; at least one config source is required.",
+        L"路径和加载顺序下次运行或重启生效；运行前至少设置一种配置来源。"));
     set(IDOK, Text(L"Save", L"保存"));
     set(IDCANCEL, Text(L"Cancel", L"取消"));
     for (const auto* item : {Text(L"Automatic", L"自动"), Text(L"English", L"英文"),
@@ -548,6 +556,8 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
             static_cast<WPARAM>(context->settings.theme), 0);
         SetWindowTextW(SettingsControl(dialog, IDC_EXECUTABLE), context->settings.executable.c_str());
         SetWindowTextW(SettingsControl(dialog, IDC_CONFIG_DIRECTORY), context->settings.configDirectory.c_str());
+        CheckSettingsButton(dialog, IDC_CONFIG_DIRECTORY_FIRST,
+            context->settings.configDirectoryFirst ? BST_CHECKED : BST_UNCHECKED);
         std::wstring files;
         for (const auto& file : context->settings.configFiles) {
             files += file + L"\r\n";
@@ -808,7 +818,10 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
             passed = passed && GetFocus() == languageChoice &&
                 GetNextDlgTabItem(window, languageChoice, FALSE) == themeChoice &&
                 GetNextDlgTabItem(window, themeChoice, FALSE) == SettingsControl(window, IDC_LOG_LINES) &&
-                GetNextDlgTabItem(window, SettingsControl(window, IDC_LOG_LINES), FALSE) == SettingsControl(window, IDC_EXECUTABLE);
+                GetNextDlgTabItem(window, SettingsControl(window, IDC_LOG_LINES), FALSE) == SettingsControl(window, IDC_EXECUTABLE) &&
+                GetNextDlgTabItem(window, SettingsControl(window, IDC_BROWSE_DIRECTORY), FALSE) == SettingsControl(window, IDC_CONFIG_DIRECTORY_FIRST) &&
+                GetNextDlgTabItem(window, SettingsControl(window, IDC_CONFIG_DIRECTORY_FIRST), FALSE) == SettingsControl(window, IDC_CHECK_CONFIG) &&
+                SettingsButtonState(window, IDC_CONFIG_DIRECTORY_FIRST) == BST_UNCHECKED;
             const auto dispatchFocusMessages = [&] {
                 MSG pending{};
                 while (PeekMessageW(&pending, context.contents, kEnsureSettingVisible, kEnsureSettingVisible, PM_REMOVE)) {
@@ -867,6 +880,18 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                     RECT button{};
                     GetWindowRect(SettingsControl(window, id), &button);
                     if (button.right != browse.right) { return false; }
+                }
+                RECT directory{}, order{}, hint{}, check{};
+                const HWND orderControl = SettingsControl(window, IDC_CONFIG_DIRECTORY_FIRST);
+                GetWindowRect(SettingsControl(window, IDC_CONFIG_DIRECTORY), &directory);
+                GetWindowRect(orderControl, &order);
+                GetWindowRect(SettingsControl(window, IDC_HINT_CONFIG_ORDER), &hint);
+                GetWindowRect(SettingsControl(window, IDC_CHECK_CONFIG), &check);
+                if (order.left != directory.left || order.left != check.left || order.top < directory.bottom ||
+                    hint.top < order.bottom || check.top < hint.bottom ||
+                    order.right - order.left < ControlTextSize(orderControl).cx + UiScale(orderControl, 24)) {
+                    std::fwprintf(stderr, L"Smoke: configuration order checkbox placement or caption width failed.\n");
+                    return false;
                 }
                 return std::abs(save.top + save.bottom - cancel.top - cancel.bottom) <= 1;
             };
@@ -983,15 +1008,19 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
             context.theme.Apply(true, true);
             SendMessageW(window, kRefreshDialogTheme, 0, 0);
             passed = checkCaption() && checkInputs() && checkAlignment() && passed &&
-                context.contentTheme.Colors().dark && SmokeTestNativeControl(checkbox);
+                context.contentTheme.Colors().dark && SmokeTestNativeControl(checkbox) &&
+                SmokeTestNativeControl(SettingsControl(window, IDC_CONFIG_DIRECTORY_FIRST));
 
             std::fwprintf(stderr, L"Smoke: settings draft tools, saved-settings isolation, keyboard navigation, and owner cancellation.\n");
             const auto original = settings;
             SetWindowTextW(executable, (CurrentExecutable().parent_path() / L"XTray.Tests.exe").c_str());
             SetWindowTextW(SettingsControl(window, IDC_CONFIG_FILES), L".\\tool-ok.conf\r\n.\\重复 ;= config.json");
-            SetWindowTextW(SettingsControl(window, IDC_CONFIG_DIRECTORY), L"..\\draft configs\\");
+            std::filesystem::create_directories(root / L"draft configs");
+            SetWindowTextW(SettingsControl(window, IDC_CONFIG_DIRECTORY), L".\\draft configs\\");
+            CheckSettingsButton(window, IDC_CONFIG_DIRECTORY_FIRST, BST_CHECKED);
             SetWindowTextW(SettingsControl(window, IDC_LOG_LINES), L"0");
             SendMessageW(SettingsControl(window, IDC_CHECK_CONFIG), BM_CLICK, 0, 0);
+            CheckSettingsButton(window, IDC_CONFIG_DIRECTORY_FIRST, BST_UNCHECKED);
             SetWindowTextW(SettingsControl(window, IDC_CONFIG_FILES), L".\\tool-fail.conf");
             const auto waitTool = [&] {
                 const auto until = GetTickCount64() + 4000;
@@ -1019,6 +1048,7 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                 WindowText(result) == Text(L"Check current configuration", L"检查当前配置") &&
                 WindowText(GetDlgItem(result, 4103)).find(Text(L"passed", L"通过")) != std::wstring::npos &&
                 WindowText(GetDlgItem(result, 4101)).find(L"-config=.\\tool-ok.conf") != std::wstring::npos &&
+                WindowText(GetDlgItem(result, 4101)).find(L"-confdir=") == std::wstring::npos &&
                 WindowText(GetDlgItem(result, 4105)).find(Text(L"current settings form", L"设置窗口当前填写")) != std::wstring::npos;
             ShowWindow(result, SW_SHOWNOACTIVATE);
             SetFocus(GetDlgItem(result, 4102));
@@ -1033,9 +1063,10 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
             SendMessageW(SettingsControl(window, IDC_PREVIEW_CONFIG), BM_CLICK, 0, 0);
             passed = waitTool() && passed;
             passed = passed && WindowText(context.tools->Window()) == Text(L"Preview current configuration", L"预览当前配置") &&
-                WindowText(GetDlgItem(context.tools->Window(), 4101)).find(L"-dump\r\n") != std::wstring::npos &&
+                WindowText(GetDlgItem(context.tools->Window(), 4101)).find(L"-dump\r\n-confdir=.\\draft configs\\") != std::wstring::npos &&
                 settings.executable == original.executable && settings.configFiles == original.configFiles &&
                 settings.configDirectory == original.configDirectory && settings.logLines == original.logLines &&
+                settings.configDirectoryFirst == original.configDirectoryFirst &&
                 registry.writes == 0 && !std::filesystem::exists(root / L"data" / L"settings.ini");
             SetWindowTextW(SettingsControl(window, IDC_CONFIG_FILES), L".\\tool-hold.conf");
             SendMessageW(SettingsControl(window, IDC_PREVIEW_CONFIG), BM_CLICK, 0, 0);
@@ -1067,13 +1098,17 @@ bool SmokeTestSettingsTheme(HWND owner, const std::filesystem::path& root)
         context.automation = [&](HWND window) {
             const auto expected = action == 3 ? ThemeMode::Dark : ThemeMode::Light;
             passed = passed && SendMessageW(SettingsControl(window, IDC_THEME), CB_GETCURSEL, 0, 0) ==
-                static_cast<LRESULT>(expected);
+                static_cast<LRESULT>(expected) &&
+                (SettingsButtonState(window, IDC_CONFIG_DIRECTORY_FIRST) == BST_CHECKED) == (action == 3);
             std::fwprintf(stderr, L"Smoke: settings native buttons, checkbox, and combo boxes.\n");
             for (const int id : {IDOK, IDCANCEL, IDC_BROWSE_EXECUTABLE, IDC_ADD_FILES,
                 IDC_BROWSE_DIRECTORY, IDC_CHECK_CONFIG, IDC_PREVIEW_CONFIG,
-                IDC_LOGON_STARTUP, IDC_LANGUAGE, IDC_THEME}) {
+                IDC_CONFIG_DIRECTORY_FIRST, IDC_LOGON_STARTUP, IDC_LANGUAGE, IDC_THEME}) {
                 passed = SmokeTestNativeControl(SettingsControl(window, id)) && passed;
             }
+            SendMessageW(SettingsControl(window, IDC_CONFIG_DIRECTORY_FIRST), BM_CLICK, 0, 0);
+            passed = passed &&
+                (SettingsButtonState(window, IDC_CONFIG_DIRECTORY_FIRST) == BST_CHECKED) == (action != 3);
             const auto before = context.theme.Colors();
             SendMessageW(SettingsControl(window, IDC_THEME), CB_SETCURSEL,
                 static_cast<WPARAM>(action == 3 ? ThemeMode::System : ThemeMode::Dark), 0);
@@ -1106,7 +1141,8 @@ bool SmokeTestSettingsTheme(HWND owner, const std::filesystem::path& root)
         const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_SETTINGS),
             owner, SettingsProcedure, reinterpret_cast<LPARAM>(&context));
         if (result != (action == 2 ? IDOK : IDCANCEL) || context.error || !passed ||
-            settings.theme != (action >= 2 ? ThemeMode::Dark : ThemeMode::Light)) {
+            settings.theme != (action >= 2 ? ThemeMode::Dark : ThemeMode::Light) ||
+            settings.configDirectoryFirst != (action >= 2)) {
             return false;
         }
         if (action < 2 && std::filesystem::exists(root / L"data" / L"settings.ini")) {
@@ -1114,7 +1150,7 @@ bool SmokeTestSettingsTheme(HWND owner, const std::filesystem::path& root)
         }
     }
     const auto saved = LoadSettings(root);
-    return saved.success && saved.settings.theme == ThemeMode::Dark;
+    return saved.success && saved.settings.theme == ThemeMode::Dark && saved.settings.configDirectoryFirst;
 }
 
 bool SmokeTestSettingsStartup(HWND owner, const std::filesystem::path& root)

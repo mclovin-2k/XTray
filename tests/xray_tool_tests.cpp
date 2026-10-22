@@ -6,6 +6,8 @@
 #include <fstream>
 #include <functional>
 
+void WriteConfigurationTestEnvironment(HANDLE output);
+
 namespace {
 
 using namespace xtray;
@@ -92,6 +94,7 @@ std::optional<int> FakeXrayTool(int argc, wchar_t** argv)
         }
         WriteTool(output, xtray::ToUtf8(std::wstring(flag) + L"=" + argv[index + 1]) + "\n");
     }
+    WriteConfigurationTestEnvironment(output);
     if (first == L"tool-hold.conf") {
         for (;;) {
             WriteTool(output, "tool waiting for cancellation\n");
@@ -116,6 +119,71 @@ std::optional<int> FakeXrayTool(int argc, wchar_t** argv)
     }
     WriteTool(output, "tool output end");
     return 0;
+}
+
+void TestXrayToolConfigurationOrder(const std::filesystem::path& root,
+    const xtray::Settings& settings, const std::vector<std::wstring>& expectedFiles)
+{
+    using namespace xtray;
+    std::puts("Tools: selected configuration order, draft snapshot, private Unicode environment, and validation.");
+    XrayTool tool(root);
+    const auto verify = [&](XrayToolKind kind, const Settings& value,
+        const std::vector<std::wstring>& files, bool expanded) {
+        auto draft = value;
+        Require(tool.Start(kind, draft), "Cannot start a configuration-order tool command.");
+        draft.configDirectoryFirst = !draft.configDirectoryFirst;
+        draft.configFiles.clear();
+        const auto result = Result(tool);
+        Require(result.exitCode == DWORD{0} && result.error.empty(), "The configuration-order tool command failed.");
+        std::vector<std::string> received;
+        for (size_t start = 0; start < result.output.size();) {
+            const auto end = result.output.find('\n', start);
+            auto line = std::string_view(result.output).substr(start,
+                end == std::string::npos ? result.output.size() - start : end - start);
+            if (!line.empty() && line.back() == '\r') { line.remove_suffix(1); }
+            if (line.starts_with("-config=") || line.starts_with("-confdir=")) { received.emplace_back(line); }
+            if (end == std::string::npos) { break; }
+            start = end + 1;
+        }
+        std::vector<std::string> expected;
+        if (!expanded && !value.configDirectory.empty()) { expected.push_back("-confdir=" + ToUtf8(value.configDirectory)); }
+        for (const auto& file : files) { expected.push_back("-config=" + ToUtf8(file)); }
+        Require(received == expected && result.output.find(kind == XrayToolKind::Check ? "-test\n" : "-dump\n") != std::string::npos,
+            "Check or preview disagreed with startup order, changed explicit paths, or read the edited draft.");
+        Require(result.output.find(expanded ? "env[xray.location.confdir]=<unset>"
+                : "env[xray.location.confdir]=inherited dotted directory") != std::string::npos &&
+            result.output.find(expanded ? "env[XRAY_LOCATION_CONFDIR]=<unset>"
+                : "env[XRAY_LOCATION_CONFDIR]=inherited normalized directory") != std::string::npos &&
+            result.output.find(ToUtf8(L"env[XTRAY_TEST_CONFIG_MARKER]=保留 Unicode ;=value")) != std::string::npos,
+            "The tool environment did not match startup filtering or lost inherited Unicode values.");
+    };
+    verify(XrayToolKind::Check, settings, expectedFiles, true);
+    verify(XrayToolKind::Preview, settings, expectedFiles, true);
+    auto native = settings;
+    native.configDirectoryFirst = false;
+    verify(XrayToolKind::Check, native, native.configFiles, false);
+    auto directoryOnly = settings;
+    directoryOnly.configFiles.clear();
+    verify(XrayToolKind::Preview, directoryOnly, {}, false);
+    auto filesOnly = settings;
+    filesOnly.configDirectory.clear();
+    verify(XrayToolKind::Check, filesOnly, filesOnly.configFiles, false);
+    for (const bool tooLong : {false, true}) {
+        auto invalid = settings;
+        if (tooLong) { invalid.configFiles = {std::wstring(32768, L'x') + L".json"}; }
+        else { invalid.configDirectory = L".\\missing directory"; }
+        Require(tool.Start(XrayToolKind::Preview, invalid), "Cannot validate invalid order-test inputs.");
+        const auto result = Result(tool);
+        Require(!result.error.empty() && !result.exitCode && result.output.empty(),
+            "A missing directory or excessive command silently launched the tool.");
+    }
+    auto version = settings;
+    version.configDirectory = L".\\missing directory";
+    Require(tool.Start(XrayToolKind::Version, version), "Cannot query version with directory-first selected.");
+    const auto result = Result(tool);
+    Require(result.exitCode == DWORD{0} && result.error.empty() &&
+        result.output.find("Xray test-version") != std::string::npos,
+        "Version queries unexpectedly enumerated configuration directories.");
 }
 
 void TestXrayTools(const std::filesystem::path& root)

@@ -1,4 +1,5 @@
 #include "xray_tool.h"
+#include "xray_config.h"
 
 #include <algorithm>
 #include <array>
@@ -116,13 +117,10 @@ void XrayTool::Execute(XrayToolKind kind, const Settings& settings, bool setting
     auto command = QuoteArgument(result_.executable.native()) +
         (kind == XrayToolKind::Version ? L" version"
             : kind == XrayToolKind::Check ? L" run -test" : L" run -dump");
+    XrayConfigArguments configuration;
     if (kind != XrayToolKind::Version) {
-        if (!settings.configDirectory.empty()) {
-            command += L" -confdir " + QuoteArgument(settings.configDirectory);
-        }
-        for (const auto& config : settings.configFiles) {
-            command += L" -config " + QuoteArgument(config);
-        }
+        configuration = PrepareXrayConfigArguments(root_, settings);
+        command += configuration.arguments;
     }
     if (command.size() >= 32767) {
         result_.error = Text(L"The Xray command exceeds the Windows length limit.",
@@ -165,9 +163,11 @@ void XrayTool::Execute(XrayToolKind kind, const Settings& settings, bool setting
     startup.StartupInfo.hStdError = input.Get();
     startup.lpAttributeList = attributes.Get();
     PROCESS_INFORMATION information{};
+    const DWORD flags = CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT |
+        (configuration.environment.empty() ? 0 : CREATE_UNICODE_ENVIRONMENT);
     if (cancel_) { return; }
     Require(CreateProcessW(result_.executable.c_str(), command.data(), nullptr, nullptr, TRUE,
-        CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr, root_.c_str(),
+        flags, configuration.environment.empty() ? nullptr : configuration.environment.data(), root_.c_str(),
         &startup.StartupInfo, &information) != FALSE,
         Text(L"Cannot start the Xray tool", L"启动 Xray 工具失败"));
     Handle process(information.hProcess), thread(information.hThread);

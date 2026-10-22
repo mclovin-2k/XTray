@@ -1,4 +1,5 @@
 #include "xray_process.h"
+#include "xray_config.h"
 
 #include <array>
 
@@ -173,12 +174,6 @@ void XrayProcess::StartProcess(const Settings& settings)
     const auto executable = settings.executable.empty() ? std::filesystem::path{}
         : ResolvePath(root_, settings.executable);
     std::wstring command = QuoteArgument(executable.native()) + L" run";
-    if (!settings.configDirectory.empty()) {
-        command += L" -confdir " + QuoteArgument(settings.configDirectory);
-    }
-    for (const auto& config : settings.configFiles) {
-        command += L" -config " + QuoteArgument(config);
-    }
     {
         std::lock_guard lock(infoMutex_);
         info_ = {};
@@ -194,6 +189,16 @@ void XrayProcess::StartProcess(const Settings& settings)
         }
         logs_.Tray(error);
     };
+    XrayConfigArguments configuration;
+    try {
+        configuration = PrepareXrayConfigArguments(root_, settings);
+        command += configuration.arguments;
+        std::lock_guard lock(infoMutex_);
+        info_.commandLine = command;
+    } catch (const std::exception& exception) {
+        fail(FromUtf8(exception.what()));
+        return;
+    }
     if (settings.configFiles.empty() && settings.configDirectory.empty()) {
         fail(Text(L"Set at least one configuration file or one configuration directory.", L"请至少设置一个配置文件或一个配置目录。"));
         return;
@@ -269,9 +274,11 @@ void XrayProcess::StartProcess(const Settings& settings)
     startup.StartupInfo.hStdError = input.Get();
     startup.lpAttributeList = attributes.Get();
     PROCESS_INFORMATION information{};
+    const DWORD flags = CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT |
+        (configuration.environment.empty() ? 0 : CREATE_UNICODE_ENVIRONMENT);
     logs_.Tray(Text(L"Starting Xray: ", L"正在运行 Xray：") + executable.native());
     if (!CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, TRUE,
-        CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr, root_.c_str(),
+        flags, configuration.environment.empty() ? nullptr : configuration.environment.data(), root_.c_str(),
         &startup.StartupInfo, &information)) {
         fail(WindowsError(Text(L"Cannot start Xray", L"启动 Xray 失败")));
         return;

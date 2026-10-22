@@ -140,6 +140,13 @@ SettingsResult LoadSettings(const std::filesystem::path& root)
         auto& settings = result.settings;
         settings.executable = take(L"XTray", L"Executable");
         settings.configDirectory = take(L"XTray", L"ConfigDirectory");
+        if (values.contains({L"XTray", L"ConfigDirectoryFirst"})) {
+            const auto first = take(L"XTray", L"ConfigDirectoryFirst");
+            if (first != L"0" && first != L"1") {
+                throw std::runtime_error(Text("Invalid configuration load order setting.", "无效的配置加载顺序设置。"));
+            }
+            settings.configDirectoryFirst = first == L"1";
+        }
         settings.logLines = ParseNumber(take(L"XTray", L"LogLines"));
         if (values.contains({L"XTray", L"Language"})) {
             const auto language = take(L"XTray", L"Language");
@@ -221,6 +228,7 @@ bool SaveSettings(const std::filesystem::path& root, const Settings& settings, s
     try {
         std::wstring text = L"[XTray]\r\nVersion=1\r\nExecutable=" + settings.executable +
             L"\r\nConfigDirectory=" + settings.configDirectory +
+            L"\r\nConfigDirectoryFirst=" + (settings.configDirectoryFirst ? L"1" : L"0") +
             L"\r\nLogLines=" + std::to_wstring(settings.logLines) +
             L"\r\nLanguage=" + (settings.language == Language::Automatic ? L"auto"
                 : settings.language == Language::English ? L"en" : L"zh") +

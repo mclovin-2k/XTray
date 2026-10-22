@@ -78,11 +78,20 @@ according to its [multi-file configuration rules](https://xtls.github.io/en/conf
 You can use a single file, multiple files, one directory, or files and a directory
 together, depending on your setup.
 
-XTray passes `-confdir` before the ordered `-config` arguments. Argument placement
-does not guarantee merge precedence: the Xray versions checked still merge the
-directory after explicitly listed files. Use **Xray Tools → Preview saved
-configuration**, or **Preview current configuration** in Settings, to inspect
-the result when settings overlap.
+By default, XTray preserves Xray's native loading behavior: explicitly listed
+files are loaded before the configuration directory. To load shared directory
+configuration first and your separate files afterwards, enable **Load config
+directory before config files** in Settings. This option defaults to off and
+applies only when both sources are configured. Saved changes take effect on the
+next run or restart; tools in Settings use the current checkbox state directly.
+
+When enabled, XTray sorts matching entries in the directory's top level by file
+name, passes them as individual `-config` arguments, and appends your file list.
+Xray still parses and merges the configuration. This Xray process does not
+inherit `confdir` environment variables, preventing an extra directory from
+being appended. Use **Xray Tools → Preview saved configuration**, or **Preview
+current configuration** in Settings, to inspect overlapping settings; loading
+later does not mean every field simply replaces the earlier value.
 
 ## Everyday use
 
