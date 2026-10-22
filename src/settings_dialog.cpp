@@ -38,6 +38,7 @@ struct Context {
     XrayToolWindow* tools = &localTools;
     HWND dialog = nullptr;
     HHOOK messageFilter = nullptr;
+    bool filteringToolMessage = false;
     bool quietTools = false;
     bool startupAvailable = false;
     ThemeWindow theme;
@@ -64,13 +65,17 @@ Context::~Context()
 
 LRESULT CALLBACK SettingsMessageFilter(int code, WPARAM wParam, LPARAM lParam)
 {
-    if (code == MSGF_DIALOGBOX && activeSettings != nullptr) {
+    auto* context = activeSettings;
+    if (code == MSGF_DIALOGBOX && context != nullptr && !context->filteringToolMessage) {
+        // IsDialogMessage calls this filter itself; do not route the same message twice.
+        struct Reset { bool& value; ~Reset() { value = false; } } reset{context->filteringToolMessage};
+        context->filteringToolMessage = true;
         try {
             // DialogBox owns the message loop while modeless result windows remain open.
             if (XrayToolWindow::TranslateAny(*reinterpret_cast<MSG*>(lParam))) { return TRUE; }
         } catch (...) {
-            activeSettings->error = std::current_exception();
-            EndDialog(activeSettings->dialog, -1);
+            context->error = std::current_exception();
+            EndDialog(context->dialog, -1);
             return TRUE;
         }
     }
@@ -1008,6 +1013,7 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                 return !context.tools->Running();
             };
             passed = waitTool() && passed;
+            std::fwprintf(stderr, L"Smoke: draft configuration check completed; verifying source and keyboard navigation.\n");
             const HWND result = context.tools->Window();
             passed = passed && result != nullptr && GetWindow(result, GW_OWNER) == window &&
                 WindowText(result) == Text(L"Check current configuration", L"检查当前配置") &&
@@ -1033,6 +1039,7 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                 registry.writes == 0 && !std::filesystem::exists(root / L"data" / L"settings.ini");
             SetWindowTextW(SettingsControl(window, IDC_CONFIG_FILES), L".\\tool-hold.conf");
             SendMessageW(SettingsControl(window, IDC_PREVIEW_CONFIG), BM_CLICK, 0, 0);
+            std::fwprintf(stderr, L"Smoke: closing settings cancels its unfinished draft tool.\n");
             SendMessageW(window, WM_COMMAND, IDCANCEL, 0);
         };
         const auto result = DialogBoxParamW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDD_SETTINGS),
