@@ -5,6 +5,7 @@
 #include "ui_layout.h"
 #include "xray_tool_window.h"
 
+#include <commctrl.h>
 #include <shobjidl.h>
 #include <uxtheme.h>
 #include <wrl/client.h>
@@ -44,6 +45,7 @@ struct Context {
     ThemeWindow theme;
     ThemeWindow contentTheme;
     HWND contents = nullptr;
+    HWND tooltip = nullptr;
     int scroll = 0;
     int contentHeight = 0;
     int wheelRemainder = 0;
@@ -58,6 +60,7 @@ thread_local Context* activeSettings = nullptr;
 Context::~Context()
 {
     tools->CloseOwned(dialog);
+    if (IsWindow(tooltip)) { DestroyWindow(tooltip); }
     if (messageFilter != nullptr) { UnhookWindowsHookEx(messageFilter); }
     if (activeSettings == this) { activeSettings = nullptr; }
     for (const auto icon : icons) { if (icon != nullptr) { DestroyIcon(icon); } }
@@ -139,9 +142,44 @@ UINT SettingsButtonState(HWND dialog, int id)
     return static_cast<UINT>(SendMessageW(SettingsControl(dialog, id), BM_GETCHECK, 0, 0));
 }
 
+const wchar_t* ConfigOrderTooltip()
+{
+    return Text(
+        L"Checked: load directory configuration first, then the file list. Later inputs override or supplement earlier ones under Xray's rules.\n"
+        L"Unchecked: keep Xray's native order, files before directory.\n"
+        L"Only applies when both sources are set.",
+        L"勾选：先加载目录内配置，再按文件列表顺序加载独立配置，后者按 Xray 规则覆盖或补充前者。\n"
+        L"未勾选：使用 Xray 原生顺序，先文件、后目录。\n"
+        L"仅同时配置目录和文件时生效。");
+}
+
+void CreateSettingsTooltip(Context& context)
+{
+    context.tooltip = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE, TOOLTIPS_CLASSW, nullptr,
+        WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX, CW_USEDEFAULT, CW_USEDEFAULT,
+        CW_USEDEFAULT, CW_USEDEFAULT, context.dialog, nullptr, GetModuleHandleW(nullptr), nullptr);
+    if (context.tooltip == nullptr) {
+        throw std::runtime_error(ToUtf8(WindowsError(Text(L"Cannot create the settings tooltip", L"无法创建设置悬停提示"))));
+    }
+    TOOLINFOW tool{};
+    tool.cbSize = TTTOOLINFOW_V2_SIZE;
+    tool.hwnd = context.contents;
+    tool.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+    tool.uId = reinterpret_cast<UINT_PTR>(SettingsControl(context.dialog, IDC_CONFIG_DIRECTORY_FIRST));
+    tool.lpszText = const_cast<wchar_t*>(ConfigOrderTooltip());
+    if (!SendMessageW(context.tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool))) {
+        throw std::runtime_error(Text("Cannot register the settings tooltip.", "无法注册设置悬停提示。"));
+    }
+    SendMessageW(context.tooltip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 15000);
+}
+
 void LayoutSettingsContent(Context& context)
 {
     const HWND body = context.contents;
+    if (context.tooltip != nullptr) {
+        SendMessageW(context.tooltip, TTM_POP, 0, 0);
+        SendMessageW(context.tooltip, TTM_SETMAXTIPWIDTH, 0, UiScale(body, 400));
+    }
     struct Placement { HWND control; int x, y, width, height; };
     std::vector<Placement> placements;
     const int margin = UiScale(body, 16);
@@ -210,19 +248,32 @@ void LayoutSettingsContent(Context& context)
         label(IDC_LABEL_CONFIG_DIRECTORY);
         pathRow(IDC_CONFIG_DIRECTORY, IDC_BROWSE_DIRECTORY, SingleLineControlHeight(GetDlgItem(body, IDC_CONFIG_DIRECTORY)));
         place(IDC_CONFIG_DIRECTORY_FIRST, margin, y, available, rowHeight);
-        y += rowHeight + gap;
-        label(IDC_HINT_CONFIG_ORDER);
-        y += sectionGap - gap;
+        y += rowHeight + sectionGap;
         const int checkWidth = TextButtonWidth(GetDlgItem(body, IDC_CHECK_CONFIG));
         const int previewWidth = TextButtonWidth(GetDlgItem(body, IDC_PREVIEW_CONFIG));
-        place(IDC_CHECK_CONFIG, margin, y, (std::min)(available, checkWidth), rowHeight);
         const bool stackTools = checkWidth + gap + previewWidth > available;
-        if (stackTools) { y += rowHeight + gap; }
+        const int toolsWidth = stackTools ? (std::max)(checkWidth, previewWidth) : checkWidth + gap + previewWidth;
+        const int toolsHeight = stackTools ? rowHeight * 2 + gap : rowHeight;
+        const int hintWidth = available - toolsWidth - gap;
+        SIZE hintSize{};
+        if (hintWidth >= UiScale(body, 96)) {
+            hintSize = ControlTextSize(GetDlgItem(body, IDC_HINT_CONFIG_TOOLS), hintWidth);
+        }
+        const bool inlineHint = hintSize.cy > 0 && hintSize.cx <= hintWidth;
+        const int toolsRowHeight = inlineHint ? (std::max)(toolsHeight, static_cast<int>(hintSize.cy)) : toolsHeight;
+        const int toolsY = y + (toolsRowHeight - toolsHeight) / 2;
+        place(IDC_CHECK_CONFIG, margin, toolsY, (std::min)(available, checkWidth), rowHeight);
         place(IDC_PREVIEW_CONFIG, stackTools ? margin : margin + checkWidth + gap,
-            y, (std::min)(available, previewWidth), rowHeight);
-        y += rowHeight + gap;
-        label(IDC_HINT_CONFIG_TOOLS);
-        y += sectionGap - gap;
+            toolsY + (stackTools ? rowHeight + gap : 0), (std::min)(available, previewWidth), rowHeight);
+        if (inlineHint) {
+            place(IDC_HINT_CONFIG_TOOLS, margin + toolsWidth + gap,
+                y + (toolsRowHeight - hintSize.cy) / 2, hintWidth, hintSize.cy);
+            y += toolsRowHeight + sectionGap;
+        } else {
+            y += toolsHeight + gap;
+            label(IDC_HINT_CONFIG_TOOLS);
+            y += sectionGap - gap;
+        }
         place(IDC_LOGON_STARTUP, margin, y, available, rowHeight);
         y += rowHeight + sectionGap;
         label(IDC_HINT_RELATIVE);
@@ -499,8 +550,6 @@ void SetDialogLanguage(HWND dialog)
         L"配置文件（每行一个，按顺序加载；可留空）："));
     set(IDC_LABEL_CONFIG_DIRECTORY, Text(L"Config directory (optional):", L"配置目录（可留空）："));
     set(IDC_CONFIG_DIRECTORY_FIRST, Text(L"Load config directory before config files", L"先加载配置目录，再加载配置文件"));
-    set(IDC_HINT_CONFIG_ORDER, Text(L"Applies when both are set. Later inputs override or supplement earlier ones under Xray's rules.",
-        L"仅同时配置目录和文件时生效；后加载内容按 Xray 规则覆盖或补充。"));
     set(IDC_LABEL_LOG_LINES, Text(L"Log lines per source:", L"每类日志保留行数："));
     set(IDC_LABEL_LANGUAGE, Text(L"Language:", L"语言："));
     set(IDC_LABEL_THEME, Text(L"Appearance:", L"外观："));
@@ -575,6 +624,7 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         }
         const auto* owner = ThemeWindow::From(GetWindow(dialog, GW_OWNER));
         context->theme.Apply(owner != nullptr && owner->Colors().dark, true);
+        CreateSettingsTooltip(*context);
         FitSettingsWindow(dialog, *context);
         LayoutSettings(dialog, *context);
         SetFocus(SettingsControl(dialog, IDC_LANGUAGE));
@@ -592,6 +642,8 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
     }
     if (message == WM_NCDESTROY) {
         context->tools->CloseOwned(dialog);
+        if (IsWindow(context->tooltip)) { DestroyWindow(context->tooltip); }
+        context->tooltip = nullptr;
         KillTimer(dialog, 1);
         if (context->messageFilter != nullptr) {
             UnhookWindowsHookEx(context->messageFilter);
@@ -881,16 +933,48 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                     GetWindowRect(SettingsControl(window, id), &button);
                     if (button.right != browse.right) { return false; }
                 }
-                RECT directory{}, order{}, hint{}, check{};
+                RECT directory{}, order{}, hint{}, check{}, preview{}, startup{};
                 const HWND orderControl = SettingsControl(window, IDC_CONFIG_DIRECTORY_FIRST);
                 GetWindowRect(SettingsControl(window, IDC_CONFIG_DIRECTORY), &directory);
                 GetWindowRect(orderControl, &order);
-                GetWindowRect(SettingsControl(window, IDC_HINT_CONFIG_ORDER), &hint);
+                const HWND hintControl = SettingsControl(window, IDC_HINT_CONFIG_TOOLS);
+                GetWindowRect(hintControl, &hint);
                 GetWindowRect(SettingsControl(window, IDC_CHECK_CONFIG), &check);
+                GetWindowRect(SettingsControl(window, IDC_PREVIEW_CONFIG), &preview);
+                GetWindowRect(SettingsControl(window, IDC_LOGON_STARTUP), &startup);
                 if (order.left != directory.left || order.left != check.left || order.top < directory.bottom ||
-                    hint.top < order.bottom || check.top < hint.bottom ||
+                    check.top < order.bottom ||
                     order.right - order.left < ControlTextSize(orderControl).cx + UiScale(orderControl, 24)) {
                     std::fwprintf(stderr, L"Smoke: configuration order checkbox placement or caption width failed.\n");
+                    return false;
+                }
+                const LONG buttonsRight = (std::max)(check.right, preview.right);
+                const LONG buttonsTop = (std::min)(check.top, preview.top);
+                const LONG buttonsBottom = (std::max)(check.bottom, preview.bottom);
+                const bool beside = hint.left > buttonsRight;
+                if (hint.right > order.right || hint.bottom - hint.top < ControlTextSize(hintControl, hint.right - hint.left).cy ||
+                    startup.top < (std::max)(hint.bottom, buttonsBottom) ||
+                    (beside ? std::abs(hint.top + hint.bottom - buttonsTop - buttonsBottom) > 1
+                        : hint.left != order.left || hint.top < buttonsBottom)) {
+                    std::fwprintf(stderr, L"Smoke: wrapped configuration tool hint overlaps or loses text.\n");
+                    return false;
+                }
+                if (order.right - buttonsRight - UiScale(window, 8) >= UiScale(window, 96) && !beside) {
+                    std::fwprintf(stderr, L"Smoke: configuration tool hint did not use the available right-hand column.\n");
+                    return false;
+                }
+                std::array<wchar_t, 1024> tip{};
+                TOOLINFOW tool{};
+                tool.cbSize = TTTOOLINFOW_V2_SIZE;
+                tool.hwnd = context.contents;
+                tool.uId = reinterpret_cast<UINT_PTR>(orderControl);
+                tool.lpszText = tip.data();
+                SendMessageW(context.tooltip, TTM_GETTEXTW, tip.size(), reinterpret_cast<LPARAM>(&tool));
+                const std::wstring_view tooltip(tip.data());
+                if (tooltip != ConfigOrderTooltip() ||
+                    tooltip.find(Text(L"Unchecked:", L"未勾选：")) == std::wstring_view::npos ||
+                    SendMessageW(context.tooltip, TTM_GETMAXTIPWIDTH, 0, 0) != UiScale(window, 400)) {
+                    std::fwprintf(stderr, L"Smoke: localized configuration order tooltip is missing or unwrapped.\n");
                     return false;
                 }
                 return std::abs(save.top + save.bottom - cancel.top - cancel.bottom) <= 1;
