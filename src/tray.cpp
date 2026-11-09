@@ -20,22 +20,23 @@ bool TrayIcon::Update(HWND window, HICON icon, const std::wstring& tooltip)
     data_.uCallbackMessage = kTrayCallbackMessage;
     data_.hIcon = icon;
     wcsncpy_s(data_.szTip, tooltip.c_str(), _TRUNCATE);
-    if (added_ && notify_(NIM_MODIFY, &data_)) {
+    // A TaskbarCreated notification can leave the icon registered after a DPI change.
+    const bool updated = notify_(NIM_MODIFY, &data_) != FALSE;
+    if (updated && added_) {
         return true;
     }
-    if (added_) {
+    if (!updated) {
         Remove();
+        if (!notify_(NIM_ADD, &data_)) {
+            return false;
+        }
     }
-    if (!notify_(NIM_ADD, &data_)) {
-        return false;
-    }
-    added_ = true;
     data_.uVersion = NOTIFYICON_VERSION_4;
-    if (!notify_(NIM_SETVERSION, &data_)) {
-        Remove();
-        return false;
+    added_ = notify_(NIM_SETVERSION, &data_) != FALSE;
+    if (!added_ && !updated) {
+        notify_(NIM_DELETE, &data_);
     }
-    return true;
+    return added_;
 }
 
 void TrayIcon::Remove()

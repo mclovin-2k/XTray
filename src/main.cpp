@@ -51,10 +51,29 @@ NOTIFYICONDATAW smokeTrayData{};
 bool smokeTrayAvailable = true;
 BOOL WINAPI SmokeNotifyIcon(DWORD operation, PNOTIFYICONDATAW data)
 {
-    if (operation == NIM_ADD || operation == NIM_MODIFY) {
-        smokeTrayData = *data;
+    if (!smokeTrayAvailable) {
+        return FALSE;
     }
-    return smokeTrayAvailable;
+    const bool registered = smokeTrayData.hWnd != nullptr;
+    switch (operation) {
+    case NIM_ADD:
+        if (registered) {
+            return FALSE;
+        }
+        smokeTrayData = *data;
+        return TRUE;
+    case NIM_MODIFY:
+        if (!registered) {
+            return FALSE;
+        }
+        smokeTrayData = *data;
+        return TRUE;
+    case NIM_DELETE:
+        smokeTrayData = {};
+        return TRUE;
+    default:
+        return registered;
+    }
 }
 
 std::wstring MainWindowTitle(const std::filesystem::path& root)
@@ -2105,21 +2124,29 @@ private:
             process_.Pid() != pid) {
             return false;
         }
-        TaskbarCreated();
-        if (!tray_.IsAdded() || smokeTrayData.hIcon != icons_[RunningTrayIcon] || !SmokeTestWindowBranding(true)) {
-            return false;
-        }
-        std::fwprintf(stderr, L"Smoke: tray outage recovery and language refresh.\n");
-        smokeTrayAvailable = false;
-        TaskbarCreated();
         const auto trayLines = [this] {
             const auto snapshot = logs_.Snapshot();
             return std::count_if(snapshot.lines.begin(), snapshot.lines.end(),
                 [](const auto& line) { return line->source == LogSource::Tray; });
         };
+        std::fwprintf(stderr, L"Smoke: taskbar notification with an existing icon still allows hiding.\n");
+        const auto beforeNotification = trayLines();
+        TaskbarCreated();
+        if (!tray_.IsAdded() || !SmokeTestWindowBranding(true) || trayLines() != beforeNotification) {
+            return false;
+        }
+        SendMessageW(window_, WM_CLOSE, 0, 0);
+        if (IsWindowVisible(window_) || process_.Pid() != pid) {
+            return false;
+        }
+        std::fwprintf(stderr, L"Smoke: tray outage recovery and language refresh.\n");
+        smokeTrayData = {};
+        smokeTrayAvailable = false;
+        TaskbarCreated();
         const auto failureLines = trayLines();
         SendMessageW(window_, WM_CLOSE, 0, 0);
-        if (!IsWindowVisible(window_) || tray_.IsAdded() || trayLines() != failureLines) {
+        if (!IsWindowVisible(window_) || tray_.IsAdded() ||
+            failureLines != beforeNotification + 1 || trayLines() != failureLines) {
             return false;
         }
         smokeTrayAvailable = true;

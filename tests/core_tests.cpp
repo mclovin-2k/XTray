@@ -192,29 +192,46 @@ struct TrayCall {
 };
 std::vector<TrayCall> trayCalls;
 DWORD failedTrayOperation = MAXDWORD;
+bool trayRegistered = false;
 
 BOOL WINAPI TestNotifyIcon(DWORD operation, PNOTIFYICONDATAW data)
 {
     trayCalls.push_back({operation, *data});
-    return operation != failedTrayOperation;
+    if (operation == failedTrayOperation) {
+        return FALSE;
+    }
+    switch (operation) {
+    case NIM_ADD:
+        if (trayRegistered) {
+            return FALSE;
+        }
+        trayRegistered = true;
+        return TRUE;
+    case NIM_DELETE:
+        trayRegistered = false;
+        return TRUE;
+    default:
+        return trayRegistered;
+    }
 }
 
 void TestTray()
 {
     trayCalls.clear();
     failedTrayOperation = MAXDWORD;
+    trayRegistered = false;
     const auto window = reinterpret_cast<HWND>(static_cast<INT_PTR>(1));
     const auto red = reinterpret_cast<HICON>(static_cast<INT_PTR>(2));
     const auto green = reinterpret_cast<HICON>(static_cast<INT_PTR>(3));
     TrayIcon tray(TestNotifyIcon);
     Check(tray.Update(window, red, L"XTray — Stopped") && tray.IsAdded(),
         "A tray icon could not be registered.");
-    Check(trayCalls.size() == 2 && trayCalls[0].operation == NIM_ADD &&
-        trayCalls[1].operation == NIM_SETVERSION &&
-        trayCalls[1].data.uVersion == NOTIFYICON_VERSION_4 &&
-        trayCalls[0].data.uCallbackMessage == kTrayCallbackMessage &&
-        trayCalls[0].data.uID == kTrayIconId &&
-        (trayCalls[0].data.uFlags & NIF_SHOWTIP) != 0,
+    Check(trayCalls.size() == 3 && trayCalls[0].operation == NIM_MODIFY &&
+        trayCalls[1].operation == NIM_ADD && trayCalls[2].operation == NIM_SETVERSION &&
+        trayCalls[2].data.uVersion == NOTIFYICON_VERSION_4 &&
+        trayCalls[1].data.uCallbackMessage == kTrayCallbackMessage &&
+        trayCalls[1].data.uID == kTrayIconId &&
+        (trayCalls[1].data.uFlags & NIF_SHOWTIP) != 0,
         "The tray callback, tooltip, or version contract is incorrect.");
     Check(tray.Update(window, green, L"XTray — Running") &&
         trayCalls.back().operation == NIM_MODIFY && trayCalls.back().data.hIcon == green &&
@@ -223,14 +240,25 @@ void TestTray()
     tray.Focus();
     Check(trayCalls.back().operation == NIM_SETFOCUS, "Tray focus was not restored.");
     tray.Lost();
+    const auto beforeRefresh = trayCalls.size();
+    Check(tray.Update(window, green, L"After DPI change") && tray.IsAdded() &&
+        trayCalls.size() == beforeRefresh + 2 &&
+        trayCalls[beforeRefresh].operation == NIM_MODIFY &&
+        trayCalls[beforeRefresh + 1].operation == NIM_SETVERSION,
+        "A taskbar notification discarded a registered icon.");
+    trayRegistered = false;
+    tray.Lost();
     const auto beforeRecovery = trayCalls.size();
     Check(tray.Update(window, green, std::wstring(300, L'x')) &&
-        trayCalls[beforeRecovery].operation == NIM_ADD &&
-        std::wcslen(trayCalls[beforeRecovery].data.szTip) == 127,
+        trayCalls.size() == beforeRecovery + 3 &&
+        trayCalls[beforeRecovery].operation == NIM_MODIFY &&
+        trayCalls[beforeRecovery + 1].operation == NIM_ADD &&
+        std::wcslen(trayCalls[beforeRecovery + 1].data.szTip) == 127,
         "Explorer recovery or tooltip truncation failed.");
     failedTrayOperation = NIM_MODIFY;
     const auto beforeFailure = trayCalls.size();
     Check(tray.Update(window, red, L"已停止") &&
+        trayCalls.size() == beforeFailure + 4 &&
         trayCalls[beforeFailure].operation == NIM_MODIFY &&
         trayCalls[beforeFailure + 1].operation == NIM_DELETE &&
         trayCalls[beforeFailure + 2].operation == NIM_ADD,
