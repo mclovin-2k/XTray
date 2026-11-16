@@ -10,6 +10,8 @@ namespace xtray {
 inline constexpr UINT kTrayCallbackMessage = WM_APP + 42;
 inline constexpr UINT kTrayIconId = 1;
 
+enum class TrayFailure { None, MissingWindow, MissingIcon, Add, SetVersion };
+
 class TrayIcon {
 public:
     using NotifyFunction = BOOL(WINAPI*)(DWORD, PNOTIFYICONDATAW);
@@ -22,10 +24,13 @@ public:
     void Remove();
     void Focus();
     bool IsAdded() const { return added_; }
+    TrayFailure Failure() const { return failure_; }
+    const wchar_t* FailureText() const;
 private:
     NotifyFunction notify_;
     NOTIFYICONDATAW data_{};
     bool added_ = false;
+    TrayFailure failure_ = TrayFailure::None;
 };
 
 } // namespace xtray

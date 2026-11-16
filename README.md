@@ -110,6 +110,10 @@ later does not mean every field simply replaces the earlier value.
   scrolling back to the bottom or clicking the button resumes it. Word wrap is
   on by default, and its setting is remembered. Copying includes off-screen
   logs and preserves line breaks regardless of wrapping.
+  XTray management entries include local timestamps with millisecond precision,
+  which are preserved when copied. Tray failures identify the failed step;
+  repeated failures at the same step are logged once, followed by a recovery
+  entry when the icon becomes available again.
   XTray keeps logs in memory and does not save historical logs.
   To save Xray logs to files, use [Xray's own logging configuration](https://xtls.github.io/config/log.html).
 - **Language and appearance:** Settings offers automatic, English or Chinese

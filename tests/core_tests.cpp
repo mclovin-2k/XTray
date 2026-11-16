@@ -224,7 +224,14 @@ void TestTray()
     const auto red = reinterpret_cast<HICON>(static_cast<INT_PTR>(2));
     const auto green = reinterpret_cast<HICON>(static_cast<INT_PTR>(3));
     TrayIcon tray(TestNotifyIcon);
-    Check(tray.Update(window, red, L"XTray — Stopped") && tray.IsAdded(),
+    Check(!tray.Update(nullptr, red, L"Stopped") && tray.Failure() == TrayFailure::MissingWindow &&
+        std::wstring_view(tray.FailureText()).size() != 0 && trayCalls.empty(),
+        "A missing tray window was not diagnosed.");
+    Check(!tray.Update(window, nullptr, L"Stopped") && tray.Failure() == TrayFailure::MissingIcon &&
+        std::wstring_view(tray.FailureText()).size() != 0 && trayCalls.empty(),
+        "A missing tray icon was not diagnosed.");
+    Check(tray.Update(window, red, L"XTray — Stopped") && tray.IsAdded() &&
+        tray.Failure() == TrayFailure::None && std::wstring_view(tray.FailureText()).empty(),
         "A tray icon could not be registered.");
     Check(trayCalls.size() == 3 && trayCalls[0].operation == NIM_MODIFY &&
         trayCalls[1].operation == NIM_ADD && trayCalls[2].operation == NIM_SETVERSION &&
@@ -265,14 +272,18 @@ void TestTray()
         "A failed tray modification was not recovered.");
     tray.Remove();
     failedTrayOperation = NIM_ADD;
-    Check(!tray.Update(window, red, L"Stopped") && !tray.IsAdded(),
-        "A failed tray registration was reported as available.");
+    Check(!tray.Update(window, red, L"Stopped") && !tray.IsAdded() &&
+        tray.Failure() == TrayFailure::Add &&
+        std::wstring_view(tray.FailureText()).find(L"NIM_ADD") != std::wstring_view::npos,
+        "A failed tray registration was reported as available or lost its diagnosis.");
     failedTrayOperation = NIM_SETVERSION;
     Check(!tray.Update(window, red, L"Stopped") && !tray.IsAdded() &&
-        trayCalls.back().operation == NIM_DELETE,
-        "An icon with an unusable callback version was retained.");
+        trayCalls.back().operation == NIM_DELETE && tray.Failure() == TrayFailure::SetVersion &&
+        std::wstring_view(tray.FailureText()).find(L"NIM_SETVERSION") != std::wstring_view::npos,
+        "An icon with an unusable callback version was retained or lost its diagnosis.");
     failedTrayOperation = MAXDWORD;
-    Check(tray.Update(window, red, L"Stopped"), "Tray recovery failed after a temporary outage.");
+    Check(tray.Update(window, red, L"Stopped") && tray.Failure() == TrayFailure::None &&
+        std::wstring_view(tray.FailureText()).empty(), "Tray recovery retained a stale failure.");
     tray.Remove();
     const auto removed = trayCalls.size();
     tray.Remove();
@@ -423,6 +434,40 @@ void TestUtf8AndLogs()
     const auto invalid = decoder.Append("\xED\xA0\x80Z");
     Check(invalid.find(L'\uFFFD') != std::wstring::npos && invalid.back() == L'Z',
         "Invalid surrogate sequence prevented subsequent output.");
+
+    Logs timestamped;
+    SYSTEMTIME beforeTime{}, afterTime{}, recordedTime{};
+    GetLocalTime(&beforeTime);
+    timestamped.Tray(L"第一行\r\nsecond\nthird");
+    GetLocalTime(&afterTime);
+    const auto stamped = timestamped.Snapshot();
+    Check(stamped.lines.size() == 3, "Timestamping changed management log line counting.");
+    const auto prefix = stamped.lines.front()->text.substr(0, 24);
+    Check(prefix.size() == 24 && prefix[4] == L'-' && prefix[7] == L'-' &&
+        prefix[10] == L' ' && prefix[13] == L':' && prefix[16] == L':' &&
+        prefix[19] == L'.' && prefix[23] == L' ' &&
+        swscanf_s(prefix.c_str(), L"%hu-%hu-%hu %hu:%hu:%hu.%hu",
+            &recordedTime.wYear, &recordedTime.wMonth, &recordedTime.wDay,
+            &recordedTime.wHour, &recordedTime.wMinute, &recordedTime.wSecond,
+            &recordedTime.wMilliseconds) == 7, "Management log timestamp format is incorrect.");
+    FILETIME beforeStamp{}, recordedStamp{}, afterStamp{};
+    Check(SystemTimeToFileTime(&beforeTime, &beforeStamp) &&
+        SystemTimeToFileTime(&recordedTime, &recordedStamp) &&
+        SystemTimeToFileTime(&afterTime, &afterStamp) &&
+        CompareFileTime(&beforeStamp, &recordedStamp) <= 0 && CompareFileTime(&recordedStamp, &afterStamp) <= 0,
+        "Management log timestamp is not the local time at capture.");
+    Check(stamped.lines[0]->text == prefix + L"第一行\r\n" &&
+        stamped.lines[1]->text == prefix + L"second\n" && stamped.lines[2]->text == prefix + L"third\r\n",
+        "A multiline management message lost its shared timestamp or original text.");
+    for (const auto& line : stamped.lines) {
+        Check(line->raw == ToUtf8(line->text), "The management timestamp is missing from retained UTF-8 text.");
+    }
+    const auto retained = stamped.lines.front()->text;
+    timestamped.Tray(L"later");
+    Check(stamped.lines.front()->text == retained, "A retained management timestamp changed.");
+    timestamped.Xray("original xray output\n");
+    Check(timestamped.Snapshot().lines.back()->text == L"original xray output\n",
+        "Management timestamping modified original Xray output.");
 
     Logs logs(2);
     logs.Tray(L"tray one");

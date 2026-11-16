@@ -49,9 +49,10 @@ enum IconId { StoppedTrayIcon, RunningTrayIcon, StoppedStatusIcon, RunningStatus
 
 NOTIFYICONDATAW smokeTrayData{};
 bool smokeTrayAvailable = true;
+DWORD smokeTrayFailedOperation = MAXDWORD;
 BOOL WINAPI SmokeNotifyIcon(DWORD operation, PNOTIFYICONDATAW data)
 {
-    if (!smokeTrayAvailable) {
+    if (!smokeTrayAvailable || operation == smokeTrayFailedOperation) {
         return FALSE;
     }
     const bool registered = smokeTrayData.hWnd != nullptr;
@@ -666,10 +667,12 @@ public:
         view_->Refresh();
         logs_.Xray("\xAD\xE6\x96\x87\n");
         logs_.Tray(L"界面自检");
+        const auto stampedManagement = L"[XTRAY] " + logs_.Snapshot().lines.back()->text.substr(0, 24) + L"界面自检";
         view_->Refresh();
         auto text = WindowText(logWindow_);
         if (text.find(L"[XRAY] test 中文") == std::wstring::npos ||
-            text.find(L"[XTRAY] 界面自检") == std::wstring::npos) {
+            text.find(stampedManagement) == std::wstring::npos ||
+            view_->CopyText().find(stampedManagement) == std::wstring::npos) {
             return false;
         }
         std::fwprintf(stderr, L"Smoke: source filters.\n");
@@ -712,7 +715,7 @@ public:
         view_->Refresh();
         text = WindowText(logWindow_);
         if (text.find(L"[XRAY] last") == std::wstring::npos ||
-            text.find(L"[XTRAY] 最后一行") == std::wstring::npos ||
+            text.find(L"[XTRAY] ") == std::wstring::npos || text.find(L"最后一行") == std::wstring::npos ||
             text.find(L"test 中文") != std::wstring::npos) {
             return false;
         }
@@ -1009,13 +1012,17 @@ private:
         const auto tooltip = TrayTooltipText(root_, state, running ? shownPid_ : 0);
         nextTrayAttempt_ = GetTickCount64() + 2000;
         if (tray_.Update(window_, icons_[running ? RunningTrayIcon : StoppedTrayIcon], tooltip)) {
-            trayFailureReported_ = false;
+            if (shownTrayFailure_ != TrayFailure::None) {
+                logs_.Tray(Text(L"The tray icon is available again.", L"托盘图标已恢复。"));
+            }
+            shownTrayFailure_ = TrayFailure::None;
         } else {
-            if (!trayFailureReported_) {
-                logs_.Tray(Text(
-                    L"The tray icon is unavailable. The window will stay visible; XTray will retry automatically.",
-                    L"托盘图标暂不可用；窗口将保持显示，XTray 会自动重试。"));
-                trayFailureReported_ = true;
+            if (shownTrayFailure_ != tray_.Failure()) {
+                logs_.Tray(std::wstring(Text(L"The tray icon is unavailable: ", L"托盘图标暂不可用：")) +
+                    tray_.FailureText() + Text(
+                        L". The window will stay visible; XTray will retry automatically.",
+                        L"；窗口将保持显示，XTray 会自动重试。"));
+                shownTrayFailure_ = tray_.Failure();
             }
             if (!IsWindowVisible(window_)) {
                 ShowMain();
@@ -1366,7 +1373,7 @@ private:
             const auto copied = data != nullptr ? static_cast<const wchar_t*>(GlobalLock(data)) : nullptr;
             const bool complete = copied != nullptr && std::wstring_view(copied) == expected &&
                 expected.find(L"\r\n") != std::wstring::npos &&
-                (filter == 2 || expected.find(L"[XTRAY] scroll tray 89") != std::wstring::npos) &&
+                (filter == 2 || expected.find(L" scroll tray 89") != std::wstring::npos) &&
                 (filter == 1 || expected.find(L"[XRAY] scroll xray 89") != std::wstring::npos) &&
                 (filter != 1 || expected.find(L"[XRAY]") == std::wstring::npos) &&
                 (filter != 2 || expected.find(L"[XTRAY]") == std::wstring::npos);
@@ -2129,6 +2136,12 @@ private:
             return std::count_if(snapshot.lines.begin(), snapshot.lines.end(),
                 [](const auto& line) { return line->source == LogSource::Tray; });
         };
+        const auto lastTrayContains = [this](std::wstring_view text) {
+            const auto snapshot = logs_.Snapshot();
+            const auto found = std::find_if(snapshot.lines.rbegin(), snapshot.lines.rend(),
+                [](const auto& line) { return line->source == LogSource::Tray; });
+            return found != snapshot.lines.rend() && (*found)->text.find(text) != std::wstring::npos;
+        };
         std::fwprintf(stderr, L"Smoke: taskbar notification with an existing icon still allows hiding.\n");
         const auto beforeNotification = trayLines();
         TaskbarCreated();
@@ -2139,19 +2152,36 @@ private:
         if (IsWindowVisible(window_) || process_.Pid() != pid) {
             return false;
         }
-        std::fwprintf(stderr, L"Smoke: tray outage recovery and language refresh.\n");
+        std::fwprintf(stderr, L"Smoke: tray failure stages, repeated-failure suppression, recovery, and language refresh.\n");
         smokeTrayData = {};
         smokeTrayAvailable = false;
         TaskbarCreated();
         const auto failureLines = trayLines();
         SendMessageW(window_, WM_CLOSE, 0, 0);
         if (!IsWindowVisible(window_) || tray_.IsAdded() ||
-            failureLines != beforeNotification + 1 || trayLines() != failureLines) {
+            failureLines != beforeNotification + 1 || trayLines() != failureLines ||
+            !lastTrayContains(L"NIM_ADD")) {
             return false;
         }
         smokeTrayAvailable = true;
+        smokeTrayFailedOperation = NIM_SETVERSION;
         TaskbarCreated();
-        if (!tray_.IsAdded()) {
+        const auto versionFailureLines = trayLines();
+        SendMessageW(window_, WM_CLOSE, 0, 0);
+        if (tray_.IsAdded() || !IsWindowVisible(window_) ||
+            versionFailureLines != failureLines + 1 || trayLines() != versionFailureLines ||
+            !lastTrayContains(L"NIM_SETVERSION")) {
+            return false;
+        }
+        smokeTrayFailedOperation = MAXDWORD;
+        TaskbarCreated();
+        const auto recoveredLines = trayLines();
+        if (!tray_.IsAdded() || recoveredLines != versionFailureLines + 1 ||
+            !lastTrayContains(Text(L"available again", L"托盘图标已恢复"))) {
+            return false;
+        }
+        TaskbarCreated();
+        if (trayLines() != recoveredLines || process_.Pid() != pid) {
             return false;
         }
         ApplyLanguage(Language::English);
@@ -2325,7 +2355,7 @@ private:
     bool exiting_ = false;
     bool logonStarted_ = false;
     bool failureSmokePending_ = false;
-    bool trayFailureReported_ = false;
+    TrayFailure shownTrayFailure_ = TrayFailure::None;
     UINT taskbarCreated_ = 0;
     ULONGLONG nextTrayAttempt_ = 0;
     Settings settings_;

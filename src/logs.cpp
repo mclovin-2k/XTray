@@ -2,6 +2,7 @@
 #include "win32.h"
 
 #include <algorithm>
+#include <cwchar>
 
 namespace xtray {
 
@@ -111,7 +112,20 @@ void Logs::Append(LogSource source, std::string_view bytes)
 
 void Logs::Tray(const std::wstring& message)
 {
-    Append(LogSource::Tray, ToUtf8(message + L"\r\n"));
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    wchar_t timestamp[32]{};
+    swprintf_s(timestamp, L"%04d-%02d-%02d %02d:%02d:%02d.%03d ",
+        now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond, now.wMilliseconds);
+    std::wstring text(timestamp);
+    for (const wchar_t character : message) {
+        text.push_back(character);
+        if (character == L'\n') {
+            text += timestamp;
+        }
+    }
+    text += L"\r\n";
+    Append(LogSource::Tray, ToUtf8(text));
 }
 
 void Logs::Xray(std::string_view bytes)
