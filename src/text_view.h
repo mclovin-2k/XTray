@@ -110,6 +110,12 @@ inline HWND RecreateTextView(HWND window, bool wrapped, const ThemePalette& pale
         throw std::runtime_error(Text("Cannot restore the complete text after changing word wrap.",
             "切换自动换行后无法还原完整文本。"));
     }
+    // RTF font sizes use half points, so restore the original pixel-derived size.
+    characterFormat.dwMask &= CFM_FACE | CFM_SIZE | CFM_CHARSET;
+    if (!SendMessageW(next.value, EM_SETCHARFORMAT, SCF_ALL, reinterpret_cast<LPARAM>(&characterFormat))) {
+        throw std::runtime_error(Text("Cannot restore the font after changing word wrap.",
+            "切换自动换行后无法还原字体。"));
+    }
     if (mode == TM_PLAINTEXT) {
         CHARFORMAT2W colors{};
         colors.cbSize = sizeof(colors);
