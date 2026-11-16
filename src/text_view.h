@@ -51,6 +51,9 @@ struct TextViewStream {
 
 inline HWND RecreateTextView(HWND window, bool wrapped, const ThemePalette& palette)
 {
+    CHARFORMAT2W characterFormat{};
+    characterFormat.cbSize = sizeof(characterFormat);
+    SendMessageW(window, EM_GETCHARFORMAT, SCF_DEFAULT, reinterpret_cast<LPARAM>(&characterFormat));
     CHARRANGE selection{};
     POINT scroll{}, before{};
     SendMessageW(window, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&selection));
@@ -94,7 +97,11 @@ inline HWND RecreateTextView(HWND window, bool wrapped, const ThemePalette& pale
     SendMessageW(next.value, EM_SETTEXTMODE, mode, 0);
     SendMessageW(next.value, EM_SETUNDOLIMIT, 0, 0);
     SendMessageW(next.value, EM_EXLIMITTEXT, 0, SendMessageW(window, EM_GETLIMITTEXT, 0, 0));
-    SendMessageW(next.value, WM_SETFONT, static_cast<WPARAM>(SendMessageW(window, WM_GETFONT, 0, 0)), FALSE);
+    // Rich Edit exposes its font through character formatting instead of WM_GETFONT.
+    if (!SendMessageW(next.value, EM_SETCHARFORMAT, SCF_DEFAULT, reinterpret_cast<LPARAM>(&characterFormat))) {
+        throw std::runtime_error(Text("Cannot restore the font after changing word wrap.",
+            "切换自动换行后无法还原字体。"));
+    }
     SetWindowTheme(next.value, palette.dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
     SendMessageW(next.value, EM_SETBKGNDCOLOR, 0, palette.logBackground);
     EDITSTREAM restored{reinterpret_cast<DWORD_PTR>(&text), 0, TextViewStream::Read};

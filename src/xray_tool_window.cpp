@@ -715,6 +715,17 @@ bool SmokeTestXrayTools(HWND owner, const std::filesystem::path& root)
                 !SmokeTestNativeControl(copy) || !SmokeTestNativeControl(wrap)) {
                 return fail(L"native copy/wrap toolbar, default state, alignment, or theme");
             }
+            for (int toggle = 0; toggle < 4; ++toggle) {
+                SendMessageW(wrap, BM_CLICK, 0, 0);
+                CHARFORMAT2W afterFont{};
+                afterFont.cbSize = sizeof(afterFont);
+                SendMessageW(GetDlgItem(tool.Window(), kOutputId), EM_GETCHARFORMAT,
+                    SCF_SELECTION, reinterpret_cast<LPARAM>(&afterFont));
+                if (std::wcscmp(afterFont.szFaceName, format.szFaceName) != 0 ||
+                    afterFont.yHeight != format.yHeight || afterFont.bCharSet != format.bCharSet) {
+                    return fail(L"word wrap changed the tool output font or size");
+                }
+            }
         }
     }
     settings.configFiles = {L".\\tool-large.conf"};
@@ -892,8 +903,20 @@ bool SmokeTestXrayTools(HWND owner, const std::filesystem::path& root)
         details.find(running.commandLine) == std::wstring::npos) {
         return fail(L"retained exit information or selection during live updates");
     }
-    SendMessageW(GetDlgItem(info.Window(), kWordWrapId), BM_CLICK, 0, 0);
-    if (text(GetDlgItem(info.Window(), kOutputId)) != details) { return fail(L"run information word wrap changed metadata"); }
+    CHARFORMAT2W infoFont{};
+    infoFont.cbSize = sizeof(infoFont);
+    SendMessageW(infoOutput, EM_GETCHARFORMAT, SCF_SELECTION, reinterpret_cast<LPARAM>(&infoFont));
+    for (int toggle = 0; toggle < 4; ++toggle) {
+        SendMessageW(GetDlgItem(info.Window(), kWordWrapId), BM_CLICK, 0, 0);
+        const HWND currentOutput = GetDlgItem(info.Window(), kOutputId);
+        CHARFORMAT2W afterFont{};
+        afterFont.cbSize = sizeof(afterFont);
+        SendMessageW(currentOutput, EM_GETCHARFORMAT, SCF_SELECTION, reinterpret_cast<LPARAM>(&afterFont));
+        if (text(currentOutput) != details || std::wcscmp(afterFont.szFaceName, infoFont.szFaceName) != 0 ||
+            afterFont.yHeight != infoFont.yHeight || afterFont.bCharSet != infoFont.bCharSet) {
+            return fail(L"run information word wrap changed metadata, font, or size");
+        }
+    }
     SendMessageW(GetDlgItem(info.Window(), kCopyId), BM_CLICK, 0, 0);
     if (!OpenClipboard(owner)) { return fail(L"reading copied run information"); }
     const HANDLE infoData = GetClipboardData(CF_UNICODETEXT);

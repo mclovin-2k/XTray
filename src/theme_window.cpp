@@ -275,8 +275,14 @@ bool SmokeTestTextWordWrap(HWND reference)
     if (output == nullptr) { return false; }
     SendMessageW(output, EM_SETTEXTMODE, mode, 0);
     SetWindowTheme(output, dark ? L"DarkMode_Explorer" : L"Explorer", nullptr);
-    const auto font = static_cast<WPARAM>(SendMessageW(reference, WM_GETFONT, 0, 0));
-    SendMessageW(output, WM_SETFONT, font, FALSE);
+    CHARFORMAT2W font{};
+    font.cbSize = sizeof(font);
+    SendMessageW(reference, EM_GETCHARFORMAT, SCF_DEFAULT, reinterpret_cast<LPARAM>(&font));
+    const DWORD fontMask = CFM_FACE | CFM_SIZE | CFM_CHARSET;
+    if ((font.dwMask & fontMask) != fontMask || font.yHeight <= 0 || font.szFaceName[0] == L'\0') {
+        return false;
+    }
+    SendMessageW(output, EM_SETCHARFORMAT, SCF_DEFAULT, reinterpret_cast<LPARAM>(&font));
     std::wstring document;
     for (int line = 0; line < 12; ++line) {
         document += L"wrap probe 中文 " + std::wstring(220, L'x') + L"\r\n";
@@ -323,14 +329,18 @@ bool SmokeTestTextWordWrap(HWND reference)
         POINT point{};
         SendMessageW(output, EM_POSFROMCHAR, reinterpret_cast<WPARAM>(&point), anchor);
         if (output == previous || IsWindow(previous) || GetDlgItem(host.value, 1) != output ||
-            SendMessageW(output, WM_GETFONT, 0, 0) != static_cast<LRESULT>(font) ||
+            (formatting.dwMask & fontMask) != fontMask ||
+            std::wcscmp(formatting.szFaceName, font.szFaceName) != 0 ||
+            formatting.yHeight != font.yHeight || formatting.bCharSet != font.bCharSet ||
+            formatting.bPitchAndFamily != font.bPitchAndFamily ||
             (wrapped ? !hidden : !thumb) || after.cpMin != selected.cpMin || after.cpMax != selected.cpMax ||
             text != document || topCharacter != anchor || std::abs(point.y - initialPoint.y) > 1 ||
             (mode == TM_RICHTEXT && (formatting.dwEffects & CFE_BOLD) == 0) ||
             (mode == TM_PLAINTEXT && formatting.crTextColor != palette.text)) {
             std::fwprintf(stderr,
-                L"Smoke: recreated wrap view failed (wrapped=%d, hidden=%d, range=%d/%u, thumb=%d..%d, characters=%zu/%zu).\n",
-                wrapped, hidden, range.nMax, range.nPage, bar.xyThumbTop, bar.xyThumbBottom, text.size(), document.size());
+                L"Smoke: recreated wrap view failed (wrapped=%d, hidden=%d, range=%d/%u, thumb=%d..%d, characters=%zu/%zu, font=%ls/%ls, size=%ld/%ld).\n",
+                wrapped, hidden, range.nMax, range.nPage, bar.xyThumbTop, bar.xyThumbBottom, text.size(), document.size(),
+                formatting.szFaceName, font.szFaceName, formatting.yHeight, font.yHeight);
             return false;
         }
     }
