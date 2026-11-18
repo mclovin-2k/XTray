@@ -789,7 +789,7 @@ public:
             return false;
         }
         return SmokeTestIconResources() && SmokeTestInstanceText() && SmokeTestUiChanges() && SmokeTestLogButtons() &&
-            SmokeTestKeywordFilter() && SmokeTestThemes() && SmokeTestMenus() && SmokeTestXrayTools(window_, root_) &&
+            SmokeTestKeywordFilter() && SmokeTestKeywordHighlights() && SmokeTestThemes() && SmokeTestMenus() && SmokeTestXrayTools(window_, root_) &&
             SmokeTestLogon() && SmokeTestTray();
     }
 
@@ -1649,6 +1649,76 @@ private:
         }
         Command(ClearLogs, BN_CLICKED);
         return SetLogWordWrap(true, false);
+    }
+
+    bool SmokeTestKeywordHighlights()
+    {
+        std::fwprintf(stderr, L"Smoke: keyword highlight ranges, theme, wrap, and clearing.\n");
+        const auto fail = [](const wchar_t* reason) {
+            std::fwprintf(stderr, L"Smoke: keyword highlights failed: %ls.\n", reason);
+            return false;
+        };
+        const auto type = [this](const wchar_t* text) {
+            SendMessageW(keyword_, EM_SETSEL, 0, -1);
+            SendMessageW(keyword_, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(text));
+        };
+        const auto background = [this](const wchar_t* text, LONG start = 0) {
+            FINDTEXTEXW find{{start, -1}, const_cast<wchar_t*>(text), {}};
+            if (SendMessageW(logWindow_, EM_FINDTEXTEXW, FR_DOWN | FR_MATCHCASE,
+                reinterpret_cast<LPARAM>(&find)) < 0) {
+                return CLR_INVALID;
+            }
+            CHARRANGE selection{};
+            SendMessageW(logWindow_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&selection));
+            CHARFORMAT2W format{};
+            format.cbSize = sizeof(format);
+            SendMessageW(logWindow_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&find.chrgText));
+            SendMessageW(logWindow_, EM_GETCHARFORMAT, SCF_SELECTION, reinterpret_cast<LPARAM>(&format));
+            SendMessageW(logWindow_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&selection));
+            return (format.dwMask & CFM_BACKCOLOR) != 0 ? format.crBackColor : CLR_INVALID;
+        };
+
+        logs_.Xray("prefix DNS resolved / dns resolved [XRAY] suffix\n");
+        const auto light = theme_.Colors();
+        type(L"RAY");
+        if (background(L"RAY") != light.logBackground || background(L"RAY", 7) != light.logMatchBackground) {
+            return fail(L"the source label must stay plain when the same text matches in the body");
+        }
+        type(L"dns");
+        if (background(L"DNS") != light.logMatchBackground || background(L"dns") != light.logMatchBackground ||
+            background(L"prefix") != light.logBackground || background(L"resolved") != light.logBackground) {
+            return fail(L"highlight all literal occurrences and clear the old highlight on a retained row");
+        }
+        SendMessageW(wildcards_, BM_CLICK, 0, 0);
+        type(L"*dns*resolved*");
+        if (background(L"DNS resolved") != light.logMatchBackground ||
+            background(L"dns resolved") != light.logMatchBackground || background(L" / ") != light.logBackground) {
+            return fail(L"highlight each wildcard span including its interior");
+        }
+        const auto original = settings_.theme;
+        settings_.theme = ThemeMode::Dark;
+        UpdateTheme(false);
+        const auto dark = theme_.Colors();
+        SetLogWordWrap(false, false);
+        if (!dark.dark || background(L"dns resolved") != dark.logMatchBackground ||
+            background(L"prefix") != dark.logBackground) {
+            return fail(L"dark theme and wrap must retain the match background");
+        }
+        SetLogWordWrap(true, false);
+        type(L"*");
+        if (background(L"DNS resolved / dns resolved") != dark.logBackground) {
+            return fail(L"star-only filtering must keep the row without a highlight");
+        }
+        type(L"dns");
+        SendMessageW(clearKeyword_, BM_CLICK, 0, 0);
+        if (!WindowText(keyword_).empty() || background(L"DNS resolved / dns resolved") != dark.logBackground) {
+            return fail(L"clearing the keyword must remove all background highlights");
+        }
+        SendMessageW(wildcards_, BM_CLICK, 0, 0);
+        settings_.theme = original;
+        UpdateTheme(themeMonitor_->SystemDark());
+        Command(ClearLogs, BN_CLICKED);
+        return true;
     }
 
     bool SmokeTestControlAlignment()

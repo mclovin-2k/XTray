@@ -4,6 +4,8 @@
 #include "theme.h"
 #include <windows.h>
 
+#include <utility>
+
 namespace xtray {
 
 class LogView {
@@ -27,6 +29,7 @@ private:
         std::shared_ptr<const std::wstring> display;
     };
     struct Anchor { uint64_t id; LONG offset; };
+    std::optional<std::pair<size_t, size_t>> FindMatch(std::wstring_view content) const;
     bool Matches(const LogLine& line) const;
     Anchor Capture(LONG position) const;
     LONG Restore(Anchor anchor, const std::vector<ViewLine>& lines) const;

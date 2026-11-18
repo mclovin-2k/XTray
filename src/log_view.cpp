@@ -20,8 +20,15 @@ size_t NextCharacter(std::wstring_view text, size_t position)
     return position;
 }
 
-bool MatchesWildcard(std::wstring_view text, std::wstring_view pattern, bool matchCase)
+std::optional<std::pair<size_t, size_t>> FindWildcard(std::wstring_view text, std::wstring_view pattern, bool matchCase)
 {
+    const size_t first = pattern.find_first_not_of(L'*');
+    if (first == std::wstring_view::npos) {
+        return std::pair{size_t{0}, size_t{0}};
+    }
+    // At either edge, '*' is redundant when matching a substring.
+    pattern = pattern.substr(first, pattern.find_last_not_of(L'*') - first + 1);
+    size_t start = 0;
     size_t position = 0;
     size_t token = 0;
     // An implicit leading '*' lets the pattern match anywhere within an original log line.
@@ -47,13 +54,22 @@ bool MatchesWildcard(std::wstring_view text, std::wstring_view pattern, bool mat
             }
         }
         if (retryPosition == text.size()) {
-            return false;
+            return std::nullopt;
         }
         retryPosition = NextCharacter(text, retryPosition);
         position = retryPosition;
         token = retryToken;
+        if (retryToken == 0) { start = position; }
     }
-    return true;
+    return std::pair{start, position};
+}
+
+std::wstring_view LogContent(const LogLine& line)
+{
+    std::wstring_view content = line.text;
+    if (content.ends_with(L'\n')) { content.remove_suffix(1); }
+    if (content.ends_with(L'\r')) { content.remove_suffix(1); }
+    return content;
 }
 
 std::wstring DisplayText(const LogLine& line)
@@ -133,6 +149,7 @@ void LogView::SetKeywordFilter(std::wstring keyword, bool wildcards, bool matchC
     keyword_ = std::move(keyword);
     useWildcards_ = wildcards;
     matchCase_ = matchCase;
+    formatAll_ = true;
     revision_ = UINT64_MAX;
     Refresh();
 }
@@ -152,26 +169,35 @@ void LogView::ObserveNavigation(const MSG& message)
     }
 }
 
+std::optional<std::pair<size_t, size_t>> LogView::FindMatch(std::wstring_view content) const
+{
+    if (useWildcards_) {
+        return FindWildcard(content, keyword_, matchCase_);
+    }
+    if (content.size() < keyword_.size()) {
+        return std::nullopt;
+    }
+    size_t start;
+    if (matchCase_) {
+        start = content.find(keyword_);
+    } else {
+        const int position = FindStringOrdinal(FIND_FROMSTART, content.data(),
+            static_cast<int>(content.size()), keyword_.data(), static_cast<int>(keyword_.size()), TRUE);
+        start = position < 0 ? std::wstring_view::npos : static_cast<size_t>(position);
+    }
+    if (start == std::wstring_view::npos) {
+        return std::nullopt;
+    }
+    return std::pair{start, start + keyword_.size()};
+}
+
 bool LogView::Matches(const LogLine& line) const
 {
     if ((filter_ == 1 && line.source != LogSource::Tray) ||
         (filter_ == 2 && line.source != LogSource::Xray)) {
         return false;
     }
-    if (keyword_.empty()) {
-        return true;
-    }
-    std::wstring_view content = line.text;
-    if (content.ends_with(L'\n')) { content.remove_suffix(1); }
-    if (content.ends_with(L'\r')) { content.remove_suffix(1); }
-    if (useWildcards_) {
-        return MatchesWildcard(content, keyword_, matchCase_);
-    }
-    if (matchCase_) {
-        return content.find(keyword_) != std::wstring_view::npos;
-    }
-    return content.size() >= keyword_.size() && FindStringOrdinal(FIND_FROMSTART, content.data(),
-        static_cast<int>(content.size()), keyword_.data(), static_cast<int>(keyword_.size()), TRUE) >= 0;
+    return keyword_.empty() || FindMatch(LogContent(line)).has_value();
 }
 
 void LogView::Clear()
@@ -311,7 +337,8 @@ void LogView::ApplyFormat(LONG position, const ViewLine& line)
     SendMessageW(window_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&paragraph));
     CHARFORMAT2W format{};
     format.cbSize = sizeof(format);
-    format.dwMask = CFM_COLOR | CFM_BOLD;
+    format.dwMask = CFM_COLOR | CFM_BOLD | CFM_BACKCOLOR;
+    format.crBackColor = palette_.logBackground;
     format.crTextColor = line.line->source == LogSource::Tray
         ? palette_.trayLog : palette_.xrayLog;
     SendMessageW(window_, EM_SETCHARFORMAT, SCF_SELECTION, reinterpret_cast<LPARAM>(&format));
@@ -328,6 +355,32 @@ void LogView::ApplyFormat(LONG position, const ViewLine& line)
     paragraphFormat.dxOffset = indentTwips_[static_cast<size_t>(line.line->source)];
     SendMessageW(window_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&paragraph));
     SendMessageW(window_, EM_SETPARAFORMAT, 0, reinterpret_cast<LPARAM>(&paragraphFormat));
+
+    if (keyword_.empty()) { return; }
+    const auto content = LogContent(*line.line);
+    const LONG contentPosition = position + labelLength + 1;
+    format.dwMask = CFM_BACKCOLOR;
+    format.dwEffects = 0;
+    format.crBackColor = palette_.logMatchBackground;
+    const auto paint = [&](const CHARRANGE& range) {
+        SendMessageW(window_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&range));
+        SendMessageW(window_, EM_SETCHARFORMAT, SCF_SELECTION, reinterpret_cast<LPARAM>(&format));
+    };
+
+    CHARRANGE highlight{contentPosition, contentPosition};
+    size_t offset = 0;
+    while (offset < content.size()) {
+        const auto match = FindMatch(content.substr(offset));
+        if (!match || match->first == match->second) { break; }
+        const LONG first = contentPosition + static_cast<LONG>(offset + match->first);
+        if (highlight.cpMax != first) {
+            if (highlight.cpMin < highlight.cpMax) { paint(highlight); }
+            highlight.cpMin = first;
+        }
+        offset += match->second;
+        highlight.cpMax = contentPosition + static_cast<LONG>(offset);
+    }
+    if (highlight.cpMin < highlight.cpMax) { paint(highlight); }
 }
 
 void LogView::Refresh(bool latest)

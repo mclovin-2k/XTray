@@ -12,7 +12,7 @@ inline constexpr UINT kSystemThemeMessage = WM_APP + 44;
 struct ThemePalette {
     bool dark;
     COLORREF window, surface, text, disabled, border, button, hot, pressed;
-    COLORREF selection, selectionText, logBackground, trayLog, xrayLog;
+    COLORREF selection, selectionText, logBackground, trayLog, xrayLog, logMatchBackground;
     bool operator==(const ThemePalette&) const = default;
 };
 
