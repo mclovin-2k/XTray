@@ -31,7 +31,7 @@ ThemePalette PaletteFor(bool dark)
     return {false, RGB(255, 255, 255), RGB(255, 255, 255), RGB(32, 32, 32),
         RGB(107, 107, 107), RGB(138, 138, 138), RGB(245, 245, 245),
         RGB(229, 241, 251), RGB(204, 228, 247), RGB(0, 103, 192), RGB(255, 255, 255),
-        RGB(255, 255, 255), RGB(180, 83, 9), RGB(32, 32, 32), RGB(255, 240, 168)};
+        RGB(255, 255, 255), RGB(180, 83, 9), RGB(32, 32, 32), RGB(255, 246, 186)};
 }
 
 struct ThemeMonitor::State {

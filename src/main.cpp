@@ -1662,7 +1662,7 @@ private:
             SendMessageW(keyword_, EM_SETSEL, 0, -1);
             SendMessageW(keyword_, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(text));
         };
-        const auto background = [this](const wchar_t* text, LONG start = 0) {
+        const auto background = [this](const wchar_t* text, LONG start = 0) -> COLORREF {
             FINDTEXTEXW find{{start, -1}, const_cast<wchar_t*>(text), {}};
             if (SendMessageW(logWindow_, EM_FINDTEXTEXW, FR_DOWN | FR_MATCHCASE,
                 reinterpret_cast<LPARAM>(&find)) < 0) {
