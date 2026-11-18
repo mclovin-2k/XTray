@@ -10,6 +10,8 @@ class LogView {
 public:
     LogView(HWND window, Logs& logs);
     void SetFilter(int filter);
+    void SetKeywordFilter(std::wstring keyword, bool wildcards, bool matchCase);
+    void ObserveNavigation(const MSG& message);
     void Clear();
     void ScrollToEnd();
     void SetWordWrap(bool enabled);
@@ -25,6 +27,7 @@ private:
         std::shared_ptr<const std::wstring> display;
     };
     struct Anchor { uint64_t id; LONG offset; };
+    bool Matches(const LogLine& line) const;
     Anchor Capture(LONG position) const;
     LONG Restore(Anchor anchor, const std::vector<ViewLine>& lines) const;
     void Replace(LONG position, LONG length, const ViewLine* line);
@@ -32,6 +35,10 @@ private:
     HWND window_;
     Logs& logs_;
     int filter_ = 0;
+    std::wstring keyword_;
+    bool useWildcards_ = false;
+    bool matchCase_ = false;
+    std::optional<Anchor> pausedReadingAnchor_;
     bool formatAll_ = true;
     bool wordWrap_ = true;
     ThemePalette palette_ = PaletteFor(false);

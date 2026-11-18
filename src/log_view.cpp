@@ -10,6 +10,52 @@
 namespace xtray {
 namespace {
 
+size_t NextCharacter(std::wstring_view text, size_t position)
+{
+    const wchar_t first = text[position++];
+    if (first >= 0xd800 && first <= 0xdbff && position < text.size() &&
+        text[position] >= 0xdc00 && text[position] <= 0xdfff) {
+        ++position;
+    }
+    return position;
+}
+
+bool MatchesWildcard(std::wstring_view text, std::wstring_view pattern, bool matchCase)
+{
+    size_t position = 0;
+    size_t token = 0;
+    // An implicit leading '*' lets the pattern match anywhere within an original log line.
+    size_t retryPosition = 0;
+    size_t retryToken = 0;
+    while (token < pattern.size()) {
+        if (pattern[token] == L'*') {
+            retryPosition = position;
+            retryToken = ++token;
+            continue;
+        }
+        if (position < text.size()) {
+            const size_t end = NextCharacter(text, position);
+            const size_t tokenEnd = NextCharacter(pattern, token);
+            const auto character = text.substr(position, end - position);
+            const auto literal = pattern.substr(token, tokenEnd - token);
+            if (pattern[token] == L'?' || character == literal ||
+                (!matchCase && CompareStringOrdinal(character.data(), static_cast<int>(character.size()),
+                    literal.data(), static_cast<int>(literal.size()), TRUE) == CSTR_EQUAL)) {
+                position = end;
+                token = tokenEnd;
+                continue;
+            }
+        }
+        if (retryPosition == text.size()) {
+            return false;
+        }
+        retryPosition = NextCharacter(text, retryPosition);
+        position = retryPosition;
+        token = retryToken;
+    }
+    return true;
+}
+
 std::wstring DisplayText(const LogLine& line)
 {
     std::wstring text = line.source == LogSource::Tray ? L"[XTRAY] " : L"[XRAY] ";
@@ -59,6 +105,7 @@ void LogView::SetFilter(int filter)
 {
     if (filter_ != filter) {
         filter_ = filter;
+        pausedReadingAnchor_.reset();
         revision_ = UINT64_MAX;
         SetWindowTextW(window_, L"");
         lines_.clear();
@@ -66,20 +113,84 @@ void LogView::SetFilter(int filter)
     }
 }
 
+void LogView::SetKeywordFilter(std::wstring keyword, bool wildcards, bool matchCase)
+{
+    wildcards = wildcards && keyword.find_first_of(L"?*") != std::wstring::npos;
+    if (keyword_ == keyword && useWildcards_ == wildcards && matchCase_ == matchCase) {
+        return;
+    }
+    if (keyword_.empty() && keyword.empty()) {
+        useWildcards_ = wildcards;
+        matchCase_ = matchCase;
+        return;
+    }
+    // An empty or short result can sit at the bottom even if the user paused following.
+    if (!Following() && !pausedReadingAnchor_) {
+        const auto firstLine = SendMessageW(window_, EM_GETFIRSTVISIBLELINE, 0, 0);
+        const auto character = static_cast<LONG>(SendMessageW(window_, EM_LINEINDEX, firstLine, 0));
+        pausedReadingAnchor_ = Capture((std::max)(LONG{0}, character));
+    }
+    keyword_ = std::move(keyword);
+    useWildcards_ = wildcards;
+    matchCase_ = matchCase;
+    revision_ = UINT64_MAX;
+    Refresh();
+}
+
+void LogView::ObserveNavigation(const MSG& message)
+{
+    if (!pausedReadingAnchor_ || lines_.empty() || message.hwnd != window_) {
+        return;
+    }
+    const bool scroll = message.message == WM_MOUSEWHEEL || message.message == WM_VSCROLL ||
+        (message.message == WM_NCLBUTTONDOWN && message.wParam == HTVSCROLL);
+    const bool moveCaret = message.message == WM_KEYDOWN &&
+        (message.wParam == VK_PRIOR || message.wParam == VK_NEXT || message.wParam == VK_HOME ||
+            message.wParam == VK_END || message.wParam == VK_UP || message.wParam == VK_DOWN);
+    if (scroll || moveCaret || message.message == WM_LBUTTONDOWN) {
+        pausedReadingAnchor_.reset();
+    }
+}
+
+bool LogView::Matches(const LogLine& line) const
+{
+    if ((filter_ == 1 && line.source != LogSource::Tray) ||
+        (filter_ == 2 && line.source != LogSource::Xray)) {
+        return false;
+    }
+    if (keyword_.empty()) {
+        return true;
+    }
+    std::wstring_view content = line.text;
+    if (content.ends_with(L'\n')) { content.remove_suffix(1); }
+    if (content.ends_with(L'\r')) { content.remove_suffix(1); }
+    if (useWildcards_) {
+        return MatchesWildcard(content, keyword_, matchCase_);
+    }
+    if (matchCase_) {
+        return content.find(keyword_) != std::wstring_view::npos;
+    }
+    return content.size() >= keyword_.size() && FindStringOrdinal(FIND_FROMSTART, content.data(),
+        static_cast<int>(content.size()), keyword_.data(), static_cast<int>(keyword_.size()), TRUE) >= 0;
+}
+
 void LogView::Clear()
 {
     logs_.Clear(filter_ == 0 ? std::nullopt
         : std::optional{filter_ == 1 ? LogSource::Tray : LogSource::Xray});
-    Refresh(true);
+    ScrollToEnd();
 }
 
 void LogView::ScrollToEnd()
 {
+    pausedReadingAnchor_.reset();
     Refresh(true);
 }
 
 bool LogView::Following() const
 {
+    if (pausedReadingAnchor_) { return false; }
+    if (lines_.empty()) { return true; }
     CHARRANGE selection{};
     SendMessageW(window_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&selection));
     return selection.cpMin == selection.cpMax && TextViewAtEnd(window_);
@@ -98,8 +209,7 @@ std::wstring LogView::CopyText() const
 {
     std::wstring text;
     for (const auto& line : logs_.Snapshot().lines) {
-        if ((filter_ == 1 && line->source != LogSource::Tray) ||
-            (filter_ == 2 && line->source != LogSource::Xray)) {
+        if (!Matches(*line)) {
             continue;
         }
         for (const wchar_t character : DisplayText(*line)) {
@@ -230,8 +340,7 @@ void LogView::Refresh(bool latest)
     next.reserve(snapshot.lines.size());
     size_t previous = 0;
     for (const auto& line : snapshot.lines) {
-        if ((filter_ == 1 && line->source != LogSource::Tray) ||
-            (filter_ == 2 && line->source != LogSource::Xray)) {
+        if (!Matches(*line)) {
             continue;
         }
         while (previous < lines_.size() && lines_[previous].line->id < line->id) {
@@ -244,6 +353,12 @@ void LogView::Refresh(bool latest)
         }
     }
 
+    if (!latest && !formatAll_ && std::equal(next.begin(), next.end(), lines_.begin(), lines_.end(),
+        [](const ViewLine& a, const ViewLine& b) { return a.display == b.display; })) {
+        revision_ = snapshot.revision;
+        return;
+    }
+
     CHARRANGE selection{};
     SendMessageW(window_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&selection));
     const auto start = Capture(selection.cpMin);
@@ -251,7 +366,7 @@ void LogView::Refresh(bool latest)
     const bool follow = latest || Following();
     const auto firstLine = SendMessageW(window_, EM_GETFIRSTVISIBLELINE, 0, 0);
     const LONG topCharacter = static_cast<LONG>(SendMessageW(window_, EM_LINEINDEX, firstLine, 0));
-    const auto top = Capture((std::max)(LONG{0}, topCharacter));
+    const auto top = pausedReadingAnchor_.value_or(Capture((std::max)(LONG{0}, topCharacter)));
     POINT oldPoint{};
     SendMessageW(window_, EM_POSFROMCHAR, reinterpret_cast<WPARAM>(&oldPoint),
         (std::max)(LONG{0}, topCharacter));

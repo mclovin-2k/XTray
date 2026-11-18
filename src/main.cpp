@@ -43,9 +43,22 @@ constexpr UINT kExitMessage = WM_APP + 43;
 constexpr UINT kRuntimeFailureTestMessage = WM_APP + 49;
 constexpr DWORD kWindowStyle = WS_OVERLAPPEDWINDOW;
 enum ControlId { Run = 2001, Stop, Restart, SettingsButton, FileList, OpenFile,
-    OpenFileDirectory, OpenDirectory, Filter, ClearLogs, ScrollToEnd, ShowGui, ExitApp, CheckConfig, PreviewConfig, ShowVersion, CopyLogs, WordWrap, ShowRunInfo };
+    OpenFileDirectory, OpenDirectory, Filter, ClearLogs, ScrollToEnd, ShowGui, ExitApp, CheckConfig, PreviewConfig, ShowVersion, CopyLogs, WordWrap, ShowRunInfo,
+    LogKeyword, LogWildcards, LogMatchCase, ClearLogKeyword };
 enum IconId { StoppedTrayIcon, RunningTrayIcon, StoppedStatusIcon, RunningStatusIcon,
     SmallWindowIcon, LargeWindowIcon, IconCount };
+
+LRESULT CALLBACK LogFilterFrameProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam,
+    UINT_PTR, DWORD_PTR)
+{
+    switch (message) {
+    case WM_COMMAND:
+    case WM_NOTIFY:
+    case WM_CTLCOLOREDIT:
+        return SendMessageW(GetParent(window), message, wParam, lParam);
+    }
+    return DefSubclassProc(window, message, wParam, lParam);
+}
 
 NOTIFYICONDATAW smokeTrayData{};
 bool smokeTrayAvailable = true;
@@ -248,9 +261,9 @@ public:
         }
         dpi_ = GetDpiForWindow(window);
         const auto child = [this](DWORD extended, const wchar_t* type, const wchar_t* title,
-            DWORD style, int id = 0) {
+            DWORD style, int id = 0, HWND parent = nullptr) {
             const HWND control = CreateWindowExW(extended, type, title, WS_CHILD | WS_VISIBLE | style,
-                0, 0, 0, 0, window_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
+                0, 0, 0, 0, parent != nullptr ? parent : window_, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
                 GetModuleHandleW(nullptr), nullptr);
             if (control == nullptr) {
                 throw std::runtime_error(Text("Cannot create a window control.", "无法创建窗口控件。"));
@@ -272,6 +285,17 @@ public:
         openDirectory_ = child(0, L"BUTTON", L"", WS_TABSTOP, OpenDirectory);
         filterLabel_ = child(0, L"STATIC", L"", SS_CENTERIMAGE);
         filter_ = child(0, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, Filter);
+        keywordFrame_ = child(WS_EX_CLIENTEDGE | WS_EX_CONTROLPARENT, L"STATIC", L"",
+            SS_LEFTNOWORDWRAP | WS_CLIPCHILDREN);
+        if (!SetWindowSubclass(keywordFrame_, LogFilterFrameProcedure, 1, 0)) {
+            throw std::runtime_error(Text("Cannot initialize the log filter.", "无法初始化日志过滤框。"));
+        }
+        keyword_ = child(0, L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL, LogKeyword, keywordFrame_);
+        wildcards_ = child(0, L"BUTTON", L"?*", WS_TABSTOP | BS_AUTOCHECKBOX | BS_PUSHLIKE,
+            LogWildcards, keywordFrame_);
+        matchCase_ = child(0, L"BUTTON", L"Cc", WS_TABSTOP | BS_AUTOCHECKBOX | BS_PUSHLIKE,
+            LogMatchCase, keywordFrame_);
+        clearKeyword_ = child(0, L"BUTTON", L"×", WS_TABSTOP | WS_DISABLED, ClearLogKeyword, keywordFrame_);
         copyLogs_ = child(0, L"BUTTON", L"", WS_TABSTOP | BS_ICON, CopyLogs);
         clearLogs_ = child(0, L"BUTTON", L"", WS_TABSTOP | BS_ICON, ClearLogs);
         scrollToEnd_ = child(0, L"BUTTON", L"", WS_TABSTOP | BS_ICON | BS_CHECKBOX | BS_PUSHLIKE, ScrollToEnd);
@@ -359,9 +383,26 @@ public:
         move(openDirectory_, directoryX, Scale(98), directoryWidth, Scale(26));
         const int filterY = Scale(134), filterHeight = Scale(32);
         move(filterLabel_, margin, filterY + (filterHeight - Scale(26)) / 2, labelWidth, Scale(26));
-        move(filter_, inputX, filterY + (filterHeight - ComboBoxHeight(filter_)) / 2, Scale(136), Scale(180));
         const int iconButton = Scale(32);
         int toolX = width - margin - iconButton * 4 - gap * 3;
+        const int sourceWidth = std::clamp(toolX - inputX - 2 * gap - Scale(144), Scale(1), Scale(136));
+        move(filter_, inputX, filterY + (filterHeight - ComboBoxHeight(filter_)) / 2, sourceWidth, Scale(180));
+        const int keywordX = inputX + sourceWidth + gap;
+        move(keywordFrame_, keywordX, filterY, toolX - gap - keywordX, filterHeight);
+        RECT keywordClient{};
+        GetClientRect(keywordFrame_, &keywordClient);
+        const int inset = Scale(2);
+        const int toggleHeight = static_cast<int>(keywordClient.bottom) - 2 * inset;
+        int keywordRight = static_cast<int>(keywordClient.right) - inset;
+        for (const auto control : {clearKeyword_, matchCase_, wildcards_}) {
+            const int buttonWidth = (std::max)(Scale(23), static_cast<int>(ControlTextSize(control).cx) + Scale(6));
+            keywordRight -= buttonWidth;
+            move(control, keywordRight, inset, buttonWidth, toggleHeight);
+            keywordRight -= inset;
+        }
+        const int editHeight = SingleLineControlHeight(keyword_);
+        move(keyword_, Scale(5), (static_cast<int>(keywordClient.bottom) - editHeight) / 2,
+            keywordRight - Scale(5), editHeight);
         for (const auto control : {copyLogs_, clearLogs_, scrollToEnd_, wordWrap_}) {
             move(control, toolX, filterY, iconButton, filterHeight);
             toolX += iconButton + gap;
@@ -417,10 +458,12 @@ public:
             (id == Run || id == Stop || id == Restart || id == SettingsButton ||
                 id == OpenFile || id == OpenFileDirectory || id == OpenDirectory ||
                 id == CopyLogs || id == WordWrap || id == ClearLogs || id == ScrollToEnd || id == ExitApp ||
+                id == LogWildcards || id == LogMatchCase || id == ClearLogKeyword ||
                 id == CheckConfig || id == PreviewConfig || id == ShowVersion || id == ShowRunInfo);
         const bool selection = notification == CBN_SELCHANGE && (id == FileList || id == Filter);
+        const bool keywordChanged = id == LogKeyword && notification == EN_CHANGE;
         // Native controls notify their parent during creation and programmatic updates.
-        if (!ready_ || updatingUi_ || (!button && !selection)) {
+        if (!ready_ || updatingUi_ || (!button && !selection && !keywordChanged)) {
             return;
         }
         if (id == ExitApp) {
@@ -471,6 +514,15 @@ public:
             } else {
                 view_->ScrollToEnd();
             }
+        } else if (id == ClearLogKeyword) {
+            SetFocus(keyword_);
+            SetWindowTextW(keyword_, L"");
+        } else if (id == LogKeyword || id == LogWildcards || id == LogMatchCase) {
+            auto keyword = WindowText(keyword_);
+            EnableWindow(clearKeyword_, !keyword.empty());
+            view_->SetKeywordFilter(std::move(keyword),
+                SendMessageW(wildcards_, BM_GETCHECK, 0, 0) == BST_CHECKED,
+                SendMessageW(matchCase_, BM_GETCHECK, 0, 0) == BST_CHECKED);
         } else if (id == Filter && notification == CBN_SELCHANGE) {
             view_->SetFilter(static_cast<int>(SendMessageW(filter_, CB_GETCURSEL, 0, 0)));
         } else if (id == FileList && notification == CBN_SELCHANGE) {
@@ -508,6 +560,19 @@ public:
             menuActive_ = false;
             if (std::exchange(menuThemePending_, false)) {
                 PostMessageW(window_, kSystemThemeMessage, 0, 0);
+            }
+        }
+        if (message == WM_NOTIFY && lParam != 0) {
+            const auto* header = reinterpret_cast<const NMHDR*>(lParam);
+            const auto button = header->hwndFrom;
+            if (header->code == NM_CUSTOMDRAW &&
+                (button == wildcards_ || button == matchCase_ || button == clearKeyword_)) {
+                const auto& item = *reinterpret_cast<const NMCUSTOMDRAW*>(lParam);
+                if (item.dwDrawStage == CDDS_PREPAINT) {
+                    DrawKeywordButton(item);
+                    result = CDRF_SKIPDEFAULT;
+                    return true;
+                }
             }
         }
         return menuTheme_.Handle(message, wParam, lParam, result) ||
@@ -650,8 +715,11 @@ public:
         }
     }
 
-    bool TranslateToolMessage(MSG& message) const
+    bool TranslateMessageForControls(MSG& message)
     {
+        if (view_) {
+            view_->ObserveNavigation(message);
+        }
         return toolWindow_.Translate(message) || runInfoWindow_.Translate(message);
     }
 
@@ -720,7 +788,7 @@ public:
             return false;
         }
         return SmokeTestIconResources() && SmokeTestInstanceText() && SmokeTestUiChanges() && SmokeTestLogButtons() &&
-            SmokeTestThemes() && SmokeTestMenus() && SmokeTestXrayTools(window_, root_) &&
+            SmokeTestKeywordFilter() && SmokeTestThemes() && SmokeTestMenus() && SmokeTestXrayTools(window_, root_) &&
             SmokeTestLogon() && SmokeTestTray();
     }
 
@@ -836,6 +904,31 @@ private:
         return passed;
     }
 
+    void DrawKeywordButton(const NMCUSTOMDRAW& item) const
+    {
+        const HWND button = item.hdr.hwndFrom;
+        const bool checked = SendMessageW(button, BM_GETCHECK, 0, 0) == BST_CHECKED;
+        const auto& colors = theme_.Colors();
+        const bool enabled = IsWindowEnabled(button) != FALSE;
+        const bool hovered = enabled && (item.uItemState & (CDIS_HOT | CDIS_SELECTED)) != 0;
+        const auto background = checked ? (colors.dark ? colors.hot : colors.pressed)
+            : hovered ? colors.button : colors.surface;
+        const int saved = SaveDC(item.hdc);
+        SetDCBrushColor(item.hdc, background);
+        FillRect(item.hdc, &item.rc, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+        SetBkMode(item.hdc, TRANSPARENT);
+        SetTextColor(item.hdc, enabled ? colors.text : colors.disabled);
+        if (font_ != nullptr) { SelectObject(item.hdc, font_); }
+        RECT text = item.rc;
+        const auto* caption = button == wildcards_ ? L"?*" : button == matchCase_ ? L"Cc" : L"×";
+        DrawTextW(item.hdc, caption, -1, &text, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
+        if (GetFocus() == button && (SendMessageW(button, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS) == 0) {
+            InflateRect(&text, -1, -1);
+            DrawFocusRect(item.hdc, &text);
+        }
+        if (saved != 0) { RestoreDC(item.hdc, saved); }
+    }
+
     void UpdateLogButtonState()
     {
         for (const auto& [control, checked] : std::array{
@@ -901,10 +994,11 @@ private:
                 Text(L"Cannot create log button tooltips", L"无法创建日志按钮提示"))));
         }
         // Without a Common Controls v6 manifest, TOOLINFO must exclude the v6-only field.
-        for (const auto control : {copyLogs_, clearLogs_, scrollToEnd_, wordWrap_, files_, directory_}) {
+        for (const auto control : {copyLogs_, clearLogs_, scrollToEnd_, wordWrap_, files_, directory_,
+            wildcards_, matchCase_, clearKeyword_}) {
             TOOLINFOW tool{};
             tool.cbSize = TTTOOLINFOW_V2_SIZE;
-            tool.hwnd = window_;
+            tool.hwnd = GetParent(control);
             tool.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
             tool.uId = reinterpret_cast<UINT_PTR>(control);
             tool.lpszText = const_cast<wchar_t*>(L"");
@@ -928,11 +1022,14 @@ private:
             std::pair{clearLogs_, Text(L"Clear logs", L"清空日志")},
             std::pair{copyLogs_, Text(L"Copy all", L"复制全部")},
             std::pair{wordWrap_, WordWrapCaption(settings_.logWordWrap)},
+            std::pair{wildcards_, Text(L"Use wildcards (? and *)", L"使用通配符（? 和 *）")},
+            std::pair{matchCase_, Text(L"Match case", L"区分大小写")},
+            std::pair{clearKeyword_, Text(L"Clear filter text", L"清除关键词")},
             std::pair{files_, fileTooltip_.c_str()},
             std::pair{directory_, directoryTooltip_.c_str()}}) {
             TOOLINFOW tool{};
             tool.cbSize = TTTOOLINFOW_V2_SIZE;
-            tool.hwnd = window_;
+            tool.hwnd = GetParent(control);
             tool.uId = reinterpret_cast<UINT_PTR>(control);
             tool.lpszText = const_cast<wchar_t*>(label);
             SendMessageW(tooltip_, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tool));
@@ -945,7 +1042,7 @@ private:
         std::wstring text(32768, L'\0');
         TOOLINFOW tool{};
         tool.cbSize = TTTOOLINFOW_V2_SIZE;
-        tool.hwnd = window_;
+        tool.hwnd = GetParent(control);
         tool.uId = reinterpret_cast<UINT_PTR>(control);
         tool.lpszText = text.data();
         SendMessageW(tooltip_, TTM_GETTEXTW, text.size(), reinterpret_cast<LPARAM>(&tool));
@@ -1110,6 +1207,8 @@ private:
         for (const auto& [control, text] : captions) {
             SetWindowTextW(control, text);
         }
+        SendMessageW(keyword_, EM_SETCUEBANNER, FALSE,
+            reinterpret_cast<LPARAM>(Text(L"Filter logs…", L"过滤日志…")));
         const auto selected = SendMessageW(filter_, CB_GETCURSEL, 0, 0);
         SendMessageW(filter_, CB_RESETCONTENT, 0, 0);
         for (const auto* item : {Text(L"All", L"全部"), Text(L"XTray only", L"仅 XTray"),
@@ -1433,6 +1532,116 @@ private:
         return true;
     }
 
+    bool SmokeTestKeywordFilter()
+    {
+        std::fwprintf(stderr, L"Smoke: live keyword filter, source tags, clipboard, clearing, and reading position.\n");
+        const auto fail = [](const wchar_t* check) {
+            std::fwprintf(stderr, L"Smoke: keyword filter failed: %ls.\n", check);
+            return false;
+        };
+        const auto selectSource = [this](int source) {
+            SendMessageW(filter_, CB_SETCURSEL, source, 0);
+            Command(Filter, CBN_SELCHANGE);
+        };
+        const auto contains = [this](std::wstring_view text) {
+            return WindowText(logWindow_).find(text) != std::wstring::npos;
+        };
+        const auto type = [this](const wchar_t* keyword) { SetWindowTextW(keyword_, keyword); };
+        const auto click = [](HWND button) { SendMessageW(button, BM_CLICK, 0, 0); };
+        if (IsWindowEnabled(clearKeyword_) || SendMessageW(wildcards_, BM_GETCHECK, 0, 0) != BST_UNCHECKED ||
+            SendMessageW(matchCase_, BM_GETCHECK, 0, 0) != BST_UNCHECKED ||
+            GetNextDlgTabItem(window_, filter_, FALSE) != keyword_) {
+            return fail(L"default toggles or keyboard order");
+        }
+
+        logs_.Tray(L"dns tray failed");
+        logs_.Xray("dnsfailed\nDNS lookup FAILED\nplain output\npath?q=*literal\n"
+            "actual [XRAY] in the log body\nemoji \xF0\x9F\x98\x80 done\n");
+        type(L"RAY");
+        if (!contains(L"actual [XRAY] in the log body") ||
+            contains(L"plain output") || contains(L"dns tray failed")) {
+            return fail(L"source tags contributed to keyword matching");
+        }
+        type(L"?q=*literal");
+        if (!contains(L"path?q=*literal") || contains(L"dnsfailed")) {
+            return fail(L"literal punctuation with wildcards off");
+        }
+        type(L"dns*failed");
+        click(wildcards_);
+        if (!contains(L"dnsfailed") || !contains(L"DNS lookup FAILED") || !contains(L"dns tray failed") ||
+            contains(L"plain output") || SendMessageW(wildcards_, BM_GETCHECK, 0, 0) != BST_CHECKED) {
+            return fail(L"wildcard star or case-insensitive matching");
+        }
+        type(L"emoji ? done");
+        if (!contains(L"emoji \U0001F600 done")) {
+            return fail(L"question mark must match one Unicode character");
+        }
+        type(L"segment match");
+        logs_.Xray("segment mat");
+        logs_.Tray(L"interleaved event");
+        Refresh();
+        if (WindowText(logWindow_).size() != 0 || IsWindowEnabled(copyLogs_)) {
+            return fail(L"no-match display and copy state");
+        }
+        logs_.Xray("ch\n");
+        Refresh();
+        if (!contains(L"segment match")) { return fail(L"partial line became a match"); }
+
+        selectSource(2);
+        type(L"dns*failed");
+        click(matchCase_);
+        Command(CopyLogs, BN_CLICKED);
+        if (!OpenClipboard(window_)) { return fail(L"clipboard unavailable"); }
+        const HANDLE data = GetClipboardData(CF_UNICODETEXT);
+        const auto copied = data != nullptr ? static_cast<const wchar_t*>(GlobalLock(data)) : nullptr;
+        const bool exactCopy = copied != nullptr && std::wstring_view(copied) == L"[XRAY] dnsfailed\r\n";
+        if (copied != nullptr) { GlobalUnlock(data); }
+        CloseClipboard();
+        if (!exactCopy || contains(L"DNS lookup FAILED") || contains(L"dns tray failed")) {
+            return fail(L"copy must apply both filters and preserve source labels");
+        }
+        Command(ClearLogs, BN_CLICKED);
+        click(clearKeyword_);
+        if (!WindowText(keyword_).empty() || !WindowText(logWindow_).empty() || IsWindowEnabled(clearKeyword_) ||
+            SendMessageW(wildcards_, BM_GETCHECK, 0, 0) != BST_CHECKED ||
+            SendMessageW(matchCase_, BM_GETCHECK, 0, 0) != BST_CHECKED) {
+            return fail(L"clearing logs must also delete hidden entries from the selected source");
+        }
+        selectSource(0);
+        if (!contains(L"dns tray failed") || contains(L"plain output")) {
+            return fail(L"clearing Xray logs must preserve the other source");
+        }
+        click(wildcards_);
+        click(matchCase_);
+
+        for (int index = 0; index < 80; ++index) {
+            logs_.Xray("follow test " + std::to_string(index) + "\n");
+        }
+        Refresh();
+        SetLogWordWrap(false, false);
+        Command(ScrollToEnd, BN_CLICKED);
+        SendMessageW(logWindow_, WM_VSCROLL, SB_TOP, 0);
+        type(L"no matches for this keyword");
+        if (SendMessageW(scrollToEnd_, BM_GETCHECK, 0, 0) != BST_UNCHECKED) {
+            return fail(L"empty filtered view resumed paused auto-follow");
+        }
+        click(clearKeyword_);
+        if (SendMessageW(logWindow_, EM_GETFIRSTVISIBLELINE, 0, 0) != 0 ||
+            SendMessageW(scrollToEnd_, BM_GETCHECK, 0, 0) != BST_UNCHECKED ||
+            SendMessageW(wordWrap_, BM_GETCHECK, 0, 0) != BST_UNCHECKED ||
+            (GetWindowLongPtrW(logWindow_, GWL_STYLE) & WS_HSCROLL) == 0) {
+            return fail(L"clearing the keyword lost the paused reading position or wrap setting");
+        }
+        type(L"no matches for this keyword");
+        Command(ScrollToEnd, BN_CLICKED);
+        click(clearKeyword_);
+        if (!TextViewAtEnd(logWindow_) || SendMessageW(scrollToEnd_, BM_GETCHECK, 0, 0) != BST_CHECKED) {
+            return fail(L"clearing the keyword did not follow the latest log");
+        }
+        Command(ClearLogs, BN_CLICKED);
+        return SetLogWordWrap(true, false);
+    }
+
     bool SmokeTestControlAlignment()
     {
         const auto rowAligned = [](const auto& controls, const wchar_t* name) {
@@ -1464,10 +1673,24 @@ private:
             }
             return true;
         };
+        RECT source{}, frame{}, edit{}, wildcard{}, matchCase{}, clear{}, copy{};
+        GetWindowRect(filter_, &source);
+        GetWindowRect(keywordFrame_, &frame);
+        GetWindowRect(keyword_, &edit);
+        GetWindowRect(wildcards_, &wildcard);
+        GetWindowRect(matchCase_, &matchCase);
+        GetWindowRect(clearKeyword_, &clear);
+        GetWindowRect(copyLogs_, &copy);
+        if (source.right >= frame.left || frame.right >= copy.left || edit.left <= frame.left ||
+            edit.right > wildcard.left || wildcard.right > matchCase.left || matchCase.right > clear.left ||
+            clear.right >= frame.right) {
+            std::fwprintf(stderr, L"Smoke: log keyword field or button layout overlaps.\n");
+            return false;
+        }
         return rowAligned(std::array{statusIcon_, status_, run_, stop_, restart_}, L"status") &&
             rowAligned(std::array{fileLabel_, files_, openFile_, openFileDirectory_}, L"config files") &&
             rowAligned(std::array{directoryLabel_, directory_, openDirectory_}, L"config directory") &&
-            rowAligned(std::array{filterLabel_, filter_, copyLogs_, clearLogs_, scrollToEnd_, wordWrap_}, L"log source") &&
+            rowAligned(std::array{filterLabel_, filter_, keywordFrame_, copyLogs_, clearLogs_, scrollToEnd_, wordWrap_}, L"log source") &&
             columnAligned(std::array{statusIcon_, fileLabel_, directoryLabel_, filterLabel_, logWindow_}, false) &&
             columnAligned(std::array{files_, directory_, filter_}, false) &&
             columnAligned(std::array{restart_, openFileDirectory_, openDirectory_, wordWrap_, logWindow_}, true);
@@ -2251,7 +2474,8 @@ private:
         }
         const std::array controls{status_, run_, stop_, restart_, fileLabel_,
             files_, openFile_, openFileDirectory_, directoryLabel_, directory_, openDirectory_,
-            filterLabel_, filter_, copyLogs_, clearLogs_, scrollToEnd_, wordWrap_};
+            filterLabel_, filter_, keyword_, wildcards_, matchCase_, clearKeyword_,
+            copyLogs_, clearLogs_, scrollToEnd_, wordWrap_};
         for (const auto control : controls) {
             SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         }
@@ -2373,6 +2597,7 @@ private:
     HWND fileLabel_ = nullptr, files_ = nullptr, openFile_ = nullptr, openFileDirectory_ = nullptr;
     HWND directoryLabel_ = nullptr, directory_ = nullptr, openDirectory_ = nullptr;
     HWND filterLabel_ = nullptr, filter_ = nullptr, scrollToEnd_ = nullptr, clearLogs_ = nullptr;
+    HWND keywordFrame_ = nullptr, keyword_ = nullptr, wildcards_ = nullptr, matchCase_ = nullptr, clearKeyword_ = nullptr;
     HWND copyLogs_ = nullptr, wordWrap_ = nullptr;
     HWND logWindow_ = nullptr, tooltip_ = nullptr;
     std::wstring fileTooltip_, directoryTooltip_;
@@ -2620,7 +2845,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR commandLine, int showCo
         MSG message{};
         BOOL result;
         while ((result = GetMessageW(&message, nullptr, 0, 0)) > 0) {
-            if (!app.TranslateToolMessage(message) && !IsDialogMessageW(window, &message)) {
+            if (!app.TranslateMessageForControls(message) && !IsDialogMessageW(window, &message)) {
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
