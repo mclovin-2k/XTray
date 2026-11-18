@@ -516,7 +516,8 @@ public:
             }
         } else if (id == ClearLogKeyword) {
             SetFocus(keyword_);
-            SetWindowTextW(keyword_, L"");
+            SendMessageW(keyword_, EM_SETSEL, 0, -1);
+            SendMessageW(keyword_, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(L""));
         } else if (id == LogKeyword || id == LogWildcards || id == LogMatchCase) {
             auto keyword = WindowText(keyword_);
             EnableWindow(clearKeyword_, !keyword.empty());
@@ -1546,7 +1547,10 @@ private:
         const auto contains = [this](std::wstring_view text) {
             return WindowText(logWindow_).find(text) != std::wstring::npos;
         };
-        const auto type = [this](const wchar_t* keyword) { SetWindowTextW(keyword_, keyword); };
+        const auto type = [this](const wchar_t* keyword) {
+            SendMessageW(keyword_, EM_SETSEL, 0, -1);
+            SendMessageW(keyword_, EM_REPLACESEL, FALSE, reinterpret_cast<LPARAM>(keyword));
+        };
         const auto click = [](HWND button) { SendMessageW(button, BM_CLICK, 0, 0); };
         if (IsWindowEnabled(clearKeyword_) || SendMessageW(wildcards_, BM_GETCHECK, 0, 0) != BST_UNCHECKED ||
             SendMessageW(matchCase_, BM_GETCHECK, 0, 0) != BST_UNCHECKED ||
@@ -1558,9 +1562,14 @@ private:
         logs_.Xray("dnsfailed\nDNS lookup FAILED\nplain output\npath?q=*literal\n"
             "actual [XRAY] in the log body\nemoji \xF0\x9F\x98\x80 done\n");
         type(L"RAY");
-        if (!contains(L"actual [XRAY] in the log body") ||
-            contains(L"plain output") || contains(L"dns tray failed")) {
-            return fail(L"source tags contributed to keyword matching");
+        if (WindowText(keyword_) != L"RAY" || !IsWindowEnabled(clearKeyword_)) {
+            return fail(L"editing the keyword did not notify the main window");
+        }
+        if (view_->CopyText() != L"[XRAY] actual [XRAY] in the log body\r\n") {
+            return fail(L"keyword did not match exactly the original log body");
+        }
+        if (!contains(L"actual [XRAY] in the log body") || contains(L"plain output") || contains(L"dns tray failed")) {
+            return fail(L"keyword matching did not update the displayed log");
         }
         type(L"?q=*literal");
         if (!contains(L"path?q=*literal") || contains(L"dnsfailed")) {
