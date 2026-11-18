@@ -1558,7 +1558,7 @@ private:
             return fail(L"default toggles or keyboard order");
         }
 
-        logs_.Tray(L"dns tray failed");
+        logs_.Tray(L"dns management failed");
         logs_.Xray("dnsfailed\nDNS lookup FAILED\nplain output\npath?q=*literal\n"
             "actual [XRAY] in the log body\nemoji \xF0\x9F\x98\x80 done\n");
         type(L"RAY");
@@ -1568,7 +1568,7 @@ private:
         if (view_->CopyText() != L"[XRAY] actual [XRAY] in the log body\r\n") {
             return fail(L"keyword did not match exactly the original log body");
         }
-        if (!contains(L"actual [XRAY] in the log body") || contains(L"plain output") || contains(L"dns tray failed")) {
+        if (!contains(L"actual [XRAY] in the log body") || contains(L"plain output") || contains(L"dns management failed")) {
             return fail(L"keyword matching did not update the displayed log");
         }
         type(L"?q=*literal");
@@ -1577,7 +1577,7 @@ private:
         }
         type(L"dns*failed");
         click(wildcards_);
-        if (!contains(L"dnsfailed") || !contains(L"DNS lookup FAILED") || !contains(L"dns tray failed") ||
+        if (!contains(L"dnsfailed") || !contains(L"DNS lookup FAILED") || !contains(L"dns management failed") ||
             contains(L"plain output") || SendMessageW(wildcards_, BM_GETCHECK, 0, 0) != BST_CHECKED) {
             return fail(L"wildcard star or case-insensitive matching");
         }
@@ -1606,7 +1606,7 @@ private:
         const bool exactCopy = copied != nullptr && std::wstring_view(copied) == L"[XRAY] dnsfailed\r\n";
         if (copied != nullptr) { GlobalUnlock(data); }
         CloseClipboard();
-        if (!exactCopy || contains(L"DNS lookup FAILED") || contains(L"dns tray failed")) {
+        if (!exactCopy || contains(L"DNS lookup FAILED") || contains(L"dns management failed")) {
             return fail(L"copy must apply both filters and preserve source labels");
         }
         Command(ClearLogs, BN_CLICKED);
@@ -1617,7 +1617,7 @@ private:
             return fail(L"clearing logs must also delete hidden entries from the selected source");
         }
         selectSource(0);
-        if (!contains(L"dns tray failed") || contains(L"plain output")) {
+        if (!contains(L"dns management failed") || contains(L"plain output")) {
             return fail(L"clearing Xray logs must preserve the other source");
         }
         click(wildcards_);
