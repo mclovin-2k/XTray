@@ -104,9 +104,10 @@ later does not mean every field simply replaces the earlier value.
 - **Configuration shortcuts:** open a saved configuration file, its containing
   folder or the configured directory from the main window.
 - **Logs:** choose all output, XTray only or Xray only, then type a keyword to
-  filter log contents as they arrive. Matching text is highlighted. Use `?*`
-  for wildcards, `Cc` to match case, and `×` to clear the keyword. Copy all copies the retained rows that
-  match both filters. Clear logs clears the entire selected source. The scroll-to-end button stays
+  filter log contents as they arrive. Matching text is highlighted. In the filter
+  field, use `×` to clear the keyword, `Cc` to match case, and `?*` for wildcards.
+  Copy all copies the retained rows that match both filters. Clear logs clears
+  the entire selected source. The scroll-to-end button stays
   pressed while following new output; scrolling up pauses following, and
   scrolling back to the bottom or clicking the button resumes it. Word wrap is
   on by default, and its setting is remembered. Copying includes off-screen

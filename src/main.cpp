@@ -291,11 +291,11 @@ public:
             throw std::runtime_error(Text("Cannot initialize the log filter.", "无法初始化日志过滤框。"));
         }
         keyword_ = child(0, L"EDIT", L"", WS_TABSTOP | ES_AUTOHSCROLL, LogKeyword, keywordFrame_);
-        wildcards_ = child(0, L"BUTTON", L"?*", WS_TABSTOP | BS_AUTOCHECKBOX | BS_PUSHLIKE,
-            LogWildcards, keywordFrame_);
+        clearKeyword_ = child(0, L"BUTTON", L"×", WS_TABSTOP | WS_DISABLED, ClearLogKeyword, keywordFrame_);
         matchCase_ = child(0, L"BUTTON", L"Cc", WS_TABSTOP | BS_AUTOCHECKBOX | BS_PUSHLIKE,
             LogMatchCase, keywordFrame_);
-        clearKeyword_ = child(0, L"BUTTON", L"×", WS_TABSTOP | WS_DISABLED, ClearLogKeyword, keywordFrame_);
+        wildcards_ = child(0, L"BUTTON", L"?*", WS_TABSTOP | BS_AUTOCHECKBOX | BS_PUSHLIKE,
+            LogWildcards, keywordFrame_);
         copyLogs_ = child(0, L"BUTTON", L"", WS_TABSTOP | BS_ICON, CopyLogs);
         clearLogs_ = child(0, L"BUTTON", L"", WS_TABSTOP | BS_ICON, ClearLogs);
         scrollToEnd_ = child(0, L"BUTTON", L"", WS_TABSTOP | BS_ICON | BS_CHECKBOX | BS_PUSHLIKE, ScrollToEnd);
@@ -394,7 +394,7 @@ public:
         const int inset = Scale(2);
         const int toggleHeight = static_cast<int>(keywordClient.bottom) - 2 * inset;
         int keywordRight = static_cast<int>(keywordClient.right) - inset;
-        for (const auto control : {clearKeyword_, matchCase_, wildcards_}) {
+        for (const auto control : {wildcards_, matchCase_, clearKeyword_}) {
             const int buttonWidth = (std::max)(Scale(23), static_cast<int>(ControlTextSize(control).cx) + Scale(6));
             keywordRight -= buttonWidth;
             move(control, keywordRight, inset, buttonWidth, toggleHeight);
@@ -1554,7 +1554,9 @@ private:
         const auto click = [](HWND button) { SendMessageW(button, BM_CLICK, 0, 0); };
         if (IsWindowEnabled(clearKeyword_) || SendMessageW(wildcards_, BM_GETCHECK, 0, 0) != BST_UNCHECKED ||
             SendMessageW(matchCase_, BM_GETCHECK, 0, 0) != BST_UNCHECKED ||
-            GetNextDlgTabItem(window_, filter_, FALSE) != keyword_) {
+            GetNextDlgTabItem(window_, filter_, FALSE) != keyword_ ||
+            GetNextDlgTabItem(window_, keyword_, FALSE) != matchCase_ ||
+            GetNextDlgTabItem(window_, matchCase_, FALSE) != wildcards_) {
             return fail(L"default toggles or keyboard order");
         }
 
@@ -1564,6 +1566,11 @@ private:
         type(L"RAY");
         if (WindowText(keyword_) != L"RAY" || !IsWindowEnabled(clearKeyword_)) {
             return fail(L"editing the keyword did not notify the main window");
+        }
+        if (GetNextDlgTabItem(window_, keyword_, FALSE) != clearKeyword_ ||
+            GetNextDlgTabItem(window_, clearKeyword_, FALSE) != matchCase_ ||
+            GetNextDlgTabItem(window_, matchCase_, TRUE) != clearKeyword_) {
+            return fail(L"keyboard order with clear keyword enabled");
         }
         if (view_->CopyText() != L"[XRAY] actual [XRAY] in the log body\r\n") {
             return fail(L"keyword did not match exactly the original log body");
@@ -1761,8 +1768,8 @@ private:
         GetWindowRect(clearKeyword_, &clear);
         GetWindowRect(copyLogs_, &copy);
         if (source.right >= frame.left || frame.right >= copy.left || edit.left <= frame.left ||
-            edit.right > wildcard.left || wildcard.right > matchCase.left || matchCase.right > clear.left ||
-            clear.right >= frame.right) {
+            edit.right > clear.left || clear.right > matchCase.left || matchCase.right > wildcard.left ||
+            wildcard.right >= frame.right) {
             std::fwprintf(stderr, L"Smoke: log keyword field or button layout overlaps.\n");
             return false;
         }
