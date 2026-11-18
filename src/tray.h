@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <shellapi.h>
 
+#include <cstdint>
 #include <string>
 
 namespace xtray {
@@ -23,13 +24,16 @@ public:
     void Lost() { added_ = false; }
     void Remove();
     void Focus();
+    bool ShowWarning(const wchar_t* title, const std::wstring& message);
     bool IsAdded() const { return added_; }
+    uint64_t Registration() const { return registration_; }
     TrayFailure Failure() const { return failure_; }
     const wchar_t* FailureText() const;
 private:
     NotifyFunction notify_;
     NOTIFYICONDATAW data_{};
     bool added_ = false;
+    uint64_t registration_ = 0;
     TrayFailure failure_ = TrayFailure::None;
 };
 

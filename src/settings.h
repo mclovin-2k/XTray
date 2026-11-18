@@ -18,6 +18,11 @@ struct Settings {
     Language language = Language::Automatic;
     ThemeMode theme = ThemeMode::System;
     bool logWordWrap = true;
+
+    bool LoadsConfigDirectoryFirst() const
+    {
+        return configDirectoryFirst && !configDirectory.empty() && !configFiles.empty();
+    }
 };
 
 struct SettingsResult {

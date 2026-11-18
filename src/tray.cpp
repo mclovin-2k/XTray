@@ -44,10 +44,30 @@ bool TrayIcon::Update(HWND window, HICON icon, const std::wstring& tooltip)
     if (!added_) {
         failure_ = TrayFailure::SetVersion;
     }
-    if (!added_ && !updated) {
-        notify_(NIM_DELETE, &data_);
+    if (!updated) {
+        if (added_) {
+            ++registration_;
+        } else {
+            notify_(NIM_DELETE, &data_);
+        }
     }
     return added_;
+}
+
+bool TrayIcon::ShowWarning(const wchar_t* title, const std::wstring& message)
+{
+    if (!added_) {
+        return false;
+    }
+    NOTIFYICONDATAW notification{};
+    notification.cbSize = sizeof(notification);
+    notification.hWnd = data_.hWnd;
+    notification.uID = data_.uID;
+    notification.uFlags = NIF_INFO;
+    notification.dwInfoFlags = NIIF_WARNING | NIIF_RESPECT_QUIET_TIME;
+    wcsncpy_s(notification.szInfoTitle, title, _TRUNCATE);
+    wcsncpy_s(notification.szInfo, message.c_str(), _TRUNCATE);
+    return notify_(NIM_MODIFY, &notification) != FALSE;
 }
 
 const wchar_t* TrayIcon::FailureText() const

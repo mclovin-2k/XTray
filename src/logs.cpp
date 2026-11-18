@@ -79,10 +79,10 @@ void Logs::MakeWritable(std::shared_ptr<LogLine>& line)
     }
 }
 
-void Logs::Append(LogSource source, std::string_view bytes)
+uint64_t Logs::Append(LogSource source, std::string_view bytes)
 {
     if (bytes.empty()) {
-        return;
+        return 0;
     }
     std::lock_guard lock(mutex_);
     auto& buffer = buffers_[static_cast<size_t>(source)];
@@ -108,9 +108,10 @@ void Logs::Append(LogSource source, std::string_view bytes)
         }
     }
     ++revision_;
+    return buffer.lines.back()->id;
 }
 
-void Logs::Tray(const std::wstring& message)
+uint64_t Logs::Tray(const std::wstring& message)
 {
     SYSTEMTIME now{};
     GetLocalTime(&now);
@@ -125,7 +126,7 @@ void Logs::Tray(const std::wstring& message)
         }
     }
     text += L"\r\n";
-    Append(LogSource::Tray, ToUtf8(text));
+    return Append(LogSource::Tray, ToUtf8(text));
 }
 
 void Logs::Xray(std::string_view bytes)

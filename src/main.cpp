@@ -26,10 +26,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cwchar>
+#include <deque>
 #include <exception>
 #include <iterator>
 #include <memory>
+#include <optional>
 #include <string_view>
+#include <vector>
 
 #if !defined(_M_X64)
 #error XTray supports Windows x64 only.
@@ -61,6 +64,7 @@ LRESULT CALLBACK LogFilterFrameProcedure(HWND window, UINT message, WPARAM wPara
 }
 
 NOTIFYICONDATAW smokeTrayData{};
+std::vector<std::wstring> smokeTrayWarnings;
 bool smokeTrayAvailable = true;
 DWORD smokeTrayFailedOperation = MAXDWORD;
 BOOL WINAPI SmokeNotifyIcon(DWORD operation, PNOTIFYICONDATAW data)
@@ -80,7 +84,11 @@ BOOL WINAPI SmokeNotifyIcon(DWORD operation, PNOTIFYICONDATAW data)
         if (!registered) {
             return FALSE;
         }
-        smokeTrayData = *data;
+        if (data->uFlags & NIF_INFO) {
+            smokeTrayWarnings.emplace_back(data->szInfo);
+        } else {
+            smokeTrayData = *data;
+        }
         return TRUE;
     case NIM_DELETE:
         smokeTrayData = {};
@@ -275,6 +283,8 @@ public:
         run_ = child(0, L"BUTTON", L"", WS_TABSTOP, Run);
         stop_ = child(0, L"BUTTON", L"", WS_TABSTOP, Stop);
         restart_ = child(0, L"BUTTON", L"", WS_TABSTOP, Restart);
+        pendingSettings_ = child(0, L"STATIC", L"", SS_RIGHT | SS_CENTERIMAGE | SS_NOPREFIX);
+        ShowWindow(pendingSettings_, SW_HIDE);
         fileLabel_ = child(0, L"STATIC", L"", SS_CENTERIMAGE);
         files_ = child(0, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, FileList);
         openFile_ = child(0, L"BUTTON", L"", WS_TABSTOP, OpenFile);
@@ -353,15 +363,29 @@ public:
         const auto move = [](HWND control, int x, int y, int widthValue, int height) {
             MoveWindow(control, x, y, (std::max)(1, widthValue), height, TRUE);
         };
+        const int actionY = Scale(16), actionHeight = Scale(28), statusX = Scale(48);
         int actionX = width - margin;
         for (const auto control : {restart_, stop_, run_}) {
             const int buttonWidth = TextButtonWidth(control);
             actionX -= buttonWidth;
-            move(control, actionX, Scale(16), buttonWidth, Scale(28));
+            move(control, actionX, actionY, buttonWidth, actionHeight);
             actionX -= gap;
         }
-        move(statusIcon_, margin, Scale(16), Scale(24), Scale(28));
-        move(status_, Scale(48), Scale(16), actionX - Scale(48), Scale(28));
+        move(statusIcon_, margin, actionY, Scale(24), actionHeight);
+        int statusRight = actionX;
+        int rowOffset = 0;
+        if (showPendingSettings_) {
+            const int hintWidth = ControlTextSize(pendingSettings_).cx;
+            const int hintX = actionX - hintWidth;
+            if (hintX >= statusX + ControlTextSize(status_).cx + gap) {
+                move(pendingSettings_, hintX, actionY, hintWidth, actionHeight);
+                statusRight = hintX - gap;
+            } else {
+                move(pendingSettings_, margin, Scale(48), width - 2 * margin, actionHeight);
+                rowOffset = Scale(24);
+            }
+        }
+        move(status_, statusX, actionY, statusRight - statusX, actionHeight);
         const int labelWidth = (std::max)({ControlTextSize(fileLabel_).cx,
             ControlTextSize(directoryLabel_).cx, ControlTextSize(filterLabel_).cx});
         const int inputX = margin + labelWidth + gap;
@@ -369,19 +393,21 @@ public:
         const int fileWidth = TextButtonWidth(openFile_);
         const int folderX = width - margin - folderWidth;
         const int fileX = folderX - gap - fileWidth;
-        move(fileLabel_, margin, Scale(60), labelWidth, Scale(26));
-        move(files_, inputX, Scale(60) + (Scale(26) - ComboBoxHeight(files_)) / 2,
+        const int fileY = Scale(60) + rowOffset;
+        move(fileLabel_, margin, fileY, labelWidth, Scale(26));
+        move(files_, inputX, fileY + (Scale(26) - ComboBoxHeight(files_)) / 2,
             fileX - gap - inputX, Scale(240));
-        move(openFile_, fileX, Scale(60), fileWidth, Scale(26));
-        move(openFileDirectory_, folderX, Scale(60), folderWidth, Scale(26));
+        move(openFile_, fileX, fileY, fileWidth, Scale(26));
+        move(openFileDirectory_, folderX, fileY, folderWidth, Scale(26));
         const int directoryWidth = TextButtonWidth(openDirectory_);
         const int directoryX = width - margin - directoryWidth;
-        move(directoryLabel_, margin, Scale(98), labelWidth, Scale(26));
+        const int directoryY = Scale(98) + rowOffset;
+        move(directoryLabel_, margin, directoryY, labelWidth, Scale(26));
         const int directoryHeight = SingleLineControlHeight(directory_);
-        move(directory_, inputX, Scale(98) + (Scale(26) - directoryHeight) / 2,
+        move(directory_, inputX, directoryY + (Scale(26) - directoryHeight) / 2,
             directoryX - gap - inputX, directoryHeight);
-        move(openDirectory_, directoryX, Scale(98), directoryWidth, Scale(26));
-        const int filterY = Scale(134), filterHeight = Scale(32);
+        move(openDirectory_, directoryX, directoryY, directoryWidth, Scale(26));
+        const int filterY = Scale(134) + rowOffset, filterHeight = Scale(32);
         move(filterLabel_, margin, filterY + (filterHeight - Scale(26)) / 2, labelWidth, Scale(26));
         const int iconButton = Scale(32);
         int toolX = width - margin - iconButton * 4 - gap * 3;
@@ -407,8 +433,8 @@ public:
             move(control, toolX, filterY, iconButton, filterHeight);
             toolX += iconButton + gap;
         }
-        move(logWindow_, margin, Scale(174), width - margin * 2,
-            static_cast<int>(client.bottom) - Scale(190));
+        move(logWindow_, margin, Scale(174) + rowOffset, width - margin * 2,
+            static_cast<int>(client.bottom) - Scale(190) - rowOffset);
     }
 
     void DpiChanged(UINT dpi)
@@ -427,7 +453,8 @@ public:
         const auto state = process_.State();
         const DWORD pid = process_.Pid();
         const bool running = pid != 0;
-        if (state != shownState_ || pid != shownPid_) {
+        const bool statusChanged = state != shownState_ || pid != shownPid_;
+        if (statusChanged) {
             const auto status = XrayStatusText(state, pid);
             SetWindowTextW(status_, status.c_str());
             EnableWindow(run_, state == ProcessState::Stopped);
@@ -441,6 +468,13 @@ public:
         } else if (!tray_.IsAdded() && GetTickCount64() >= nextTrayAttempt_) {
             UpdateTray();
         }
+        const bool showPending = settingsValid_ && process_.HasPendingSettings(settings_);
+        if (showPending != showPendingSettings_ || (showPending && statusChanged)) {
+            showPendingSettings_ = showPending;
+            Layout();
+            ShowWindow(pendingSettings_, showPending ? SW_SHOWNA : SW_HIDE);
+        }
+        UpdateExitNotifications();
         view_->Refresh();
         UpdateLogButtonState();
         if (failureSmokePending_ && process_.Pid() != 0) {
@@ -628,6 +662,7 @@ public:
             UpdateTray();
         }
         if (tray_.IsAdded()) {
+            UpdateExitNotifications();
             SendMessageW(tooltip_, TTM_POP, 0, 0);
             ShowWindow(window_, SW_HIDE);
         }
@@ -680,6 +715,18 @@ public:
         case NIN_SELECT:
         case NIN_KEYSELECT:
             ShowMain();
+            break;
+        case NIN_BALLOONUSERCLICK: {
+            const auto notification = std::exchange(activeExitNotification_, std::nullopt);
+            ShowMain();
+            if (notification && notification->registration == tray_.Registration()) {
+                ShowExitLog(notification->logId);
+            }
+            break;
+        }
+        case NIN_BALLOONHIDE:
+        case NIN_BALLOONTIMEOUT:
+            activeExitNotification_.reset();
             break;
         case WM_CONTEXTMENU:
             ShowTrayMenu();
@@ -1128,6 +1175,57 @@ private:
         }
     }
 
+    void UpdateExitNotifications()
+    {
+        const auto exits = process_.TakeUnexpectedExits();
+        if (exiting_ || IsWindowVisible(window_)) {
+            pendingExitNotifications_.clear();
+            return;
+        }
+        pendingExitNotifications_.insert(pendingExitNotifications_.end(), exits.begin(), exits.end());
+        if (!tray_.IsAdded()) {
+            return;
+        }
+        const auto registration = tray_.Registration();
+        if (activeExitNotification_ && activeExitNotification_->registration == registration) {
+            return;
+        }
+        activeExitNotification_.reset();
+        // Balloon callbacks identify the tray icon, so only submit one at a time.
+        while (!pendingExitNotifications_.empty()) {
+            const auto event = pendingExitNotifications_.front();
+            pendingExitNotifications_.pop_front();
+            std::wstring message = Text(L"Xray exited unexpectedly", L"Xray 已意外退出");
+            if (event.exitCode) {
+                message += Text(L" (exit code ", L"（退出码 ") +
+                    std::to_wstring(*event.exitCode) + Text(L")", L"）");
+            }
+            message += Text(L". Click to view logs.", L"。点击查看日志。");
+            if (tray_.ShowWarning(L"XTray", message)) {
+                activeExitNotification_ = ExitNotification{event.logId, registration};
+                return;
+            }
+            logs_.Tray(Text(L"Windows did not accept the Xray exit notification.",
+                L"Windows 未接受 Xray 退出通知。"));
+        }
+    }
+
+    void ShowExitLog(uint64_t id)
+    {
+        SendMessageW(filter_, CB_SETCURSEL, 0, 0);
+        view_->SetFilter(0);
+        if (GetWindowTextLengthW(keyword_) != 0) {
+            SetWindowTextW(keyword_, L"");
+        }
+        if (!view_->RevealLine(id)) {
+            view_->ScrollToEnd();
+        }
+        if (IsWindowEnabled(window_)) {
+            SetFocus(logWindow_);
+        }
+        UpdateLogButtonState();
+    }
+
     HMENU CreateTrayMenu() const
     {
         const HMENU menu = CreatePopupMenu();
@@ -1194,6 +1292,7 @@ private:
             std::pair{run_, Text(L"Run", L"运行")},
             std::pair{stop_, Text(L"Stop", L"停止")},
             std::pair{restart_, Text(L"Restart", L"重启")},
+            std::pair{pendingSettings_, Text(L"Changes saved. Restart Xray to apply.", L"配置已更改，重启 Xray 后生效")},
             std::pair{fileLabel_, Text(L"Config files:", L"配置文件：")},
             std::pair{openFile_, Text(L"Open file", L"打开配置文件")},
             std::pair{openFileDirectory_, Text(L"Open file folder", L"打开配置文件目录")},
@@ -2339,8 +2438,10 @@ private:
         if (process_.Pid() != pid || IsWindowVisible(window_)) {
             return false;
         }
+        const size_t warnings = smokeTrayWarnings.size();
         Command(Stop, BN_CLICKED);
-        if (!wait([&] { return process_.State() == ProcessState::Stopped; })) {
+        if (!wait([&] { return process_.State() == ProcessState::Stopped; }) ||
+            smokeTrayWarnings.size() != warnings) {
             return false;
         }
         settings_ = original;
@@ -2416,12 +2517,51 @@ private:
         }
         settings_.theme = original.theme;
         UpdateTheme(false);
+        std::fwprintf(stderr, L"Smoke: pending settings hint, layout, and restart.\n");
+        TrayCommand(ShowGui);
+        if (IsWindowVisible(pendingSettings_)) { return false; }
+        settings_.configFiles.push_back(L".\\pending.conf");
+        Refresh();
+        const auto language = CurrentLanguage();
+        RECT originalBounds{}, originalClient{};
+        GetWindowRect(window_, &originalBounds);
+        GetClientRect(window_, &originalClient);
+        const LONG originalWidth = originalBounds.right - originalBounds.left;
+        const LONG minimumWidth = originalWidth - originalClient.right + Scale(640);
+        for (const auto testLanguage : {Language::English, Language::Chinese}) {
+            ApplyLanguage(testLanguage);
+            ApplyUiText();
+            Refresh();
+            for (const LONG width : {(std::min)(originalWidth, minimumWidth), originalWidth}) {
+                SetWindowPos(window_, nullptr, 0, 0, width, originalBounds.bottom - originalBounds.top,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+                RECT hint{}, status{}, run{}, paths{};
+                GetWindowRect(pendingSettings_, &hint);
+                GetWindowRect(status_, &status);
+                GetWindowRect(run_, &run);
+                GetWindowRect(files_, &paths);
+                if (!IsWindowVisible(pendingSettings_) || hint.right - hint.left < ControlTextSize(pendingSettings_).cx ||
+                    !((hint.top == run.top && status.right <= hint.left && hint.right < run.left) ||
+                        (hint.top >= run.bottom && hint.bottom <= paths.top))) {
+                    return false;
+                }
+            }
+        }
+        ApplyLanguage(language);
+        ApplyUiText();
+        settings_.configFiles.pop_back();
+        Refresh();
+        if (IsWindowVisible(pendingSettings_)) { return false; }
+        settings_.configFiles.push_back(L".\\pending.conf");
+        Refresh();
+        if (!IsWindowVisible(pendingSettings_)) { return false; }
         const DWORD previousPid = process_.Pid();
         Handle previous(OpenProcess(SYNCHRONIZE, FALSE, previousPid));
         TrayCommand(Restart);
         if (!wait([&] { return process_.State() == ProcessState::Running &&
             process_.Pid() != previousPid && hasOutput(L"stream 1"); }) ||
-            !previous || WaitForSingleObject(previous.Get(), 0) != WAIT_OBJECT_0) {
+            !previous || WaitForSingleObject(previous.Get(), 0) != WAIT_OBJECT_0 ||
+            IsWindowVisible(pendingSettings_) || !hasOutput(L"-config=.\\pending.conf")) {
             return false;
         }
         std::fwprintf(stderr, L"Smoke: close hides, output continues, and click restores.\n");
@@ -2510,6 +2650,7 @@ private:
             return false;
         }
         std::fwprintf(stderr, L"Smoke: tray stop and failed run.\n");
+        const size_t warnings = smokeTrayWarnings.size();
         TrayCommand(Stop);
         if (!wait([&] { return process_.State() == ProcessState::Stopped; }) ||
             smokeTrayData.hIcon != icons_[StoppedTrayIcon] || !checkMenu(false) || !SmokeTestWindowBranding(false)) {
@@ -2521,7 +2662,48 @@ private:
             smokeTrayData.hIcon != icons_[StoppedTrayIcon] || !SmokeTestWindowBranding(false)) {
             return false;
         }
+        std::fwprintf(stderr, L"Smoke: unexpected exit notification and exact log anchoring.\n");
         settings_.executable = (root_ / L"XTray.Tests.exe").native();
+        settings_.configFiles = {L".\\fail.conf"};
+        TrayCommand(Run);
+        if (!wait([&] { return process_.State() == ProcessState::Stopped && hasOutput(L"fake failure"); }) ||
+            smokeTrayWarnings.size() != warnings) {
+            return false;
+        }
+
+        wchar_t previousExitMarker[] = L"before the notified exit";
+        logs_.Tray(previousExitMarker);
+        SendMessageW(filter_, CB_SETCURSEL, 2, 0);
+        Command(Filter, CBN_SELCHANGE);
+        SetWindowTextW(keyword_, L"before failure");
+        HideMain();
+        TrayCommand(Run);
+        if (!wait([&] { return smokeTrayWarnings.size() > warnings; }) ||
+            smokeTrayWarnings.back() != L"Xray exited unexpectedly (exit code 23). Click to view logs." ||
+            IsWindowVisible(window_)) {
+            return false;
+        }
+        logs_.Tray(L"after the notified exit");
+        Refresh();
+        if (smokeTrayWarnings.size() != warnings + 1) { return false; }
+        TrayEvent(0, MAKELPARAM(NIN_BALLOONUSERCLICK, kTrayIconId));
+        CHARRANGE selection{};
+        SendMessageW(logWindow_, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&selection));
+        wchar_t selected[128]{};
+        if (selection.cpMax <= selection.cpMin || selection.cpMax - selection.cpMin >= static_cast<LONG>(std::size(selected))) {
+            return false;
+        }
+        SendMessageW(logWindow_, EM_GETSELTEXT, 0, reinterpret_cast<LPARAM>(selected));
+        FINDTEXTEXW marker{{0, -1}, previousExitMarker, {}};
+        if (!IsWindowVisible(window_) ||
+            std::wstring_view(selected).find(L"Xray exited, exit code 23.") == std::wstring_view::npos ||
+            SendMessageW(logWindow_, EM_FINDTEXTEXW, FR_DOWN, reinterpret_cast<LPARAM>(&marker)) < 0 ||
+            selection.cpMin <= marker.chrgText.cpMax || GetWindowTextLengthW(keyword_) != 0 ||
+            SendMessageW(filter_, CB_GETCURSEL, 0, 0) != 0 ||
+            WindowText(logWindow_).find(L"fake failure") == std::wstring::npos) {
+            return false;
+        }
+
         settings_.configFiles = {L".\\stream.conf"};
         TrayCommand(Run);
         if (!wait([&] { return process_.State() == ProcessState::Running; })) {
@@ -2558,7 +2740,7 @@ private:
             }
             throw std::runtime_error(Text("Cannot create window fonts.", "无法创建窗口字体。"));
         }
-        const std::array controls{status_, run_, stop_, restart_, fileLabel_,
+        const std::array controls{status_, run_, stop_, restart_, pendingSettings_, fileLabel_,
             files_, openFile_, openFileDirectory_, directoryLabel_, directory_, openDirectory_,
             filterLabel_, filter_, keyword_, wildcards_, matchCase_, clearKeyword_,
             copyLogs_, clearLogs_, scrollToEnd_, wordWrap_};
@@ -2658,6 +2840,9 @@ private:
     XrayToolWindow runInfoWindow_;
     bool smokeTest_;
     TrayIcon tray_;
+    struct ExitNotification { uint64_t logId; uint64_t registration; };
+    std::optional<ExitNotification> activeExitNotification_;
+    std::deque<UnexpectedXrayExit> pendingExitNotifications_;
     ThemeWindow theme_;
     MenuTheme menuTheme_;
     std::unique_ptr<ThemeMonitor> themeMonitor_;
@@ -2670,11 +2855,12 @@ private:
     ULONGLONG nextTrayAttempt_ = 0;
     Settings settings_;
     bool settingsValid_ = true;
+    bool showPendingSettings_ = false;
     bool ready_ = false;
     bool updatingUi_ = false;
     UINT dpi_ = 96;
     HWND window_ = nullptr;
-    HWND statusIcon_ = nullptr, status_ = nullptr;
+    HWND statusIcon_ = nullptr, status_ = nullptr, pendingSettings_ = nullptr;
     HWND run_ = nullptr, stop_ = nullptr, restart_ = nullptr;
     HMENU menuBar_ = nullptr, fileMenu_ = nullptr, xrayMenu_ = nullptr;
     Language menuLanguage_ = Language::Automatic;

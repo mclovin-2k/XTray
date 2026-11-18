@@ -37,7 +37,7 @@ struct LogSnapshot {
 class Logs {
 public:
     explicit Logs(size_t limit = 5000) : limit_(limit == 0 ? 1 : limit) {}
-    void Tray(const std::wstring& message);
+    uint64_t Tray(const std::wstring& message);
     void Xray(std::string_view bytes);
     void FinishXray();
     void ClearXray();
@@ -50,7 +50,7 @@ private:
         std::deque<std::shared_ptr<LogLine>> lines;
         Utf8Stream decoder;
     };
-    void Append(LogSource source, std::string_view bytes);
+    uint64_t Append(LogSource source, std::string_view bytes);
     static void MakeWritable(std::shared_ptr<LogLine>& line);
     mutable std::mutex mutex_;
     std::array<Buffer, 2> buffers_;

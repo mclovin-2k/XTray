@@ -213,6 +213,24 @@ void LogView::ScrollToEnd()
     Refresh(true);
 }
 
+bool LogView::RevealLine(uint64_t id)
+{
+    Refresh();
+    LONG position = 0;
+    for (const auto& line : lines_) {
+        const LONG length = static_cast<LONG>(line.display->size());
+        if (line.line->id == id) {
+            pausedReadingAnchor_.reset();
+            CHARRANGE range{position, position + length - 1};
+            SendMessageW(window_, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&range));
+            SendMessageW(window_, EM_SCROLLCARET, 0, 0);
+            return true;
+        }
+        position += length;
+    }
+    return false;
+}
+
 bool LogView::Following() const
 {
     if (pausedReadingAnchor_) { return false; }

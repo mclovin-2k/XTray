@@ -56,6 +56,10 @@ at the top of Settings. **Check current configuration** and **Preview current
 configuration**, below the configuration directory, use the paths currently
 entered in the form without saving or changing the running Xray process.
 
+If you save different launch settings while Xray is running, the main window
+shows **Changes saved. Restart Xray to apply.** next to the run controls.
+You can restart when ready or restore the settings used by the current run.
+
 You can choose files outside the XTray folder or enter relative paths. Relative
 paths are resolved from the folder containing `XTray.exe`.
 
@@ -101,6 +105,10 @@ later does not mean every field simply replaces the earlier value.
 - **Show or hide the window:** click the tray icon to show the window. Closing
   the window keeps XTray and Xray running. Choose **File → Exit** or **Exit** in the tray menu to
   stop this copy's Xray and quit XTray.
+- **Unexpected exits:** if Xray exits on its own while the window is in the
+  tray, XTray sends a Windows notification with the exit code when available.
+  Click it to open the main window, show all log sources, clear the keyword,
+  and select the exit record if it is still retained.
 - **Configuration shortcuts:** open a saved configuration file, its containing
   folder or the configured directory from the main window.
 - **Logs:** choose all output, XTray only or Xray only, then type a keyword to

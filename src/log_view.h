@@ -16,6 +16,7 @@ public:
     void ObserveNavigation(const MSG& message);
     void Clear();
     void ScrollToEnd();
+    bool RevealLine(uint64_t id);
     void SetWordWrap(bool enabled);
     bool Following() const;
     HWND Window() const { return window_; }

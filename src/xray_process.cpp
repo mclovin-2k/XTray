@@ -53,6 +53,22 @@ XrayRunInfo XrayProcess::RunInfo() const
     return result;
 }
 
+bool XrayProcess::HasPendingSettings(const Settings& settings) const
+{
+    std::lock_guard lock(infoMutex_);
+    return info_.started && !info_.ended &&
+        (launchSettings_.executable != settings.executable ||
+            launchSettings_.configFiles != settings.configFiles ||
+            launchSettings_.configDirectory != settings.configDirectory ||
+            launchSettings_.LoadsConfigDirectoryFirst() != settings.LoadsConfigDirectoryFirst());
+}
+
+std::vector<UnexpectedXrayExit> XrayProcess::TakeUnexpectedExits()
+{
+    std::lock_guard lock(mutex_);
+    return std::exchange(unexpectedExits_, {});
+}
+
 bool XrayProcess::Run(Settings settings)
 {
     return Enqueue({Operation::Run, std::move(settings)});
@@ -115,12 +131,12 @@ void XrayProcess::Worker()
             }
             if (command) {
                 if (command->operation == Operation::Run) {
-                    StartProcess(command->settings);
+                    StartProcess(std::move(command->settings));
                 } else if (command->operation == Operation::Stop) {
                     StopProcess();
                 } else if (StopProcess()) {
                     state_ = ProcessState::Starting;
-                    StartProcess(command->settings);
+                    StartProcess(std::move(command->settings));
                 }
             }
             {
@@ -134,7 +150,7 @@ void XrayProcess::Worker()
             if (process_) {
                 DrainOutput();
                 if (WaitForSingleObject(process_.Get(), 0) == WAIT_OBJECT_0) {
-                    FinishProcess();
+                    FinishProcess(true);
                 }
             }
         }
@@ -168,7 +184,7 @@ void XrayProcess::Worker()
     state_ = ProcessState::Stopped;
 }
 
-void XrayProcess::StartProcess(const Settings& settings)
+void XrayProcess::StartProcess(Settings settings)
 {
     logs_.ClearXray();
     const auto executable = settings.executable.empty() ? std::filesystem::path{}
@@ -290,6 +306,7 @@ void XrayProcess::StartProcess(const Settings& settings)
     input.Reset();
     {
         std::lock_guard lock(infoMutex_);
+        launchSettings_ = std::move(settings);
         info_.pid = information.dwProcessId;
         info_.started = std::chrono::system_clock::now();
         startedAt_ = std::chrono::steady_clock::now();
@@ -332,7 +349,7 @@ void XrayProcess::DrainOutput()
     }
 }
 
-void XrayProcess::FinishProcess()
+void XrayProcess::FinishProcess(bool exitedOnItsOwn)
 {
     DWORD code = 0;
     const bool hasCode = GetExitCodeProcess(process_.Get(), &code) != FALSE;
@@ -351,8 +368,13 @@ void XrayProcess::FinishProcess()
     output_.Reset();
     process_.Reset();
     pid_ = 0;
-    logs_.Tray(Text(L"Xray exited, exit code ", L"Xray 已退出，退出码 ") + std::to_wstring(code) + Text(L".", L"。"));
+    const auto logId = logs_.Tray(hasCode
+        ? Text(L"Xray exited, exit code ", L"Xray 已退出，退出码 ") + std::to_wstring(code) + Text(L".", L"。")
+        : Text(L"Xray exited.", L"Xray 已退出。"));
     std::lock_guard lock(mutex_);
+    if (exitedOnItsOwn && !quit_ && !pending_) {
+        unexpectedExits_.push_back({logId, hasCode ? std::optional{code} : std::nullopt});
+    }
     if (!busy_ && !pending_) {
         state_ = ProcessState::Stopped;
     }
@@ -380,7 +402,7 @@ bool XrayProcess::StopProcess()
             return false;
         }
     }
-    FinishProcess();
+    FinishProcess(false);
     return true;
 }
 

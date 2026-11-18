@@ -139,9 +139,7 @@ XrayConfigArguments PrepareXrayConfigArguments(
     const std::filesystem::path& root, const Settings& settings)
 {
     XrayConfigArguments result;
-    const bool expand = settings.configDirectoryFirst &&
-        !settings.configDirectory.empty() && !settings.configFiles.empty();
-    if (expand) {
+    if (settings.LoadsConfigDirectoryFirst()) {
         for (const auto& file : DirectoryFiles(root, settings.configDirectory)) {
             result.arguments += L" -config " + QuoteArgument(file);
         }

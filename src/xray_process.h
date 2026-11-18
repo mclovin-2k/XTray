@@ -10,6 +10,7 @@
 #include <mutex>
 #include <optional>
 #include <thread>
+#include <vector>
 
 namespace xtray {
 
@@ -28,6 +29,11 @@ struct XrayRunInfo {
     std::wstring error;
 };
 
+struct UnexpectedXrayExit {
+    uint64_t logId;
+    std::optional<DWORD> exitCode;
+};
+
 class XrayProcess {
 public:
     XrayProcess(std::filesystem::path root, Logs& logs);
@@ -41,25 +47,29 @@ public:
     ProcessState State() const { return state_.load(); }
     DWORD Pid() const { return pid_.load(); }
     XrayRunInfo RunInfo() const;
+    bool HasPendingSettings(const Settings& settings) const;
+    std::vector<UnexpectedXrayExit> TakeUnexpectedExits();
 private:
     enum class Operation { Run, Stop, Restart };
     struct Command { Operation operation; Settings settings; };
     bool Enqueue(Command command);
     void Worker();
-    void StartProcess(const Settings& settings);
+    void StartProcess(Settings settings);
     bool StopProcess();
     void DrainOutput();
-    void FinishProcess();
+    void FinishProcess(bool exitedOnItsOwn);
     const std::filesystem::path root_;
     Logs& logs_;
     std::atomic<ProcessState> state_{ProcessState::Stopped};
     std::atomic<DWORD> pid_{0};
     mutable std::mutex infoMutex_;
     XrayRunInfo info_;
+    Settings launchSettings_;
     std::chrono::steady_clock::time_point startedAt_{};
     std::mutex mutex_;
     std::condition_variable wake_;
     std::optional<Command> pending_;
+    std::vector<UnexpectedXrayExit> unexpectedExits_;
     bool quit_ = false;
     bool busy_ = false;
     Handle process_;

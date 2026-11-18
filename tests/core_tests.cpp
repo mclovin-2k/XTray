@@ -244,6 +244,12 @@ void TestTray()
         trayCalls.back().operation == NIM_MODIFY && trayCalls.back().data.hIcon == green &&
         std::wstring_view(trayCalls.back().data.szTip) == L"XTray — Running",
         "Updating tray state added a duplicate icon or kept stale content.");
+    Check(tray.ShowWarning(L"XTray", L"Xray exited") && trayCalls.back().operation == NIM_MODIFY &&
+        trayCalls.back().data.hWnd == window && trayCalls.back().data.uID == kTrayIconId &&
+        trayCalls.back().data.uFlags == NIF_INFO && (trayCalls.back().data.dwInfoFlags & NIIF_WARNING) != 0 &&
+        std::wstring_view(trayCalls.back().data.szInfoTitle) == L"XTray" &&
+        std::wstring_view(trayCalls.back().data.szInfo) == L"Xray exited",
+        "The warning did not use the registered tray icon or changed its configuration.");
     tray.Focus();
     Check(trayCalls.back().operation == NIM_SETFOCUS, "Tray focus was not restored.");
     tray.Lost();
@@ -1127,6 +1133,13 @@ void TestProcesses(const std::filesystem::path& root)
     const auto failed = process.RunInfo();
     Check(failed.pid != 0 && failed.started && failed.ended && failed.exitCode == DWORD{23} && failed.error.empty(),
         "An early-exit run lost its PID, timestamps, or actual exit code.");
+    const auto exits = process.TakeUnexpectedExits();
+    const auto exitLogs = logs.Snapshot();
+    Check(exits.size() == 1 && exits.front().exitCode == DWORD{23} && process.TakeUnexpectedExits().empty() &&
+        std::any_of(exitLogs.lines.begin(), exitLogs.lines.end(), [&](const auto& line) {
+            return line->id == exits.front().logId && line->source == LogSource::Tray &&
+                line->text.find(L"退出码 23") != std::wstring::npos;
+        }), "An early exit did not identify the exact log row or was reported more than once.");
 
     auto settings = FakeSettings(root);
     const std::wstring alternateDrive = root.root_name().native() == L"Z:" ? L"Y:" : L"Z:";
@@ -1143,11 +1156,28 @@ void TestProcesses(const std::filesystem::path& root)
         runningInfo.commandLine.starts_with(QuoteArgument(ExecutablePath().native()) + L" run -confdir ") &&
         runningInfo.commandLine.find(L"-config " + QuoteArgument(settings.configFiles[2])) != std::wstring::npos,
         "Run information does not describe the actual executable, PID, cwd, and arguments.");
-    const auto originalFiles = settings.configFiles;
-    settings.configFiles = {L"edited after launch.json"};
-    Check(process.RunInfo().commandLine == runningInfo.commandLine,
-        "Editing settings retroactively changed the actual launch record.");
-    settings.configFiles = originalFiles;
+    Check(!process.HasPendingSettings(settings), "The just-launched settings were marked pending.");
+    auto saved = settings;
+    saved.logLines += 1;
+    saved.logWordWrap = !saved.logWordWrap;
+    saved.language = Language::English;
+    saved.theme = ThemeMode::Dark;
+    Check(!process.HasPendingSettings(saved), "Display and log settings should not require a restart.");
+
+    saved = settings;
+    std::swap(saved.configFiles[0], saved.configFiles[1]);
+    Check(process.HasPendingSettings(saved) && process.RunInfo().commandLine == runningInfo.commandLine,
+        "Changing file order did not mark settings pending or rewrote the launch record.");
+    saved = settings;
+    saved.configDirectory += L"new";
+    Check(process.HasPendingSettings(saved), "A changed configuration directory was missed.");
+    saved = settings;
+    saved.executable += L".new";
+    Check(process.HasPendingSettings(saved), "A changed executable path was missed.");
+    saved = settings;
+    saved.configDirectoryFirst = true;
+    Check(process.HasPendingSettings(saved) && !process.HasPendingSettings(settings),
+        "A changed load order was missed or restoring the launch settings still requires a restart.");
     Check(HasText(logs, LogSource::Xray, L"console=0"), "The child acquired a console.");
     Check(HasText(logs, LogSource::Xray, L"cwd=" + root.native()), "Child working directory is incorrect.");
     Check(HasText(logs, LogSource::Xray, L"-config=" + settings.configFiles[0]) &&
@@ -1169,6 +1199,9 @@ void TestProcesses(const std::filesystem::path& root)
     Check(WaitUntil([&] { return other.State() == ProcessState::Running &&
         HasText(otherLogs, LogSource::Xray, L"-confdir=" + directoryOnly.configDirectory); }),
         "Directory-only startup did not preserve its relative path.");
+    directoryOnly.configDirectoryFirst = true;
+    Check(!other.HasPendingSettings(directoryOnly),
+        "A load-order preference that cannot affect directory-only startup was marked pending.");
 
     const DWORD oldPid = process.Pid();
     Handle old(OpenProcess(SYNCHRONIZE, FALSE, oldPid));
@@ -1180,7 +1213,7 @@ void TestProcesses(const std::filesystem::path& root)
         "Restart created a replacement before the old process exited.");
     const auto restarted = process.RunInfo();
     Check(restarted.pid == process.Pid() && restarted.pid != runningInfo.pid &&
-        restarted.started && !restarted.ended && !restarted.exitCode,
+        restarted.started && !restarted.ended && !restarted.exitCode && !process.HasPendingSettings(settings),
         "Restart did not replace the previous run record.");
     Check(HasText(logs, LogSource::Tray, L"retained tray marker"), "Restart removed XTray logs.");
     Check(WaitUntil([&] { return HasText(logs, LogSource::Xray, L"中文 stdout"); }),
@@ -1190,6 +1223,8 @@ void TestProcesses(const std::filesystem::path& root)
     Check(WaitUntil([&] { return process.State() == ProcessState::Stopped; }),
         "Stop did not finish.");
     const auto stopped = process.RunInfo();
+    Check(!process.HasPendingSettings(saved), "An exited process was marked as needing a restart.");
+    Check(process.TakeUnexpectedExits().empty(), "A deliberate restart or stop was classified as an unexpected exit.");
     Check(stopped.pid == restarted.pid && stopped.started == restarted.started && stopped.ended &&
         stopped.exitCode == static_cast<DWORD>(ERROR_CANCELLED) && stopped.elapsed >= restarted.elapsed &&
         process.RunInfo().elapsed == stopped.elapsed && stopped.commandLine == restarted.commandLine,
