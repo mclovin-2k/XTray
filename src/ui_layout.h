@@ -11,11 +11,9 @@ inline int UiScale(HWND window, int value)
     return MulDiv(value, static_cast<int>(GetDpiForWindow(window)), 96);
 }
 
-inline SIZE ControlTextSize(HWND control, int wrapWidth = 0)
+inline SIZE ControlTextSize(HWND control, std::wstring_view text, int wrapWidth = 0)
 {
-    const int length = GetWindowTextLengthW(control);
-    std::wstring text(static_cast<size_t>(length) + 1, L'\0');
-    const int copied = GetWindowTextW(control, text.data(), static_cast<int>(text.size()));
+    const int length = static_cast<int>(text.size());
     HDC device = GetDC(control);
     if (device == nullptr) {
         throw std::runtime_error(Text("Cannot measure control text.", "无法测量控件文字。"));
@@ -26,11 +24,11 @@ inline SIZE ControlTextSize(HWND control, int wrapWidth = 0)
     bool measured = true;
     if (wrapWidth > 0) {
         RECT bounds{0, 0, wrapWidth, 0};
-        measured = copied == 0 || DrawTextW(device, text.data(), copied, &bounds,
+        measured = length == 0 || DrawTextW(device, text.data(), length, &bounds,
             DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX) != 0;
         size = {bounds.right - bounds.left, bounds.bottom - bounds.top};
     } else {
-        measured = GetTextExtentPoint32W(device, text.data(), copied, &size) != FALSE;
+        measured = GetTextExtentPoint32W(device, text.data(), length, &size) != FALSE;
     }
     SelectObject(device, previous);
     ReleaseDC(control, device);
@@ -38,6 +36,14 @@ inline SIZE ControlTextSize(HWND control, int wrapWidth = 0)
         throw std::runtime_error(Text("Cannot measure control text.", "无法测量控件文字。"));
     }
     return size;
+}
+
+inline SIZE ControlTextSize(HWND control, int wrapWidth = 0)
+{
+    const int length = GetWindowTextLengthW(control);
+    std::wstring text(static_cast<size_t>(length) + 1, L'\0');
+    const int copied = GetWindowTextW(control, text.data(), static_cast<int>(text.size()));
+    return ControlTextSize(control, std::wstring_view(text.data(), static_cast<size_t>(copied)), wrapWidth);
 }
 
 inline int SingleLineControlHeight(HWND control)

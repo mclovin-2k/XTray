@@ -104,6 +104,11 @@ std::wstring MainWindowTitle(const std::filesystem::path& root)
     return std::wstring(kWindowTitle) + L" (" + root.native() + L")";
 }
 
+auto LogSourceCaptions()
+{
+    return std::array{Text(L"All", L"全部"), Text(L"XTray only", L"仅 XTray"), Text(L"Xray only", L"仅 Xray")};
+}
+
 std::wstring XrayStatusText(ProcessState state, DWORD pid)
 {
     std::wstring result = L"Xray";
@@ -415,7 +420,13 @@ public:
         move(filterLabel_, margin, filterY + (filterHeight - Scale(26)) / 2, labelWidth, Scale(26));
         const int iconButton = Scale(32);
         int toolX = width - margin - iconButton * 4 - gap * 3;
-        const int sourceWidth = std::clamp(toolX - inputX - 2 * gap - Scale(144), Scale(1), Scale(136));
+        LONG sourceTextWidth = 0;
+        for (const auto* caption : LogSourceCaptions()) {
+            sourceTextWidth = (std::max)(sourceTextWidth, ControlTextSize(filter_, caption).cx);
+        }
+        const int preferredSourceWidth = static_cast<int>(sourceTextWidth) +
+            GetSystemMetricsForDpi(SM_CXVSCROLL, dpi_) + Scale(12);
+        const int sourceWidth = std::clamp(toolX - inputX - 2 * gap - Scale(144), Scale(1), preferredSourceWidth);
         move(filter_, inputX, filterY + (filterHeight - ComboBoxHeight(filter_)) / 2, sourceWidth, Scale(180));
         const int keywordX = inputX + sourceWidth + gap;
         move(keywordFrame_, keywordX, filterY, toolX - gap - keywordX, filterHeight);
@@ -1412,8 +1423,7 @@ private:
             reinterpret_cast<LPARAM>(Text(L"Filter logs…", L"过滤日志…")));
         const auto selected = SendMessageW(filter_, CB_GETCURSEL, 0, 0);
         SendMessageW(filter_, CB_RESETCONTENT, 0, 0);
-        for (const auto* item : {Text(L"All", L"全部"), Text(L"XTray only", L"仅 XTray"),
-            Text(L"Xray only", L"仅 Xray")}) {
+        for (const auto* item : LogSourceCaptions()) {
             SendMessageW(filter_, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(item));
         }
         SendMessageW(filter_, CB_SETCURSEL, selected == CB_ERR ? 0 : selected, 0);
@@ -2038,6 +2048,14 @@ private:
                 SetWindowPos(window_, nullptr, 0, 0, width, bounds.bottom - bounds.top,
                     SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
                 if (!SmokeTestControlAlignment()) { return false; }
+                COMBOBOXINFO source{sizeof(COMBOBOXINFO)};
+                if (!GetComboBoxInfo(filter_, &source)) { return false; }
+                for (const auto* caption : LogSourceCaptions()) {
+                    if (ControlTextSize(filter_, caption).cx > source.rcItem.right - source.rcItem.left) {
+                        std::fwprintf(stderr, L"Smoke: log source caption does not fit: %ls.\n", caption);
+                        return false;
+                    }
+                }
             }
             for (const auto control : {run_, stop_, restart_, openFile_, openFileDirectory_, openDirectory_}) {
                 RECT button{};
