@@ -42,7 +42,7 @@ public:
     XrayProcess& operator=(const XrayProcess&) = delete;
     bool Run(Settings settings);
     bool Stop();
-    bool Restart(Settings settings);
+    bool Restart(Settings settings, DWORD expectedPid = 0);
     void Shutdown();
     ProcessState State() const { return state_.load(); }
     DWORD Pid() const { return pid_.load(); }
@@ -52,7 +52,7 @@ public:
 private:
     enum class Operation { Run, Stop, Restart };
     struct Command { Operation operation; Settings settings; };
-    bool Enqueue(Command command);
+    bool Enqueue(Command command, DWORD expectedPid = 0);
     void Worker();
     void StartProcess(Settings settings);
     bool StopProcess();

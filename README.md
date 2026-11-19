@@ -100,6 +100,8 @@ later does not mean every field simply replaces the earlier value.
 ## Everyday use
 
 - **Run / Stop / Restart:** control Xray from the main window or the tray menu.
+  Restart checks the saved configuration before stopping the running Xray.
+  If the check fails, Xray keeps running and XTray opens the full check result.
 - **Status:** the GUI status icon and system tray icon are green while Xray is
   running and red when it is stopped or fails to start.
 - **Show or hide the window:** click the tray icon to show the window. Closing

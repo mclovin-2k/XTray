@@ -79,16 +79,17 @@ bool XrayProcess::Stop()
     return Enqueue({Operation::Stop, {}});
 }
 
-bool XrayProcess::Restart(Settings settings)
+bool XrayProcess::Restart(Settings settings, DWORD expectedPid)
 {
-    return Enqueue({Operation::Restart, std::move(settings)});
+    return Enqueue({Operation::Restart, std::move(settings)}, expectedPid);
 }
 
-bool XrayProcess::Enqueue(Command command)
+bool XrayProcess::Enqueue(Command command, DWORD expectedPid)
 {
     std::lock_guard lock(mutex_);
     const auto state = State();
     if (quit_ || busy_ || pending_ || state == ProcessState::Starting || state == ProcessState::Stopping ||
+        (expectedPid != 0 && (state != ProcessState::Running || Pid() != expectedPid)) ||
         (command.operation == Operation::Run && state != ProcessState::Stopped) ||
         (command.operation == Operation::Stop && state == ProcessState::Stopped)) {
         return false;

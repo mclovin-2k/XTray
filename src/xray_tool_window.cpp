@@ -108,6 +108,7 @@ XrayToolWindow::~XrayToolWindow() { Close(); }
 const wchar_t* XrayToolWindow::Title() const
 {
     if (process_ != nullptr) { return Text(L"Xray run information", L"Xray 运行信息"); }
+    if (source_ == XrayToolSource::RestartCheck) { return Text(L"Configuration check before restart", L"重启前检查配置"); }
     if (kind_ == XrayToolKind::Version) { return Text(L"Show Xray version", L"显示 Xray 版本"); }
     if (source_ == XrayToolSource::SettingsDraft) {
         return kind_ == XrayToolKind::Check ? Text(L"Check current configuration", L"检查当前配置")
@@ -120,6 +121,12 @@ const wchar_t* XrayToolWindow::Title() const
 std::wstring XrayToolWindow::Status() const
 {
     if (process_ != nullptr) { return RunStatus(process_->RunInfo()); }
+    if (source_ == XrayToolSource::RestartCheck) {
+        return restartKeptRunning_
+            ? Text(L"Configuration check failed. Restart cancelled. The current Xray is still running.",
+                L"配置检查未通过，已取消重启。当前 Xray 仍在运行。")
+            : Text(L"Configuration check failed. Restart cancelled.", L"配置检查未通过，已取消重启。");
+    }
     if (!result_) {
         return kind_ == XrayToolKind::Check ? Text(L"Checking configuration...", L"正在检查配置…")
             : Text(L"Reading Xray output...", L"正在读取 Xray 输出…");
@@ -175,6 +182,18 @@ void XrayToolWindow::OpenRunInfo(HWND owner, XrayProcess& process, bool dark, bo
         }
     }
     Poll();
+    Show();
+}
+
+void XrayToolWindow::OpenRestartCheckFailure(HWND owner, XrayToolResult result, bool stillRunning, bool dark, bool quiet)
+{
+    process_ = nullptr;
+    kind_ = XrayToolKind::Check;
+    source_ = XrayToolSource::RestartCheck;
+    restartKeptRunning_ = stillRunning;
+    Prepare(owner, dark, quiet);
+    SetAppearance(dark);
+    ShowResult(std::move(result));
     Show();
 }
 
@@ -325,6 +344,11 @@ void XrayToolWindow::RefreshLanguage()
     if (process_ != nullptr) {
         note = Text(L"Actual launch information for the latest attempt in this XTray session.",
             L"本次 XTray 会话中最近一次启动尝试的实际运行信息。");
+    } else if (source_ == XrayToolSource::RestartCheck) {
+        note = Text(L"Checked the saved settings selected for this restart.", L"使用点击重启时已保存的设置执行检查。");
+        if (result_ && result_->exitCode) {
+            note += Text(L" Exit code: ", L"退出码：") + std::to_wstring(*result_->exitCode) + Text(L".", L"。");
+        }
     } else {
         note = source_ == XrayToolSource::SettingsDraft
             ? Text(L"Uses the current settings form without saving. ", L"使用设置窗口当前填写的内容执行，无需先保存。")
@@ -445,17 +469,22 @@ void XrayToolWindow::Poll()
     }
     if (auto result = task_.TakeResult()) {
         KillTimer(window_, 1);
-        result_ = std::move(*result);
-        document_ = L"Xray: " + result_->executable.native() + L"\r\n\r\n";
-        document_ += DisplayOutput(result_->output);
-        std::string{}.swap(result_->output);
-        if (!result_->error.empty()) {
-            if (!document_.empty() && document_.back() != L'\n') { document_ += L"\r\n"; }
-            document_ += result_->error;
-        }
-        RefreshLanguage();
-        SetDocument();
+        ShowResult(std::move(*result));
     }
+}
+
+void XrayToolWindow::ShowResult(XrayToolResult result)
+{
+    result_ = std::move(result);
+    document_ = L"Xray: " + result_->executable.native() + L"\r\n\r\n";
+    document_ += DisplayOutput(result_->output);
+    std::string{}.swap(result_->output);
+    if (!result_->error.empty()) {
+        if (!document_.empty() && document_.back() != L'\n') { document_ += L"\r\n"; }
+        document_ += result_->error;
+    }
+    RefreshLanguage();
+    SetDocument();
 }
 
 void XrayToolWindow::CopyAll() const

@@ -1206,7 +1206,10 @@ void TestProcesses(const std::filesystem::path& root)
     const DWORD oldPid = process.Pid();
     Handle old(OpenProcess(SYNCHRONIZE, FALSE, oldPid));
     logs.Tray(L"retained tray marker");
-    Check(process.Restart(settings), "Restart request was rejected.");
+    const DWORD otherPid = other.Pid();
+    Check(otherPid != 0 && otherPid != oldPid && !process.Restart(settings, otherPid) && process.Pid() == oldPid,
+        "A restart for a different process was accepted.");
+    Check(process.Restart(settings, oldPid), "Restart request was rejected.");
     Check(WaitUntil([&] { return process.State() == ProcessState::Running &&
         process.Pid() != oldPid; }), "Restart did not create a new process.");
     Check(old && WaitForSingleObject(old.Get(), 0) == WAIT_OBJECT_0,

@@ -9,7 +9,7 @@
 
 namespace xtray {
 
-enum class XrayToolSource { SavedSettings, SettingsDraft };
+enum class XrayToolSource { SavedSettings, SettingsDraft, RestartCheck };
 
 class XrayToolWindow {
 public:
@@ -19,6 +19,7 @@ public:
         bool settingsValid, bool dark, bool quiet = false,
         XrayToolSource source = XrayToolSource::SavedSettings);
     void OpenRunInfo(HWND owner, XrayProcess& process, bool dark, bool quiet = false);
+    void OpenRestartCheckFailure(HWND owner, XrayToolResult result, bool stillRunning, bool dark, bool quiet = false);
     void Close();
     void CloseOwned(HWND owner);
     void RefreshLanguage();
@@ -35,6 +36,7 @@ private:
     void SetFonts();
     void Layout();
     void Poll();
+    void ShowResult(XrayToolResult result);
     void SetDocument(bool preserveView = false);
     void CopyAll() const;
     void UpdateToolbar();
@@ -57,6 +59,7 @@ private:
     UINT toolIconDpi_ = 0;
     COLORREF toolIconColor_ = CLR_INVALID;
     bool wordWrap_ = false;
+    bool restartKeptRunning_ = false;
     bool dark_ = false, quiet_ = false;
     std::exception_ptr error_;
 };

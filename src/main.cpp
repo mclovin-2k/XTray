@@ -44,6 +44,7 @@ using namespace xtray;
 
 constexpr UINT kExitMessage = WM_APP + 43;
 constexpr UINT kRuntimeFailureTestMessage = WM_APP + 49;
+constexpr ULONGLONG kRestartCheckTimeout = 60000;
 constexpr DWORD kWindowStyle = WS_OVERLAPPEDWINDOW;
 enum ControlId { Run = 2001, Stop, Restart, SettingsButton, FileList, OpenFile,
     OpenFileDirectory, OpenDirectory, Filter, ClearLogs, ScrollToEnd, ShowGui, ExitApp, CheckConfig, PreviewConfig, ShowVersion, CopyLogs, WordWrap, ShowRunInfo,
@@ -221,13 +222,16 @@ class Application {
 public:
     Application(std::filesystem::path root, bool smokeTest)
         : root_(std::move(root)), startup_(root_, ExecutablePath()),
-          process_(root_, logs_), toolWindow_(root_), runInfoWindow_(root_), smokeTest_(smokeTest),
+          process_(root_, logs_), restartCheck_(root_), toolWindow_(root_), runInfoWindow_(root_),
+          restartFailureWindow_(root_), smokeTest_(smokeTest),
           tray_(smokeTest ? SmokeNotifyIcon : Shell_NotifyIconW) {}
     ~Application()
     {
         themeMonitor_.reset();
+        restartCheck_.Cancel();
         toolWindow_.Close();
         runInfoWindow_.Close();
+        restartFailureWindow_.Close();
         process_.Shutdown();
         tray_.Remove();
         if (IsWindow(window_)) {
@@ -447,9 +451,10 @@ public:
 
     void Refresh()
     {
-        if (!ready_ || updatingUi_) {
+        if (!ready_ || updatingUi_ || exiting_) {
             return;
         }
+        PollRestartCheck();
         const auto state = process_.State();
         const DWORD pid = process_.Pid();
         const bool running = pid != 0;
@@ -459,7 +464,7 @@ public:
             SetWindowTextW(status_, status.c_str());
             EnableWindow(run_, state == ProcessState::Stopped);
             EnableWindow(stop_, state == ProcessState::Running);
-            EnableWindow(restart_, state == ProcessState::Running);
+            EnableWindow(restart_, state == ProcessState::Running && !restartRequest_);
             SendMessageW(statusIcon_, STM_SETICON,
                 reinterpret_cast<WPARAM>(icons_[running ? RunningStatusIcon : StoppedStatusIcon]), 0);
             shownState_ = state;
@@ -574,14 +579,15 @@ public:
                 OpenPath(path.native(), id == OpenFileDirectory);
             }
         } else if (id == Stop) {
+            CancelRestartCheck();
             process_.Stop();
-        } else if (id == Run || id == Restart) {
+        } else if (id == Restart) {
+            BeginRestartCheck();
+        } else if (id == Run) {
             if (!settingsValid_) {
                 logs_.Tray(Text(L"Saved settings could not be read. Re-enter and save them in Settings.", L"尚未成功读取已保存设置，请打开“设置”重新填写并保存。"));
-            } else if (id == Run) {
-                process_.Run(settings_);
             } else {
-                process_.Restart(settings_);
+                process_.Run(settings_);
             }
         }
         Refresh();
@@ -676,8 +682,10 @@ public:
         exiting_ = true;
         KillTimer(window_, 1);
         tray_.Remove();
+        restartCheck_.Cancel();
         toolWindow_.Close();
         runInfoWindow_.Close();
+        restartFailureWindow_.Close();
         process_.Shutdown();
         DestroyWindow(window_);
     }
@@ -768,7 +776,8 @@ public:
         if (view_) {
             view_->ObserveNavigation(message);
         }
-        return toolWindow_.Translate(message) || runInfoWindow_.Translate(message);
+        return toolWindow_.Translate(message) || runInfoWindow_.Translate(message) ||
+            restartFailureWindow_.Translate(message);
     }
 
     bool IsExiting() const { return exiting_; }
@@ -1144,6 +1153,7 @@ private:
         theme_.ApplyOwned(dark);
         toolWindow_.SetAppearance(dark);
         runInfoWindow_.SetAppearance(dark);
+        restartFailureWindow_.SetAppearance(dark);
         UpdateMenus();
     }
 
@@ -1171,6 +1181,97 @@ private:
             }
             if (!IsWindowVisible(window_)) {
                 ShowMain();
+            }
+        }
+    }
+
+    const wchar_t* RestartCaption() const
+    {
+        return restartRequest_ ? Text(L"Checking…", L"检查中…") : Text(L"Restart", L"重启");
+    }
+
+    void UpdateRestartControl()
+    {
+        SetWindowTextW(restart_, RestartCaption());
+        EnableWindow(restart_, process_.State() == ProcessState::Running && !restartRequest_);
+        Layout();
+    }
+
+    void BeginRestartCheck()
+    {
+        const DWORD pid = process_.Pid();
+        if (restartRequest_ || process_.State() != ProcessState::Running || pid == 0) { return; }
+        restartFailure_.reset();
+        restartFailureWindow_.Close();
+        try {
+            restartRequest_ = RestartRequest{settings_, pid, GetTickCount64() + kRestartCheckTimeout};
+            if (!restartCheck_.Start(XrayToolKind::Check, restartRequest_->settings, settingsValid_)) {
+                throw std::runtime_error(Text("The restart check is already running.", "重启前检查正在执行。"));
+            }
+            UpdateRestartControl();
+        } catch (const std::exception& exception) {
+            CancelRestartCheck();
+            XrayToolResult result;
+            result.error = FromUtf8(exception.what());
+            RecordRestartCheckFailure(pid, std::move(result));
+        }
+    }
+
+    void CancelRestartCheck()
+    {
+        if (!restartRequest_) { return; }
+        restartRequest_.reset();
+        restartCheck_.Cancel();
+        static_cast<void>(restartCheck_.TakeResult());
+        UpdateRestartControl();
+    }
+
+    void RecordRestartCheckFailure(DWORD pid, XrayToolResult result)
+    {
+        logs_.Tray(Text(L"Configuration check failed. Restart cancelled.", L"配置检查未通过，已取消重启。"));
+        restartFailure_ = RestartCheckFailure{pid, std::move(result)};
+    }
+
+    void PollRestartCheck()
+    {
+        if (restartRequest_) {
+            const auto pid = restartRequest_->pid;
+            if (process_.State() != ProcessState::Running || process_.Pid() != pid) {
+                CancelRestartCheck();
+                return;
+            }
+            auto result = restartCheck_.TakeResult();
+            if (!result && GetTickCount64() >= restartRequest_->deadline) {
+                restartCheck_.Cancel();
+                result = restartCheck_.TakeResult().value_or(XrayToolResult{});
+                result->cancelled = false;
+                result->exitCode.reset();
+                result->error = Text(L"The configuration check timed out after 60 seconds.", L"配置检查超时（60 秒）。");
+            }
+            if (!result) { return; }
+            auto request = std::move(*restartRequest_);
+            restartRequest_.reset();
+            if (!result->cancelled && result->error.empty() && result->exitCode == DWORD{0}) {
+                process_.Restart(std::move(request.settings), pid);
+            } else if (!result->cancelled) {
+                RecordRestartCheckFailure(pid, std::move(*result));
+            }
+            UpdateRestartControl();
+        }
+        if (restartFailure_ && IsWindowEnabled(window_)) {
+            auto failure = std::move(*restartFailure_);
+            restartFailure_.reset();
+            const bool stillRunning = process_.State() == ProcessState::Running && process_.Pid() == failure.pid;
+            ShowMain();
+            try {
+                restartFailureWindow_.OpenRestartCheckFailure(window_, std::move(failure.result), stillRunning,
+                    theme_.Colors().dark, smokeTest_);
+            } catch (const std::exception& exception) {
+                restartFailureWindow_.Close();
+                if (smokeTest_) { throw; }
+                const auto error = FromUtf8(exception.what());
+                MessageBoxW(window_, error.c_str(), Text(L"Configuration check before restart", L"重启前检查配置"),
+                    MB_OK | MB_ICONERROR);
             }
         }
     }
@@ -1252,7 +1353,7 @@ private:
         if (!append(ShowGui, Text(L"Show GUI", L"显示 GUI"), true) ||
             !append(Run, Text(L"Run", L"运行"), enabled && state == ProcessState::Stopped) ||
             !append(Stop, Text(L"Stop", L"停止"), enabled && state == ProcessState::Running) ||
-            !append(Restart, Text(L"Restart", L"重启"), enabled && state == ProcessState::Running) ||
+            !append(Restart, RestartCaption(), enabled && state == ProcessState::Running && !restartRequest_) ||
             !append(ExitApp, Text(L"Exit", L"退出"), enabled)) {
             DestroyMenu(menu);
             throw std::runtime_error(Text("Cannot populate the tray menu.", "无法设置托盘菜单。"));
@@ -1291,7 +1392,7 @@ private:
         const std::array captions{
             std::pair{run_, Text(L"Run", L"运行")},
             std::pair{stop_, Text(L"Stop", L"停止")},
-            std::pair{restart_, Text(L"Restart", L"重启")},
+            std::pair{restart_, RestartCaption()},
             std::pair{pendingSettings_, Text(L"Changes saved. Restart Xray to apply.", L"配置已更改，重启 Xray 后生效")},
             std::pair{fileLabel_, Text(L"Config files:", L"配置文件：")},
             std::pair{openFile_, Text(L"Open file", L"打开配置文件")},
@@ -1320,6 +1421,7 @@ private:
         UpdateMenus();
         toolWindow_.RefreshLanguage();
         runInfoWindow_.RefreshLanguage();
+        restartFailureWindow_.RefreshLanguage();
         shownPid_ = MAXDWORD;
         updatingUi_ = false;
         Layout();
@@ -2517,6 +2619,45 @@ private:
         }
         settings_.theme = original.theme;
         UpdateTheme(false);
+        std::fwprintf(stderr, L"Smoke: restart checks preserve the current child on failure from either entry point.\n");
+        TrayCommand(ShowGui);
+        const auto runningFiles = settings_.configFiles;
+        settings_.configFiles = {L".\\tool-fail.conf"};
+        for (const bool fromTray : {false, true}) {
+            if (fromTray) {
+                HideMain();
+                if (IsWindowVisible(window_)) { return false; }
+                TrayCommand(Restart);
+            } else {
+                SendMessageW(restart_, BM_CLICK, 0, 0);
+            }
+            if (!wait([&] { return restartFailureWindow_.Window() != nullptr; })) { return false; }
+            const HWND result = restartFailureWindow_.Window();
+            if (process_.Pid() != themePid || process_.State() != ProcessState::Running ||
+                !IsWindowVisible(window_) || GetWindow(result, GW_OWNER) != window_ ||
+                WindowText(result) != Text(L"Configuration check before restart", L"重启前检查配置") ||
+                WindowText(GetDlgItem(result, 4103)).find(Text(L"still running", L"仍在运行")) == std::wstring::npos ||
+                WindowText(GetDlgItem(result, 4101)).find(L"invalid configuration: expected failure") == std::wstring::npos ||
+                WindowText(GetDlgItem(result, 4105)).find(L"23") == std::wstring::npos) {
+                return false;
+            }
+            restartFailureWindow_.Close();
+        }
+
+        std::fwprintf(stderr, L"Smoke: a timed-out check keeps Xray running and reports the error.\n");
+        settings_.configFiles = {L".\\tool-hold.conf"};
+        Command(Restart, BN_CLICKED);
+        if (!restartRequest_ || !wait([&] { return restartCheck_.Pid() != 0; })) { return false; }
+        restartRequest_->deadline = GetTickCount64();
+        Refresh();
+        if (restartRequest_ || restartCheck_.Running() || process_.Pid() != themePid ||
+            WindowText(GetDlgItem(restartFailureWindow_.Window(), 4101)).find(
+                Text(L"timed out", L"检查超时")) == std::wstring::npos) {
+            return false;
+        }
+        restartFailureWindow_.Close();
+        settings_.configFiles = runningFiles;
+        Refresh();
         std::fwprintf(stderr, L"Smoke: pending settings hint, layout, and restart.\n");
         TrayCommand(ShowGui);
         if (IsWindowVisible(pendingSettings_)) { return false; }
@@ -2649,10 +2790,14 @@ private:
         if (!disabled) {
             return false;
         }
-        std::fwprintf(stderr, L"Smoke: tray stop and failed run.\n");
+        std::fwprintf(stderr, L"Smoke: tray stop cancels an active check, and invalid Run is still handled.\n");
         const size_t warnings = smokeTrayWarnings.size();
+        settings_.configFiles = {L".\\tool-hold.conf"};
+        TrayCommand(Restart);
+        if (!restartRequest_ || IsWindowEnabled(restart_) || !IsWindowEnabled(stop_)) { return false; }
         TrayCommand(Stop);
-        if (!wait([&] { return process_.State() == ProcessState::Stopped; }) ||
+        if (!wait([&] { return process_.State() == ProcessState::Stopped; }) || restartRequest_ ||
+            restartCheck_.Running() || restartFailureWindow_.Window() != nullptr ||
             smokeTrayData.hIcon != icons_[StoppedTrayIcon] || !checkMenu(false) || !SmokeTestWindowBranding(false)) {
             return false;
         }
@@ -2836,8 +2981,14 @@ private:
     StartupRegistration startup_;
     Logs logs_;
     XrayProcess process_;
+    XrayTool restartCheck_;
+    struct RestartRequest { Settings settings; DWORD pid; ULONGLONG deadline; };
+    struct RestartCheckFailure { DWORD pid; XrayToolResult result; };
+    std::optional<RestartRequest> restartRequest_;
+    std::optional<RestartCheckFailure> restartFailure_;
     XrayToolWindow toolWindow_;
     XrayToolWindow runInfoWindow_;
+    XrayToolWindow restartFailureWindow_;
     bool smokeTest_;
     TrayIcon tray_;
     struct ExitNotification { uint64_t logId; uint64_t registration; };
