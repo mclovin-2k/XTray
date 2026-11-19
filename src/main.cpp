@@ -416,10 +416,10 @@ public:
         move(directory_, inputX, directoryY + (Scale(26) - directoryHeight) / 2,
             directoryX - gap - inputX, directoryHeight);
         move(openDirectory_, directoryX, directoryY, directoryWidth, Scale(26));
-        const int filterY = Scale(134) + rowOffset, filterHeight = Scale(32);
-        move(filterLabel_, margin, filterY + (filterHeight - Scale(26)) / 2, labelWidth, Scale(26));
-        const int iconButton = Scale(32);
-        int toolX = width - margin - iconButton * 4 - gap * 3;
+        const int filterY = Scale(134) + rowOffset;
+        const int filterHeight = SetClosedComboBoxHeight(filter_, Scale(28));
+        move(filterLabel_, margin, filterY, labelWidth, filterHeight);
+        int toolX = width - margin - filterHeight * 4 - gap * 3;
         LONG sourceTextWidth = 0;
         for (const auto* caption : LogSourceCaptions()) {
             sourceTextWidth = (std::max)(sourceTextWidth, ControlTextSize(filter_, caption).cx);
@@ -427,7 +427,7 @@ public:
         const int preferredSourceWidth = static_cast<int>(sourceTextWidth) +
             GetSystemMetricsForDpi(SM_CXVSCROLL, dpi_) + Scale(12);
         const int sourceWidth = std::clamp(toolX - inputX - 2 * gap - Scale(144), Scale(1), preferredSourceWidth);
-        move(filter_, inputX, filterY + (filterHeight - ComboBoxHeight(filter_)) / 2, sourceWidth, Scale(180));
+        move(filter_, inputX, filterY, sourceWidth, Scale(180));
         const int keywordX = inputX + sourceWidth + gap;
         move(keywordFrame_, keywordX, filterY, toolX - gap - keywordX, filterHeight);
         RECT keywordClient{};
@@ -445,11 +445,11 @@ public:
         move(keyword_, Scale(5), (static_cast<int>(keywordClient.bottom) - editHeight) / 2,
             keywordRight - Scale(5), editHeight);
         for (const auto control : {copyLogs_, clearLogs_, scrollToEnd_, wordWrap_}) {
-            move(control, toolX, filterY, iconButton, filterHeight);
-            toolX += iconButton + gap;
+            move(control, toolX, filterY, filterHeight, filterHeight);
+            toolX += filterHeight + gap;
         }
-        move(logWindow_, margin, Scale(174) + rowOffset, width - margin * 2,
-            static_cast<int>(client.bottom) - Scale(190) - rowOffset);
+        const int logY = filterY + filterHeight + gap;
+        move(logWindow_, margin, logY, width - margin * 2, static_cast<int>(client.bottom) - logY - margin);
     }
 
     void DpiChanged(UINT dpi)
@@ -1165,6 +1165,7 @@ private:
         toolWindow_.SetAppearance(dark);
         runInfoWindow_.SetAppearance(dark);
         restartFailureWindow_.SetAppearance(dark);
+        Layout();
         UpdateMenus();
     }
 
@@ -1978,6 +1979,23 @@ private:
         GetWindowRect(matchCase_, &matchCase);
         GetWindowRect(clearKeyword_, &clear);
         GetWindowRect(copyLogs_, &copy);
+        const LONG rowHeight = frame.bottom - frame.top;
+        const auto selectionHeight = SendMessageW(filter_, CB_GETITEMHEIGHT, static_cast<WPARAM>(-1), 0);
+        const auto itemHeight = SendMessageW(filter_, CB_GETITEMHEIGHT, 0, 0);
+        if (source.top != frame.top || source.bottom != frame.bottom ||
+            rowHeight != (std::max)(static_cast<LRESULT>(Scale(28)), rowHeight - selectionHeight + itemHeight) ||
+            itemHeight != SendMessageW(files_, CB_GETITEMHEIGHT, 0, 0)) {
+            std::fwprintf(stderr, L"Smoke: log source height differs from the toolbar or changed the list item height.\n");
+            return false;
+        }
+        for (const auto control : {copyLogs_, clearLogs_, scrollToEnd_, wordWrap_}) {
+            RECT button{};
+            if (!GetWindowRect(control, &button) || button.top != frame.top || button.bottom != frame.bottom ||
+                button.right - button.left != rowHeight) {
+                std::fwprintf(stderr, L"Smoke: log toolbar button is not a row-height square (id=%d).\n", GetDlgCtrlID(control));
+                return false;
+            }
+        }
         if (source.right >= frame.left || frame.right >= copy.left || edit.left <= frame.left ||
             edit.right > clear.left || clear.right > matchCase.left || matchCase.right > wildcard.left ||
             wildcard.right >= frame.right) {
@@ -2022,8 +2040,8 @@ private:
                 copy.top != clear.top || clearButton.top != clear.top) {
                 return false;
             }
-            if (clear.right != logBounds.right || clear.right - clear.left != Scale(32) ||
-                clear.bottom - clear.top != Scale(32) || scrollButton.bottom != clear.bottom ||
+            if (clear.right != logBounds.right || clear.right - clear.left != clear.bottom - clear.top ||
+                scrollButton.bottom != clear.bottom ||
                 scrollButton.right + Scale(8) != clear.left) {
                 return false;
             }

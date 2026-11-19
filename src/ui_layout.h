@@ -80,6 +80,23 @@ inline int ComboBoxHeight(HWND control)
     return static_cast<int>(bounds.bottom - bounds.top);
 }
 
+inline int SetClosedComboBoxHeight(HWND control, int height)
+{
+    constexpr auto selectionField = static_cast<WPARAM>(-1);
+    const int currentHeight = ComboBoxHeight(control);
+    const int selectionHeight = static_cast<int>(SendMessageW(control, CB_GETITEMHEIGHT, selectionField, 0));
+    const int itemHeight = static_cast<int>(SendMessageW(control, CB_GETITEMHEIGHT, 0, 0));
+    if (selectionHeight == CB_ERR || itemHeight == CB_ERR) {
+        throw std::runtime_error(Text("Cannot measure the combo box selection field.", "无法测量下拉框选中区域。"));
+    }
+    const int target = (std::max)(itemHeight, selectionHeight + height - currentHeight);
+    if (target == selectionHeight) { return currentHeight; }
+    if (SendMessageW(control, CB_SETITEMHEIGHT, selectionField, target) == CB_ERR) {
+        throw std::runtime_error(Text("Cannot size the combo box selection field.", "无法设置下拉框选中区域的高度。"));
+    }
+    return ComboBoxHeight(control);
+}
+
 inline int TextButtonWidth(HWND control)
 {
     return ControlTextSize(control).cx + UiScale(control, 24);
