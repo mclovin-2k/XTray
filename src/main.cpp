@@ -427,7 +427,10 @@ public:
         const int preferredSourceWidth = static_cast<int>(sourceTextWidth) +
             GetSystemMetricsForDpi(SM_CXVSCROLL, dpi_) + Scale(12);
         const int sourceWidth = std::clamp(toolX - inputX - 2 * gap - Scale(144), Scale(1), preferredSourceWidth);
-        move(filter_, inputX, filterY, sourceWidth, Scale(180));
+        // Moving a native drop-down can restore its default selection height.
+        MoveWindow(filter_, inputX, filterY, sourceWidth, Scale(180), FALSE);
+        SetClosedComboBoxHeight(filter_, filterHeight);
+        InvalidateRect(filter_, nullptr, TRUE);
         const int keywordX = inputX + sourceWidth + gap;
         move(keywordFrame_, keywordX, filterY, toolX - gap - keywordX, filterHeight);
         RECT keywordClient{};
