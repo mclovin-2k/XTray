@@ -47,9 +47,9 @@ with different listening ports. Each copy manages one Xray process.
    files and/or select one configuration directory, then click **Save**.
 5. Click **Run** to start Xray.
 
-Both configuration inputs start empty. Select at least one configuration file or
-one configuration directory before running. Multiple configuration files and a
-configuration directory can be used together.
+Both configuration inputs start empty. Enable at least one file or set a
+configuration directory before running. A configuration directory can be used
+together with multiple files.
 
 Language, appearance and the per-source log line limit share three equal columns
 at the top of Settings. **Check current configuration** and **Preview current
@@ -63,15 +63,21 @@ When you return to the main window, XTray also compares the local configuration
 files to the list and contents recorded at launch. Edits, additions, and removals
 show a restart hint. Restoring the original files or restarting clears it.
 
-Checked configuration files load in list order. Uncheck a file to keep its path
-and position without passing it as an explicit config. The configuration
-directory still loads normally, including files also listed separately.
-Use Ctrl or Shift to select multiple
-files before moving or removing them. Right-click a row to open the file or its
-containing folder using the current settings draft. **Convert paths** switches each selected
-path between relative and absolute. The arrow next to **Browse** opens the
-path conversion menu for the executable or the
-configuration directory. Relative paths use the folder containing `XTray.exe`.
+### Manage configuration files
+
+- Checked files load in list order. New entries and entries saved by earlier
+  versions start checked. Unchecking an entry keeps its path and position. Xray
+  also loads matching files from the configuration directory, even when their
+  separate list entries are unchecked.
+- Use Ctrl or Shift to select multiple rows, then move them up or down, remove
+  them, or switch each selected path between relative and absolute with
+  **Convert paths**.
+- Right-click a row to open the file or its containing folder directly from the
+  current settings draft.
+- The arrow next to **Browse** opens the path conversion menu for the executable
+  or configuration directory. Relative paths use the folder containing
+  `XTray.exe`. XTray keeps paths that cannot be converted and prompts before a
+  change that could affect Xray's `tail` merge rule.
 
 For help preparing your configuration, see the [Xray documentation](https://xtls.github.io/).
 XTray does not generate or edit Xray configuration files.
@@ -96,11 +102,11 @@ By default, XTray preserves Xray's native loading behavior: explicitly listed
 files are loaded before the configuration directory. To load shared directory
 configuration first and your separate files afterwards, enable **Load config
 directory before config files** in Settings. This option defaults to off and
-applies only when both sources are configured. Saved changes take effect on the
-next run or restart; tools in Settings use the current checkbox state directly.
+applies when a directory is set and at least one file is checked. Saved changes
+take effect on the next run or restart. Tools in Settings use the current draft.
 
 When enabled, XTray sorts matching entries in the directory's top level by file
-name, passes them as individual `-config` arguments, and appends your file list.
+name, passes them as individual `-config` arguments, and appends the checked files.
 Xray still parses and merges the configuration. This Xray process does not
 inherit `confdir` environment variables, preventing an extra directory from
 being appended. Use **Xray Tools → Preview saved configuration**, or **Preview
