@@ -2646,7 +2646,7 @@ private:
         if (!wait([&] {
             for (const auto& line : logs_.Snapshot().lines) {
                 if (line->source == LogSource::Tray &&
-                    line->text.find(L"请至少设置一个") != std::wstring::npos) {
+                    line->text.find(L"请至少启用一个配置文件") != std::wstring::npos) {
                     return process_.State() == ProcessState::Stopped;
                 }
             }

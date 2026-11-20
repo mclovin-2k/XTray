@@ -57,6 +57,7 @@ struct Context {
     std::vector<ConfigFileRow> configFiles;
     bool refreshingConfigFiles = false;
     int configFileColumnWidth = 0;
+    std::wstring configFileTooltip;
     int scroll = 0;
     int contentHeight = 0;
     int wheelRemainder = 0;
@@ -171,8 +172,7 @@ std::vector<int> SelectedConfigFiles(HWND list)
 
 void InitConfigFileList(HWND list)
 {
-    ListView_SetExtendedListViewStyle(list, LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT |
-        LVS_EX_DOUBLEBUFFER | LVS_EX_INFOTIP);
+    ListView_SetExtendedListViewStyle(list, LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER);
     LVCOLUMNW column{};
     column.mask = LVCF_WIDTH;
     if (SendMessageW(list, LVM_INSERTCOLUMNW, 0, reinterpret_cast<LPARAM>(&column)) == -1) {
@@ -497,6 +497,11 @@ void CreateSettingsTooltip(Context& context)
     if (!SendMessageW(context.tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool))) {
         throw std::runtime_error(Text("Cannot register the settings tooltip.", "无法注册设置悬停提示。"));
     }
+    tool.uId = reinterpret_cast<UINT_PTR>(SettingsControl(context.dialog, IDC_CONFIG_FILES));
+    tool.lpszText = LPSTR_TEXTCALLBACKW;
+    if (!SendMessageW(context.tooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool))) {
+        throw std::runtime_error(Text("Cannot register the config file tooltip.", "无法注册配置文件悬停提示。"));
+    }
     SendMessageW(context.tooltip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 15000);
 }
 
@@ -785,12 +790,18 @@ INT_PTR CALLBACK SettingsContentsProcedure(HWND window, UINT message, WPARAM wPa
                 }
                 return TRUE;
             }
-            if (id == IDC_CONFIG_FILES && notification.code == LVN_GETINFOTIPW) {
-                const auto& tip = *reinterpret_cast<const NMLVGETINFOTIPW*>(lParam);
-                if (tip.iItem >= 0 && static_cast<size_t>(tip.iItem) < context->configFiles.size() &&
-                    tip.cchTextMax > 0) {
-                    lstrcpynW(tip.pszText, context->configFiles[tip.iItem].path.c_str(), tip.cchTextMax);
+            const HWND list = GetDlgItem(window, IDC_CONFIG_FILES);
+            if (notification.hwndFrom == context->tooltip && notification.code == TTN_GETDISPINFOW &&
+                notification.idFrom == reinterpret_cast<UINT_PTR>(list)) {
+                LVHITTESTINFO hit{};
+                GetCursorPos(&hit.pt);
+                ScreenToClient(list, &hit.pt);
+                const int index = ListView_HitTest(list, &hit);
+                context->configFileTooltip.clear();
+                if (index >= 0 && static_cast<size_t>(index) < context->configFiles.size()) {
+                    context->configFileTooltip = context->configFiles[index].path;
                 }
+                reinterpret_cast<NMTTDISPINFOW*>(lParam)->lpszText = context->configFileTooltip.data();
                 return TRUE;
             }
             if (notification.code == BCN_DROPDOWN && (id == IDC_BROWSE_EXECUTABLE ||
@@ -971,7 +982,7 @@ void SetDialogLanguage(HWND dialog)
     set(IDC_HINT_RELATIVE, Text(L"Relative paths use the XTray.exe directory.",
         L"相对路径以 XTray.exe 所在目录为基准。"));
     set(IDC_HINT_APPLY, Text(L"Paths and load order apply on the next run/restart; at least one config source is required.",
-        L"路径和加载顺序下次运行或重启生效；运行前至少设置一种配置来源。"));
+        L"路径和加载顺序下次运行或重启生效；运行前请启用配置文件或设置配置目录。"));
     set(IDOK, Text(L"Save", L"保存"));
     set(IDCANCEL, Text(L"Cancel", L"取消"));
     for (const auto* item : {Text(L"Automatic", L"自动"), Text(L"English", L"英文"),

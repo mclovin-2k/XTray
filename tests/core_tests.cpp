@@ -1199,7 +1199,7 @@ void TestProcesses(const std::filesystem::path& root)
     Check(!process.RunInfo().attempted, "A new process manager reported a nonexistent run.");
     process.Run(Settings{});
     Check(WaitUntil([&] { return process.State() == ProcessState::Stopped; }) &&
-        HasText(logs, LogSource::Tray, L"至少设置") && process.Pid() == 0,
+        HasText(logs, LogSource::Tray, L"至少启用一个配置文件") && process.Pid() == 0,
         "Empty configuration sources did not fail before launch.");
     const auto invalid = process.RunInfo();
     Check(invalid.attempted && !invalid.started && !invalid.ended && invalid.pid == 0 &&
@@ -1238,6 +1238,15 @@ void TestProcesses(const std::filesystem::path& root)
             return line->id == exits.front().logId && line->source == LogSource::Tray &&
                 line->text.find(L"退出码 23") != std::wstring::npos;
         }), "An early exit did not identify the exact log row or was reported more than once.");
+
+    auto disabled = FakeSettings(root);
+    disabled.configDirectory.clear();
+    disabled.disabledConfigFiles = {0, 1};
+    logs.ClearXray();
+    Check(process.Run(disabled) && WaitUntil([&] { return process.State() == ProcessState::Stopped; }) &&
+        !process.RunInfo().started &&
+        process.RunInfo().error.find(L"至少启用一个配置文件") != std::wstring::npos,
+        "A run with every explicit configuration disabled started Xray.");
 
     auto settings = FakeSettings(root);
     const std::wstring alternateDrive = root.root_name().native() == L"Z:" ? L"Y:" : L"Z:";
