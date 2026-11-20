@@ -653,8 +653,13 @@ public:
                 }
             }
         }
-        return menuTheme_.Handle(message, wParam, lParam, result) ||
+        const bool handled = menuTheme_.Handle(message, wParam, lParam, result) ||
             theme_.Handle(message, wParam, lParam, result);
+        if (handled && message == WM_CTLCOLORSTATIC && reinterpret_cast<HWND>(lParam) == pendingSettings_ &&
+            pendingConfigChange_ == PendingConfigChange::Files) {
+            SetTextColor(reinterpret_cast<HDC>(wParam), theme_.Colors().trayLog);
+        }
+        return handled;
     }
 
     void SystemThemeChanged()
@@ -2427,6 +2432,14 @@ private:
             if (directoryBrush == 0 || !IsWindowEnabled(directory_) ||
                 GetBkColor(canvas.device) != palette.surface || GetTextColor(canvas.device) != palette.text) {
                 return fail(L"directory display surface and readable text colors");
+            }
+            const auto previousPending = std::exchange(pendingConfigChange_, PendingConfigChange::Files);
+            const auto pendingBrush = SendMessageW(window_, WM_CTLCOLORSTATIC,
+                reinterpret_cast<WPARAM>(canvas.device), reinterpret_cast<LPARAM>(pendingSettings_));
+            pendingConfigChange_ = previousPending;
+            if (pendingBrush == 0 || GetBkColor(canvas.device) != palette.window ||
+                GetTextColor(canvas.device) != palette.trayLog) {
+                return fail(L"configuration file change text color");
             }
             if (WindowText(logWindow_) != before || logs_.Revision() != revision ||
                 SendMessageW(filter_, CB_GETCURSEL, 0, 0) != 0) {
