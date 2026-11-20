@@ -64,8 +64,9 @@ files to the list and contents recorded at launch. Edits, additions, and removal
 show a restart hint. Restoring the original files or restarting clears it.
 
 Configuration files load in list order. Use Ctrl or Shift to select multiple
-files before moving, removing, or converting their paths. The arrow next to
-**Browse** opens the same path conversion options for the executable or the
+files before moving or removing them. **Convert paths** switches each selected
+path between relative and absolute. The arrow next to **Browse** opens the
+path conversion menu for the executable or the
 configuration directory. Relative paths use the folder containing `XTray.exe`.
 
 For help preparing your configuration, see the [Xray documentation](https://xtls.github.io/).

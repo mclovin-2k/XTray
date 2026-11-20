@@ -48,6 +48,7 @@ struct Context {
     ThemeWindow contentTheme;
     HWND contents = nullptr;
     HWND tooltip = nullptr;
+    HFONT pathFont = nullptr;
     std::vector<std::wstring> configFiles;
     int scroll = 0;
     int contentHeight = 0;
@@ -66,6 +67,7 @@ Context::~Context()
     if (IsWindow(tooltip)) { DestroyWindow(tooltip); }
     if (messageFilter != nullptr) { UnhookWindowsHookEx(messageFilter); }
     if (activeSettings == this) { activeSettings = nullptr; }
+    if (pathFont != nullptr) { DeleteObject(pathFont); }
     for (const auto icon : icons) { if (icon != nullptr) { DestroyIcon(icon); } }
 }
 
@@ -325,7 +327,9 @@ int SplitButtonWidth(HWND button)
     return TextButtonWidth(button) + UiScale(button, 22);
 }
 
-void ConvertSettingPaths(Context& context, int buttonId, bool toAbsolute)
+enum class PathConversion { Relative, Absolute, Toggle };
+
+void ConvertSettingPaths(Context& context, int buttonId, PathConversion direction)
 {
     const bool fileList = buttonId == IDC_CONVERT_CONFIG;
     const int inputId = buttonId == IDC_BROWSE_EXECUTABLE ? IDC_EXECUTABLE : IDC_CONFIG_DIRECTORY;
@@ -339,6 +343,8 @@ void ConvertSettingPaths(Context& context, int buttonId, bool toAbsolute)
     for (const int index : selected) {
         const auto& value = values[index];
         if (value.empty()) { continue; }
+        const bool toAbsolute = direction == PathConversion::Absolute ||
+            (direction == PathConversion::Toggle && !std::filesystem::path(value).is_absolute());
         auto converted = ConvertWindowsPath(context.root, value, toAbsolute);
         if (!converted) {
             skipped += L"\n" + value;
@@ -390,10 +396,8 @@ void ShowPathConversions(Context& context, int id)
     std::array<MSAAMENUINFO, 2> accessible{};
     const bool dark = context.theme.Colors().dark;
     const HWND button = GetDlgItem(context.contents, id);
-    const bool enabled = id == IDC_CONVERT_CONFIG
-        ? IsWindowEnabled(button) != FALSE
-        : GetWindowTextLengthW(GetDlgItem(context.contents,
-            id == IDC_BROWSE_EXECUTABLE ? IDC_EXECUTABLE : IDC_CONFIG_DIRECTORY)) != 0;
+    const bool enabled = GetWindowTextLengthW(GetDlgItem(context.contents,
+        id == IDC_BROWSE_EXECUTABLE ? IDC_EXECUTABLE : IDC_CONFIG_DIRECTORY)) != 0;
     if (popup.menu == nullptr) {
         throw std::runtime_error(Text("Cannot create the path conversion menu.", "无法创建路径转换菜单。"));
     }
@@ -416,7 +420,9 @@ void ShowPathConversions(Context& context, int id)
     const UINT command = TrackPopupMenuEx(popup.menu,
         TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTALIGN | TPM_RIGHTBUTTON,
         bounds.right, bounds.bottom, context.dialog, nullptr);
-    if (command != 0) { ConvertSettingPaths(context, id, command == 2); }
+    if (command != 0) {
+        ConvertSettingPaths(context, id, command == 2 ? PathConversion::Absolute : PathConversion::Relative);
+    }
 }
 
 const wchar_t* ConfigOrderTooltip()
@@ -450,6 +456,25 @@ void CreateSettingsTooltip(Context& context)
     SendMessageW(context.tooltip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 15000);
 }
 
+void SetSettingsPathFont(Context& context)
+{
+    LOGFONTW description{};
+    const auto bodyFont = reinterpret_cast<HFONT>(SendMessageW(context.contents, WM_GETFONT, 0, 0));
+    if (GetObjectW(bodyFont, sizeof(description), &description) == 0) {
+        throw std::runtime_error(Text("Cannot read the settings font.", "无法读取设置窗口字体。"));
+    }
+    description.lfHeight = -MulDiv(11, static_cast<int>(GetDpiForWindow(context.contents)), 72);
+    const HFONT font = CreateFontIndirectW(&description);
+    if (font == nullptr) {
+        throw std::runtime_error(Text("Cannot create the settings path font.", "无法创建设置路径字体。"));
+    }
+    for (const int id : {IDC_EXECUTABLE, IDC_CONFIG_FILES, IDC_CONFIG_DIRECTORY}) {
+        SendMessageW(GetDlgItem(context.contents, id), WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    }
+    if (context.pathFont != nullptr) { DeleteObject(context.pathFont); }
+    context.pathFont = font;
+}
+
 void LayoutSettingsContent(Context& context)
 {
     const HWND body = context.contents;
@@ -465,7 +490,7 @@ void LayoutSettingsContent(Context& context)
     RECT units{0, 0, 0, 15};
     MapDialogRect(body, &units);
     const int rowHeight = (std::max)(static_cast<int>(units.bottom),
-        static_cast<int>(ControlTextSize(GetDlgItem(body, IDC_EXECUTABLE)).cy) + UiScale(body, 8));
+        static_cast<int>(ControlTextSize(GetDlgItem(body, IDC_LOG_LINES)).cy) + UiScale(body, 8));
     int contentHeight = 0;
     for (int pass = 0; pass < 2; ++pass) {
         RECT client{};
@@ -481,13 +506,18 @@ void LayoutSettingsContent(Context& context)
             place(id, margin, y, available, height);
             y += height + gap;
         };
-        const auto pathRow = [&](int editId, int browseId, int height) {
+        const auto pathRow = [&](int editId, int frameId, int browseId) {
             const int buttonWidth = SplitButtonWidth(GetDlgItem(body, browseId));
             const int buttonX = margin + available - buttonWidth;
-            place(browseId, buttonX, y, buttonWidth, rowHeight);
-            place(editId, margin, y + (std::max)(0, (rowHeight - height) / 2),
-                buttonX - gap - margin, height);
-            y += (std::max)(height, rowHeight) + sectionGap;
+            const int fieldWidth = buttonX - gap - margin;
+            const int inset = UiScale(body, 5);
+            const int editHeight = SingleLineControlHeight(GetDlgItem(body, editId)) + UiScale(body, 2);
+            const int height = (std::max)(rowHeight, editHeight + UiScale(body, 6));
+            // The native single-line edit keeps its own caret and input behavior inside the taller frame.
+            place(frameId, margin, y, fieldWidth, height);
+            place(editId, margin + inset, y + (height - editHeight) / 2, fieldWidth - inset * 2, editHeight);
+            place(browseId, buttonX, y, buttonWidth, height);
+            y += height + sectionGap;
         };
         const std::array groups{std::pair{IDC_LABEL_LANGUAGE, IDC_LANGUAGE},
             std::pair{IDC_LABEL_THEME, IDC_THEME}, std::pair{IDC_LABEL_LOG_LINES, IDC_LOG_LINES}};
@@ -517,7 +547,7 @@ void LayoutSettingsContent(Context& context)
         }
         y += rowHeight + sectionGap;
         label(IDC_LABEL_EXECUTABLE);
-        pathRow(IDC_EXECUTABLE, IDC_BROWSE_EXECUTABLE, SingleLineControlHeight(GetDlgItem(body, IDC_EXECUTABLE)));
+        pathRow(IDC_EXECUTABLE, IDC_EXECUTABLE_FRAME, IDC_BROWSE_EXECUTABLE);
         label(IDC_LABEL_CONFIG_FILES);
         units = {0, 0, 0, 75};
         MapDialogRect(body, &units);
@@ -525,7 +555,7 @@ void LayoutSettingsContent(Context& context)
         const int moveDownWidth = TextButtonWidth(GetDlgItem(body, IDC_MOVE_CONFIG_DOWN));
         const int actionsWidth = (std::max)({TextButtonWidth(GetDlgItem(body, IDC_ADD_FILES)),
             moveUpWidth + gap + moveDownWidth, TextButtonWidth(GetDlgItem(body, IDC_REMOVE_CONFIG)),
-            SplitButtonWidth(GetDlgItem(body, IDC_CONVERT_CONFIG))});
+            TextButtonWidth(GetDlgItem(body, IDC_CONVERT_CONFIG))});
         const int actionHeight = rowHeight * 4 + gap * 3;
         const int listHeight = (std::max)(static_cast<int>(units.bottom), actionHeight);
         const bool stackFileActions = available - actionsWidth - gap < UiScale(body, 80);
@@ -542,7 +572,7 @@ void LayoutSettingsContent(Context& context)
         place(IDC_CONVERT_CONFIG, actionX, actionY + actionStep * 3, actionsWidth, rowHeight);
         y += listHeight + sectionGap + (stackFileActions ? actionHeight + gap : 0);
         label(IDC_LABEL_CONFIG_DIRECTORY);
-        pathRow(IDC_CONFIG_DIRECTORY, IDC_BROWSE_DIRECTORY, SingleLineControlHeight(GetDlgItem(body, IDC_CONFIG_DIRECTORY)));
+        pathRow(IDC_CONFIG_DIRECTORY, IDC_CONFIG_DIRECTORY_FRAME, IDC_BROWSE_DIRECTORY);
         place(IDC_CONFIG_DIRECTORY_FIRST, margin, y, available, rowHeight);
         y += rowHeight + sectionGap;
         const int checkWidth = TextButtonWidth(GetDlgItem(body, IDC_CHECK_CONFIG));
@@ -696,7 +726,7 @@ INT_PTR CALLBACK SettingsContentsProcedure(HWND window, UINT message, WPARAM wPa
             const auto& notification = *reinterpret_cast<const NMHDR*>(lParam);
             const auto id = static_cast<int>(notification.idFrom);
             if (notification.code == BCN_DROPDOWN && (id == IDC_BROWSE_EXECUTABLE ||
-                id == IDC_BROWSE_DIRECTORY || id == IDC_CONVERT_CONFIG)) {
+                id == IDC_BROWSE_DIRECTORY)) {
                 ShowPathConversions(*context, id);
                 return TRUE;
             }
@@ -908,6 +938,7 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         SetWindowPos(context->contents, HWND_TOP, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
         SetDialogLanguage(dialog);
+        SetSettingsPathFont(*context);
         SendMessageW(SettingsControl(dialog, IDC_LANGUAGE), CB_SETCURSEL,
             static_cast<WPARAM>(context->settings.language), 0);
         SendMessageW(SettingsControl(dialog, IDC_THEME), CB_SETCURSEL,
@@ -978,6 +1009,7 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
     }
     if (message == kRefreshDialogTheme) {
         SetDialogIcons(dialog, *context);
+        SetSettingsPathFont(*context);
         context->theme.Apply(context->theme.Colors().dark, true);
         UpdateConfigFileExtent(SettingsControl(dialog, IDC_CONFIG_FILES), context->configFiles);
         FitSettingsWindow(dialog, *context);
@@ -1004,6 +1036,13 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         return FALSE;
     }
     switch (LOWORD(wParam)) {
+    case IDC_EXECUTABLE_FRAME:
+    case IDC_CONFIG_DIRECTORY_FRAME:
+        if (HIWORD(wParam) == STN_CLICKED) {
+            SetFocus(SettingsControl(dialog, LOWORD(wParam) == IDC_EXECUTABLE_FRAME
+                ? IDC_EXECUTABLE : IDC_CONFIG_DIRECTORY));
+        }
+        return TRUE;
     case IDC_CHECK_CONFIG:
     case IDC_PREVIEW_CONFIG: {
         try {
@@ -1029,7 +1068,7 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         RemoveConfigFiles(*context);
         return TRUE;
     case IDC_CONVERT_CONFIG:
-        ShowPathConversions(*context, IDC_CONVERT_CONFIG);
+        ConvertSettingPaths(*context, IDC_CONVERT_CONFIG, PathConversion::Toggle);
         return TRUE;
     case IDC_BROWSE_EXECUTABLE:
     case IDC_ADD_FILES:
@@ -1220,7 +1259,9 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
             const auto checkList = [&] {
                 if ((GetWindowLongPtrW(list, GWL_STYLE) & LBS_EXTENDEDSEL) == 0 ||
                     !browseStyle(IDC_BROWSE_EXECUTABLE) || !browseStyle(IDC_BROWSE_DIRECTORY) ||
-                    !browseStyle(IDC_CONVERT_CONFIG) ||
+                    (GetWindowLongPtrW(SettingsControl(window, IDC_CONVERT_CONFIG), GWL_STYLE) & BS_TYPEMASK)
+                        != BS_PUSHBUTTON ||
+                    WindowText(SettingsControl(window, IDC_CONVERT_CONFIG)) != Text(L"Convert paths", L"转换路径") ||
                     WindowText(up) != Text(L"↑ Up", L"↑ 上移") ||
                     WindowText(down) != Text(L"↓ Down", L"↓ 下移") ||
                     IsWindowEnabled(up) || IsWindowEnabled(down) || IsWindowEnabled(remove)) {
@@ -1243,13 +1284,21 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                 }
                 RefreshConfigFiles(context, {0, 1});
                 if (IsWindowEnabled(up) || !IsWindowEnabled(down)) { return false; }
-                ConvertSettingPaths(context, IDC_CONVERT_CONFIG, true);
+                const HWND convert = SettingsControl(window, IDC_CONVERT_CONFIG);
+                SendMessageW(convert, BM_CLICK, 0, 0);
                 const auto absolute = root / L"one-tail.json";
                 if (ConfigDraft(context).configFiles.front() != absolute.native() ||
                     ConfigDraft(context).configFiles[3] != files[3] ||
                     SelectedConfigFiles(list) != std::vector<int>{0, 1}) { return false; }
-                ConvertSettingPaths(context, IDC_CONVERT_CONFIG, false);
+                SendMessageW(convert, BM_CLICK, 0, 0);
                 if (ConfigDraft(context).configFiles != files) { return false; }
+                const auto longAbsolute = ResolvePath(root, files[1]).native();
+                context.configFiles[1] = longAbsolute;
+                RefreshConfigFiles(context, {0, 1});
+                SendMessageW(convert, BM_CLICK, 0, 0);
+                if (context.configFiles[0] != absolute.native() || context.configFiles[1] != files[1]) { return false; }
+                SendMessageW(convert, BM_CLICK, 0, 0);
+                if (context.configFiles[0] != files[0] || context.configFiles[1] != longAbsolute) { return false; }
                 SendMessageW(remove, BM_CLICK, 0, 0);
                 std::array<wchar_t, 64> first{};
                 const auto length = SendMessageW(list, LB_GETTEXTLEN, 0, 0);
@@ -1455,8 +1504,26 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                     padding <= UiScale(control, 25) + split;
             }
             const auto checkInputs = [&] {
-                for (const auto& [id, neighbor] : {std::pair{IDC_EXECUTABLE, IDC_BROWSE_EXECUTABLE},
-                    std::pair{IDC_CONFIG_DIRECTORY, IDC_BROWSE_DIRECTORY}, std::pair{IDC_LOG_LINES, IDC_LABEL_LOG_LINES}}) {
+                const HWND logLines = SettingsControl(window, IDC_LOG_LINES);
+                const auto fontHeight = [](HWND control) {
+                    LOGFONTW description{};
+                    GetObjectW(reinterpret_cast<HFONT>(SendMessageW(control, WM_GETFONT, 0, 0)),
+                        sizeof(description), &description);
+                    return std::abs(description.lfHeight);
+                };
+                const LONG pathFontHeight = fontHeight(SettingsControl(window, IDC_EXECUTABLE));
+                if (pathFontHeight <= fontHeight(logLines) ||
+                    fontHeight(list) != pathFontHeight ||
+                    fontHeight(SettingsControl(window, IDC_CONFIG_DIRECTORY)) != pathFontHeight ||
+                    SendMessageW(list, LB_GETITEMHEIGHT, 0, 0) < ControlTextSize(list, L"Path").cy) {
+                    std::fwprintf(stderr, L"Smoke: settings path font or file row height failed.\n");
+                    return false;
+                }
+                struct Input { int id, neighbor, frame; };
+                for (const auto& [id, neighbor, frame] : {
+                    Input{IDC_EXECUTABLE, IDC_BROWSE_EXECUTABLE, IDC_EXECUTABLE_FRAME},
+                    Input{IDC_CONFIG_DIRECTORY, IDC_BROWSE_DIRECTORY, IDC_CONFIG_DIRECTORY_FRAME},
+                    Input{IDC_LOG_LINES, IDC_LABEL_LOG_LINES, 0}}) {
                     const HWND control = SettingsControl(window, id);
                     RECT edit{}, other{}, client{}, text{};
                     GetWindowRect(control, &edit);
@@ -1471,6 +1538,18 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                             id, text.top, bottom, center);
                         return false;
                     }
+                    if (frame != 0) {
+                        const HWND frameControl = SettingsControl(window, frame);
+                        RECT bounds{};
+                        GetWindowRect(frameControl, &bounds);
+                        if (bounds.top != other.top || bounds.bottom != other.bottom ||
+                            bounds.left >= edit.left || bounds.right <= edit.right ||
+                            bounds.top >= edit.top || bounds.bottom <= edit.bottom ||
+                            GetWindow(control, GW_HWNDNEXT) != frameControl) {
+                            std::fwprintf(stderr, L"Smoke: path frame size or placement failed (id=%d).\n", id);
+                            return false;
+                        }
+                    }
                 }
                 return true;
             };
@@ -1484,7 +1563,10 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
             passed = passed && scroll.nPos > 0 && EqualRect(&saveBefore, &saveAfter);
             const HWND executable = SettingsControl(window, IDC_EXECUTABLE);
             SetWindowTextW(executable, L".\\bin\\路径 with spaces\\xray.exe");
-            SetFocus(executable);
+            const HWND executableFrame = SettingsControl(window, IDC_EXECUTABLE_FRAME);
+            SendMessageW(context.contents, WM_COMMAND, MAKEWPARAM(IDC_EXECUTABLE_FRAME, STN_CLICKED),
+                reinterpret_cast<LPARAM>(executableFrame));
+            passed = GetFocus() == executable && passed;
             MSG tab{};
             tab.hwnd = executable;
             tab.message = WM_KEYDOWN;
