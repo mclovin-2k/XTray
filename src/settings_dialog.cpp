@@ -511,7 +511,7 @@ void LayoutSettingsContent(Context& context)
             const int buttonX = margin + available - buttonWidth;
             const int fieldWidth = buttonX - gap - margin;
             const int inset = UiScale(body, 5);
-            const int editHeight = SingleLineControlHeight(GetDlgItem(body, editId)) + UiScale(body, 2);
+            const int editHeight = SingleLineControlHeight(GetDlgItem(body, editId));
             const int height = (std::max)(rowHeight, editHeight + UiScale(body, 6));
             // The native single-line edit keeps its own caret and input behavior inside the taller frame.
             place(frameId, margin, y, fieldWidth, height);
@@ -1392,7 +1392,7 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                 }
                 RECT directory{}, order{}, hint{}, check{}, preview{}, startup{};
                 const HWND orderControl = SettingsControl(window, IDC_CONFIG_DIRECTORY_FIRST);
-                GetWindowRect(SettingsControl(window, IDC_CONFIG_DIRECTORY), &directory);
+                GetWindowRect(SettingsControl(window, IDC_CONFIG_DIRECTORY_FRAME), &directory);
                 GetWindowRect(orderControl, &order);
                 const HWND hintControl = SettingsControl(window, IDC_HINT_CONFIG_TOOLS);
                 GetWindowRect(hintControl, &hint);
