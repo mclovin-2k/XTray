@@ -31,6 +31,8 @@ constexpr UINT kRefreshDialogTheme = WM_APP + 46;
 constexpr UINT kAutomateDialog = WM_APP + 47;
 constexpr UINT kEnsureSettingVisible = WM_APP + 48;
 constexpr UINT_PTR kSettingFocusSubclass = 3;
+constexpr int kConfigFileCheckSize = 17;
+constexpr int kConfigFileCheckPadding = 6;
 
 struct ConfigFileRow {
     std::wstring path;
@@ -180,6 +182,80 @@ void InitConfigFileList(HWND list)
     }
 }
 
+void SizeConfigFileChecks(HWND list)
+{
+    const int size = UiScale(list, kConfigFileCheckSize);
+    const int padding = UiScale(list, kConfigFileCheckPadding);
+    const int width = size + padding;
+    const auto current = ListView_GetImageList(list, LVSIL_STATE);
+    int currentWidth = 0, currentHeight = 0;
+    if (current != nullptr && ImageList_GetIconSize(current, &currentWidth, &currentHeight) &&
+        currentWidth == width && currentHeight == size) {
+        return;
+    }
+
+    struct Images {
+        HDC device = CreateCompatibleDC(nullptr);
+        HBITMAP bitmap = nullptr;
+        HGDIOBJ saved = nullptr;
+        HIMAGELIST value = nullptr;
+        ~Images()
+        {
+            if (saved != nullptr && saved != HGDI_ERROR) { SelectObject(device, saved); }
+            if (bitmap != nullptr) { DeleteObject(bitmap); }
+            if (device != nullptr) { DeleteDC(device); }
+            if (value != nullptr) { ImageList_Destroy(value); }
+        }
+    } images;
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(info.bmiHeader);
+    info.bmiHeader.biWidth = width * 2;
+    info.bmiHeader.biHeight = -size;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    void* bits = nullptr;
+    images.bitmap = CreateDIBSection(images.device, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+    images.value = ImageList_Create(width, size, ILC_COLOR32, 2, 0);
+    if (images.device == nullptr || images.bitmap == nullptr || bits == nullptr || images.value == nullptr) {
+        throw std::runtime_error(Text("Cannot create config file checkbox images.", "无法创建配置文件复选框图像。"));
+    }
+    images.saved = SelectObject(images.device, images.bitmap);
+    if (images.saved == nullptr || images.saved == HGDI_ERROR) {
+        throw std::runtime_error(Text("Cannot select the checkbox bitmap.", "无法选中复选框位图。"));
+    }
+
+    auto* pixels = static_cast<DWORD*>(bits);
+    std::fill_n(pixels, static_cast<size_t>(width) * 2 * size, DWORD{0});
+    for (int state = 0; state < 2; ++state) {
+        const int left = state * width + padding / 2;
+        RECT bounds{left, 0, left + size, size};
+        if (!DrawFrameControl(images.device, &bounds, DFC_BUTTON,
+            DFCS_BUTTONCHECK | DFCS_FLAT | (state == 0 ? 0 : DFCS_CHECKED))) {
+            throw std::runtime_error(Text("Cannot draw config file checkbox images.", "无法绘制配置文件复选框图像。"));
+        }
+    }
+    GdiFlush();
+    for (int state = 0; state < 2; ++state) {
+        const int left = state * width + padding / 2;
+        for (int y = 0; y < size; ++y) {
+            auto* row = pixels + y * width * 2 + left;
+            for (int x = 0; x < size; ++x) { row[x] |= 0xFF000000u; }
+        }
+    }
+    SelectObject(images.device, images.saved);
+    images.saved = nullptr;
+    if (ImageList_Add(images.value, images.bitmap, nullptr) != 0) {
+        throw std::runtime_error(Text("Cannot add config file checkbox images.", "无法添加配置文件复选框图像。"));
+    }
+
+    const auto previous = ListView_SetImageList(list, images.value, LVSIL_STATE);
+    if (ListView_GetImageList(list, LVSIL_STATE) != images.value) {
+        throw std::runtime_error(Text("Cannot set config file checkbox images.", "无法设置配置文件复选框图像。"));
+    }
+    images.value = nullptr;
+    if (previous != nullptr) { ImageList_Destroy(previous); }
+}
+
 void UpdateConfigFileActions(const Context& context)
 {
     const auto selected = SelectedConfigFiles(GetDlgItem(context.contents, IDC_CONFIG_FILES));
@@ -218,7 +294,7 @@ void UpdateConfigFileExtent(Context& context)
         // The native label is limited to 260 characters. Hovering shows the original path.
         width = (std::max)(width, ControlTextSize(list, std::wstring_view(label).substr(0, 260)).cx);
     }
-    context.configFileColumnWidth = width + UiScale(list, 30);
+    context.configFileColumnWidth = width + UiScale(list, kConfigFileCheckSize + kConfigFileCheckPadding + 12);
     SizeConfigFileColumn(context);
 }
 
@@ -1043,6 +1119,7 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         }
         const auto* owner = ThemeWindow::From(GetWindow(dialog, GW_OWNER));
         context->theme.Apply(owner != nullptr && owner->Colors().dark, true);
+        SizeConfigFileChecks(SettingsControl(dialog, IDC_CONFIG_FILES));
         CreateSettingsTooltip(*context);
         FitSettingsWindow(dialog, *context);
         LayoutSettings(dialog, *context);
@@ -1093,6 +1170,7 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         SetDialogIcons(dialog, *context);
         SetSettingsPathFont(*context);
         context->theme.Apply(context->theme.Colors().dark, true);
+        SizeConfigFileChecks(SettingsControl(dialog, IDC_CONFIG_FILES));
         UpdateConfigFileExtent(*context);
         FitSettingsWindow(dialog, *context);
         LayoutSettings(dialog, *context);
@@ -1354,6 +1432,23 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                 RefreshConfigFiles(context, {1, 2, 4});
                 if (ListView_GetColumnWidth(list, 0) <= UiScale(list, 360) ||
                     !IsWindowEnabled(up) || !IsWindowEnabled(down) || !ListView_GetCheckState(list, 1)) {
+                    return false;
+                }
+                const auto images = ListView_GetImageList(list, LVSIL_STATE);
+                const int checkSize = UiScale(list, kConfigFileCheckSize);
+                int imageWidth = 0, imageHeight = 0;
+                RECT row{};
+                if (images == nullptr || ImageList_GetImageCount(images) != 2 ||
+                    !ImageList_GetIconSize(images, &imageWidth, &imageHeight) ||
+                    imageHeight != checkSize || imageWidth != checkSize + UiScale(list, kConfigFileCheckPadding) ||
+                    !ListView_GetItemRect(list, 1, &row, LVIR_BOUNDS) || row.bottom - row.top < checkSize) {
+                    std::fwprintf(stderr, L"Smoke: config file checkbox dimensions failed.\n");
+                    return false;
+                }
+                LVHITTESTINFO hit{};
+                hit.pt = {row.left + checkSize, (row.top + row.bottom) / 2};
+                if (ListView_HitTest(list, &hit) != 1 || (hit.flags & LVHT_ONITEMSTATEICON) == 0) {
+                    std::fwprintf(stderr, L"Smoke: enlarged config file checkbox hit area failed.\n");
                     return false;
                 }
                 ListView_SetCheckState(list, 1, FALSE);
