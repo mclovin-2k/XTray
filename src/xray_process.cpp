@@ -1,5 +1,4 @@
 #include "xray_process.h"
-#include "xray_config.h"
 
 #include <array>
 
@@ -33,7 +32,9 @@ private:
 } // namespace
 
 XrayProcess::XrayProcess(std::filesystem::path root, Logs& logs)
-    : root_(std::move(root)), logs_(logs), worker_(&XrayProcess::Worker, this)
+    : root_(std::move(root)), logs_(logs),
+      configWorker_([this](std::stop_token stop) { CheckConfigFiles(stop); }),
+      worker_(&XrayProcess::Worker, this)
 {
 }
 
@@ -61,6 +62,43 @@ bool XrayProcess::HasPendingSettings(const Settings& settings) const
             launchSettings_.configFiles != settings.configFiles ||
             launchSettings_.configDirectory != settings.configDirectory ||
             launchSettings_.LoadsConfigDirectoryFirst() != settings.LoadsConfigDirectoryFirst());
+}
+
+void XrayProcess::RequestConfigFileCheck()
+{
+    std::lock_guard lock(infoMutex_);
+    if (State() == ProcessState::Running && configBaseline_ && !info_.ended) {
+        configCheckPending_ = true;
+        configCheckWake_.notify_one();
+    }
+}
+
+bool XrayProcess::ConfigFilesChanged() const
+{
+    std::lock_guard lock(infoMutex_);
+    return State() == ProcessState::Running && !info_.ended && configFilesChanged_;
+}
+
+void XrayProcess::CheckConfigFiles(std::stop_token stop)
+{
+    while (!stop.stop_requested()) {
+        std::shared_ptr<const ConfigBaseline> baseline;
+        {
+            std::unique_lock lock(infoMutex_);
+            if (!configCheckWake_.wait(lock, stop, [this] { return configCheckPending_; })) { return; }
+            configCheckPending_ = false;
+            baseline = configBaseline_;
+        }
+        if (!baseline) { continue; }
+        const auto current = CaptureXrayConfigFiles(root_, baseline->settings, stop);
+        if (!current) { continue; }
+
+        const bool changed = *current != baseline->fingerprint;
+        std::lock_guard lock(infoMutex_);
+        if (configBaseline_ == baseline && !info_.ended) {
+            configFilesChanged_ = changed;
+        }
+    }
 }
 
 std::vector<UnexpectedXrayExit> XrayProcess::TakeUnexpectedExits()
@@ -109,9 +147,13 @@ void XrayProcess::Shutdown()
         quit_ = true;
     }
     wake_.notify_one();
+    configWorker_.request_stop();
+    if (configWorker_.joinable()) { CancelSynchronousIo(configWorker_.native_handle()); }
     if (worker_.joinable()) {
+        if (capturingConfigBaseline_) { CancelSynchronousIo(worker_.native_handle()); }
         worker_.join();
     }
+    if (configWorker_.joinable()) { configWorker_.join(); }
 }
 
 void XrayProcess::Worker()
@@ -194,6 +236,9 @@ void XrayProcess::StartProcess(Settings settings)
     {
         std::lock_guard lock(infoMutex_);
         info_ = {};
+        configBaseline_.reset();
+        configCheckPending_ = false;
+        configFilesChanged_ = false;
         info_.attempted = true;
         info_.executable = executable;
         info_.commandLine = command;
@@ -293,6 +338,15 @@ void XrayProcess::StartProcess(Settings settings)
     PROCESS_INFORMATION information{};
     const DWORD flags = CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT |
         (configuration.environment.empty() ? 0 : CREATE_UNICODE_ENVIRONMENT);
+    const auto stop = configWorker_.get_stop_token();
+    std::shared_ptr<const ConfigBaseline> baseline;
+    capturingConfigBaseline_ = true;
+    if (auto fingerprint = CaptureXrayConfigFiles(root_, settings, stop, &configuration)) {
+        baseline = std::make_shared<ConfigBaseline>(ConfigBaseline{settings, std::move(*fingerprint)});
+    }
+    capturingConfigBaseline_ = false;
+    if (stop.stop_requested()) { return; }
+
     logs_.Tray(Text(L"Starting Xray: ", L"正在运行 Xray：") + executable.native());
     if (!CreateProcessW(executable.c_str(), command.data(), nullptr, nullptr, TRUE,
         flags, configuration.environment.empty() ? nullptr : configuration.environment.data(), root_.c_str(),
@@ -308,6 +362,7 @@ void XrayProcess::StartProcess(Settings settings)
     {
         std::lock_guard lock(infoMutex_);
         launchSettings_ = std::move(settings);
+        configBaseline_ = std::move(baseline);
         info_.pid = information.dwProcessId;
         info_.started = std::chrono::system_clock::now();
         startedAt_ = std::chrono::steady_clock::now();

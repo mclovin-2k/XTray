@@ -1094,6 +1094,76 @@ void TestConfigurationOrder(const std::filesystem::path& root)
         "Preparing or launching child processes changed the parent confdir environment.");
 }
 
+void TestConfigFileChanges(const std::filesystem::path& root)
+{
+    const auto base = root / L"config fingerprint";
+    const auto directory = base / L"shared";
+    std::filesystem::create_directories(directory);
+    const auto explicitPath = base / L"hold.conf";
+    const auto sharedPath = directory / L"shared.json";
+    const auto addedPath = directory / L"new.yaml";
+    const auto write = [](const std::filesystem::path& path, const char* text) {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file << text;
+        file.close();
+        Check(static_cast<bool>(file), "Cannot create a configuration fingerprint fixture.");
+    };
+    write(explicitPath, "base");
+    write(sharedPath, "{}");
+
+    Settings settings;
+    settings.executable = ExecutablePath().native();
+    settings.configFiles = {L".\\hold.conf"};
+    settings.configDirectory = L".\\shared";
+    const auto baseline = CaptureXrayConfigFiles(base, settings, {});
+    Check(baseline && baseline->size() == 2 && (*baseline)[0].hash && (*baseline)[1].hash,
+        "The fingerprint did not include the explicit file and configuration directory.");
+    write(directory / L"shared.json.bak", "not loaded");
+    Check(CaptureXrayConfigFiles(base, settings, {}) == baseline,
+        "A file outside Xray's directory filter changed the fingerprint.");
+
+    Logs logs;
+    XrayProcess process(base, logs);
+    Check(process.Run(settings) && WaitUntil([&] { return process.State() == ProcessState::Running; }),
+        "Cannot start the configuration fingerprint child.");
+    const auto checkChange = [&](bool expected, const char* message) {
+        process.RequestConfigFileCheck();
+        Check(WaitUntil([&] { return process.ConfigFilesChanged() == expected; }), message);
+    };
+    const auto writeTime = std::filesystem::last_write_time(explicitPath);
+    write(explicitPath, "edit");
+    std::filesystem::last_write_time(explicitPath, writeTime);
+    Check(!process.ConfigFilesChanged(), "The configuration indicator refreshed without a request.");
+    checkChange(true, "An equal-size content change with the original timestamp was missed.");
+    write(explicitPath, "base");
+    checkChange(false, "Restoring the original content did not clear the indicator.");
+
+    write(addedPath, "{}");
+    checkChange(true, "A newly loaded file was missed.");
+    std::filesystem::remove(addedPath);
+    checkChange(false, "Removing the additional file did not clear the indicator.");
+    std::filesystem::rename(sharedPath, addedPath);
+    checkChange(true, "Renaming a loaded file without changing its content was missed.");
+    std::filesystem::rename(addedPath, sharedPath);
+    checkChange(false, "Restoring the original filename did not clear the indicator.");
+    std::filesystem::remove(explicitPath);
+    checkChange(true, "Removing an explicit configuration file was missed.");
+    write(explicitPath, "base");
+    checkChange(false, "Restoring the explicit file did not clear the indicator.");
+
+    write(sharedPath, "new pipeline");
+    checkChange(true, "A changed directory configuration was missed.");
+    const DWORD oldPid = process.Pid();
+    Check(process.Restart(settings, oldPid) && WaitUntil([&] {
+        return process.State() == ProcessState::Running && process.Pid() != oldPid;
+    }), "Cannot restart the configuration fingerprint child.");
+    Check(!process.ConfigFilesChanged(), "Restart retained the old configuration change indicator.");
+    write(sharedPath, "{}");
+    checkChange(true, "The new run did not establish a new fingerprint.");
+    Check(process.Stop() && WaitUntil([&] { return process.State() == ProcessState::Stopped; }) &&
+        !process.ConfigFilesChanged(), "A stopped process still reported configuration file changes.");
+}
+
 void TestProcesses(const std::filesystem::path& root)
 {
     Logs logs(64);
@@ -1386,6 +1456,7 @@ int wmain(int argc, wchar_t** argv)
         TestStartup(root / L"startup");
         TestConfigurationPaths(root);
         TestConfigurationOrder(root);
+        TestConfigFileChanges(root);
         TestProcesses(root);
         TestXrayTools(root);
         TestAbnormalExit(root);

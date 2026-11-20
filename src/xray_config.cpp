@@ -1,6 +1,8 @@
 #include "xray_config.h"
 #include "win32.h"
 
+#include <bcrypt.h>
+
 #include <algorithm>
 #include <array>
 
@@ -133,14 +135,145 @@ std::vector<wchar_t> ChildEnvironment()
     return result;
 }
 
+bool IsMissing(DWORD error)
+{
+    return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND || error == ERROR_INVALID_DRIVE;
+}
+
+bool PathExists(const std::filesystem::path& path, bool directory)
+{
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    if (attributes != INVALID_FILE_ATTRIBUTES) {
+        return ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) == directory;
+    }
+    const DWORD error = GetLastError();
+    if (IsMissing(error)) { return false; }
+    throw std::runtime_error(ToUtf8(WindowsError(Text(L"Cannot inspect configuration path", L"无法检查配置路径"), error)));
+}
+
+std::optional<std::wstring> EnvironmentValue(const wchar_t* name)
+{
+    DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
+    while (required != 0) {
+        std::wstring value(required, L'\0');
+        const DWORD copied = GetEnvironmentVariableW(name, value.data(), required);
+        if (copied < required) {
+            value.resize(copied);
+            return value;
+        }
+        required = copied;
+    }
+    return std::nullopt;
+}
+
+std::wstring XrayEnvironmentValue(const wchar_t* name, const wchar_t* alias, std::wstring fallback = {})
+{
+    if (auto value = EnvironmentValue(name)) { return std::move(*value); }
+    return EnvironmentValue(alias).value_or(std::move(fallback));
+}
+
+std::vector<std::wstring> EffectiveConfigFiles(const std::filesystem::path& root, const Settings& settings,
+    const XrayConfigArguments* prepared)
+{
+    const auto existingDirectory = [&](const std::wstring& path) {
+        return !path.empty() && PathExists(ResolvePath(root, path), true);
+    };
+    const bool expanded = settings.LoadsConfigDirectoryFirst();
+    std::vector<std::wstring> directoryFiles;
+    if (expanded && prepared != nullptr) {
+        directoryFiles = prepared->expandedDirectoryFiles;
+    } else if (existingDirectory(settings.configDirectory)) {
+        directoryFiles = DirectoryFiles(root, settings.configDirectory);
+    } else if (!expanded) {
+        const auto inherited = XrayEnvironmentValue(L"xray.location.confdir", L"XRAY_LOCATION_CONFDIR");
+        if (existingDirectory(inherited)) { directoryFiles = DirectoryFiles(root, inherited); }
+    }
+
+    auto files = expanded ? std::move(directoryFiles) : settings.configFiles;
+    const auto& remaining = expanded ? settings.configFiles : directoryFiles;
+    files.insert(files.end(), remaining.begin(), remaining.end());
+    if (!files.empty()) { return files; }
+
+    for (const auto* name : {L"config.json", L"config.jsonc", L"config.toml", L"config.yaml", L"config.yml"}) {
+        const auto path = root / name;
+        if (PathExists(path, false)) { return {path.native()}; }
+    }
+    const auto configLocation = XrayEnvironmentValue(L"xray.location.config", L"XRAY_LOCATION_CONFIG",
+        ResolvePath(root, settings.executable).parent_path().native());
+    const auto fallback = ResolvePath(root, configLocation) / L"config.json";
+    if (PathExists(fallback, false)) { return {fallback.native()}; }
+    return {};
+}
+
+bool ReadConfigHash(XrayConfigFileFingerprint& file, std::stop_token stop)
+{
+    if (!PathExists(file.path, false)) { return true; }
+    Handle input(CreateFileW(file.path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
+    if (!input) { return false; }
+
+    BY_HANDLE_FILE_INFORMATION before{}, after{};
+    if (GetFileType(input.Get()) != FILE_TYPE_DISK || !GetFileInformationByHandle(input.Get(), &before)) {
+        return false;
+    }
+    struct Hash {
+        BCRYPT_HASH_HANDLE handle = nullptr;
+        ~Hash() { if (handle != nullptr) { BCryptDestroyHash(handle); } }
+    } hash;
+    if (BCryptCreateHash(BCRYPT_SHA256_ALG_HANDLE, &hash.handle, nullptr, 0, nullptr, 0, 0) < 0) {
+        return false;
+    }
+    std::array<unsigned char, 65536> buffer;
+    while (!stop.stop_requested()) {
+        DWORD count = 0;
+        if (!ReadFile(input.Get(), buffer.data(), static_cast<DWORD>(buffer.size()), &count, nullptr)) {
+            return false;
+        }
+        if (count == 0) {
+            if (!GetFileInformationByHandle(input.Get(), &after) ||
+                CompareFileTime(&before.ftLastWriteTime, &after.ftLastWriteTime) != 0 ||
+                before.nFileSizeHigh != after.nFileSizeHigh || before.nFileSizeLow != after.nFileSizeLow) {
+                return false;
+            }
+            auto& result = file.hash.emplace();
+            return BCryptFinishHash(hash.handle, result.data(), static_cast<ULONG>(result.size()), 0) >= 0;
+        }
+        if (BCryptHashData(hash.handle, buffer.data(), count, 0) < 0) { return false; }
+    }
+    return false;
+}
+
 } // namespace
+
+std::optional<XrayConfigFingerprint> CaptureXrayConfigFiles(
+    const std::filesystem::path& root, const Settings& settings, std::stop_token stop,
+    const XrayConfigArguments* prepared)
+{
+    try {
+        if (stop.stop_requested()) { return std::nullopt; }
+        XrayConfigFingerprint fingerprint;
+        for (const auto& value : EffectiveConfigFiles(root, settings, prepared)) {
+            if (stop.stop_requested()) { return std::nullopt; }
+            if (value == L"stdin:" || value.starts_with(L"http://") || value.starts_with(L"https://") ||
+                value.starts_with(L"http+unix://")) {
+                continue;
+            }
+            auto& file = fingerprint.emplace_back(XrayConfigFileFingerprint{ResolvePath(root, value), std::nullopt});
+            if (!ReadConfigHash(file, stop)) { return std::nullopt; }
+        }
+        return fingerprint;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
 
 XrayConfigArguments PrepareXrayConfigArguments(
     const std::filesystem::path& root, const Settings& settings)
 {
     XrayConfigArguments result;
     if (settings.LoadsConfigDirectoryFirst()) {
-        for (const auto& file : DirectoryFiles(root, settings.configDirectory)) {
+        result.expandedDirectoryFiles = DirectoryFiles(root, settings.configDirectory);
+        for (const auto& file : result.expandedDirectoryFiles) {
             result.arguments += L" -config " + QuoteArgument(file);
         }
         result.environment = ChildEnvironment();

@@ -59,6 +59,9 @@ entered in the form without saving or changing the running Xray process.
 If you save different launch settings while Xray is running, the main window
 shows **Changes saved. Restart Xray to apply.** next to the run controls.
 You can restart when ready or restore the settings used by the current run.
+When you return to the main window, XTray also compares the local configuration
+files to the list and contents recorded at launch. Edits, additions, and removals
+show a restart hint. Restoring the original files or restarting clears it.
 
 You can choose files outside the XTray folder or enter relative paths. Relative
 paths are resolved from the folder containing `XTray.exe`.

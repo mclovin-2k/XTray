@@ -49,6 +49,7 @@ constexpr DWORD kWindowStyle = WS_OVERLAPPEDWINDOW;
 enum ControlId { Run = 2001, Stop, Restart, SettingsButton, FileList, OpenFile,
     OpenFileDirectory, OpenDirectory, Filter, ClearLogs, ScrollToEnd, ShowGui, ExitApp, CheckConfig, PreviewConfig, ShowVersion, CopyLogs, WordWrap, ShowRunInfo,
     LogKeyword, LogWildcards, LogMatchCase, ClearLogKeyword };
+enum class PendingConfigChange { None, Settings, Files };
 enum IconId { StoppedTrayIcon, RunningTrayIcon, StoppedStatusIcon, RunningStatusIcon,
     SmallWindowIcon, LargeWindowIcon, IconCount };
 
@@ -384,7 +385,7 @@ public:
         move(statusIcon_, margin, actionY, Scale(24), actionHeight);
         int statusRight = actionX;
         int rowOffset = 0;
-        if (showPendingSettings_) {
+        if (pendingConfigChange_ != PendingConfigChange::None) {
             const int hintWidth = ControlTextSize(pendingSettings_).cx;
             const int hintX = actionX - hintWidth;
             if (hintX >= statusX + ControlTextSize(status_).cx + gap) {
@@ -474,6 +475,7 @@ public:
             return;
         }
         PollRestartCheck();
+        if (std::exchange(configFileCheckRequested_, false)) { process_.RequestConfigFileCheck(); }
         const auto state = process_.State();
         const DWORD pid = process_.Pid();
         const bool running = pid != 0;
@@ -492,9 +494,12 @@ public:
         } else if (!tray_.IsAdded() && GetTickCount64() >= nextTrayAttempt_) {
             UpdateTray();
         }
-        const bool showPending = settingsValid_ && process_.HasPendingSettings(settings_);
-        if (showPending != showPendingSettings_ || (showPending && statusChanged)) {
-            showPendingSettings_ = showPending;
+        const auto pending = settingsValid_ && process_.HasPendingSettings(settings_) ? PendingConfigChange::Settings
+            : process_.ConfigFilesChanged() ? PendingConfigChange::Files : PendingConfigChange::None;
+        const bool showPending = pending != PendingConfigChange::None;
+        if (pending != pendingConfigChange_ || (showPending && statusChanged)) {
+            pendingConfigChange_ = pending;
+            SetWindowTextW(pendingSettings_, PendingConfigCaption());
             Layout();
             ShowWindow(pendingSettings_, showPending ? SW_SHOWNA : SW_HIDE);
         }
@@ -659,11 +664,14 @@ public:
         }
     }
 
+    void QueueConfigFileCheck() { configFileCheckRequested_ = true; }
+
     void ShowMain()
     {
         if (exiting_ || window_ == nullptr) {
             return;
         }
+        if (!IsWindowVisible(window_) || IsIconic(window_)) { QueueConfigFileCheck(); }
         ShowWindow(window_, IsIconic(window_) ? SW_RESTORE
             : smokeTest_ ? SW_SHOWNOACTIVATE : SW_SHOW);
         if (!smokeTest_) {
@@ -1447,6 +1455,13 @@ private:
         }
     }
 
+    const wchar_t* PendingConfigCaption() const
+    {
+        return pendingConfigChange_ == PendingConfigChange::Files
+            ? Text(L"Configuration files changed. Restart Xray to apply.", L"配置文件已修改，重启 Xray 后生效")
+            : Text(L"Changes saved. Restart Xray to apply.", L"配置已更改，重启 Xray 后生效");
+    }
+
     void ApplyUiText()
     {
         updatingUi_ = true;
@@ -1454,7 +1469,7 @@ private:
             std::pair{run_, Text(L"Run", L"运行")},
             std::pair{stop_, Text(L"Stop", L"停止")},
             std::pair{restart_, RestartCaption()},
-            std::pair{pendingSettings_, Text(L"Changes saved. Restart Xray to apply.", L"配置已更改，重启 Xray 后生效")},
+            std::pair{pendingSettings_, PendingConfigCaption()},
             std::pair{fileLabel_, Text(L"Config files:", L"配置文件：")},
             std::pair{openFile_, Text(L"Open file", L"打开配置文件")},
             std::pair{openFileDirectory_, Text(L"Open file folder", L"打开配置文件目录")},
@@ -3113,7 +3128,8 @@ private:
     ULONGLONG nextTrayAttempt_ = 0;
     Settings settings_;
     bool settingsValid_ = true;
-    bool showPendingSettings_ = false;
+    PendingConfigChange pendingConfigChange_ = PendingConfigChange::None;
+    bool configFileCheckRequested_ = false;
     bool ready_ = false;
     bool updatingUi_ = false;
     UINT dpi_ = 96;
@@ -3199,6 +3215,9 @@ LRESULT CALLBACK WindowProcedure(HWND window, UINT message, WPARAM wParam, LPARA
             case kExitMessage:
                 app->Exit();
                 return 0;
+            case WM_ACTIVATE:
+                if (LOWORD(wParam) != WA_INACTIVE && !HIWORD(wParam)) { app->QueueConfigFileCheck(); }
+                break;
             case WM_SIZE:
                 app->Layout();
                 return 0;

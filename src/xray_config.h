@@ -2,13 +2,30 @@
 
 #include "settings.h"
 
+#include <array>
+#include <optional>
+#include <stop_token>
+
 namespace xtray {
 
 struct XrayConfigArguments {
     std::wstring arguments;
     // Empty preserves inheritance; a populated block requires CREATE_UNICODE_ENVIRONMENT.
     std::vector<wchar_t> environment;
+    std::vector<std::wstring> expandedDirectoryFiles;
 };
+
+struct XrayConfigFileFingerprint {
+    std::filesystem::path path;
+    std::optional<std::array<unsigned char, 32>> hash;
+    bool operator==(const XrayConfigFileFingerprint&) const = default;
+};
+
+using XrayConfigFingerprint = std::vector<XrayConfigFileFingerprint>;
+
+std::optional<XrayConfigFingerprint> CaptureXrayConfigFiles(
+    const std::filesystem::path& root, const Settings& settings, std::stop_token stop,
+    const XrayConfigArguments* prepared = nullptr);
 
 XrayConfigArguments PrepareXrayConfigArguments(
     const std::filesystem::path& root, const Settings& settings);

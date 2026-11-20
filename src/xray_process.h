@@ -3,10 +3,12 @@
 #include "logs.h"
 #include "settings.h"
 #include "win32.h"
+#include "xray_config.h"
 
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -48,12 +50,15 @@ public:
     DWORD Pid() const { return pid_.load(); }
     XrayRunInfo RunInfo() const;
     bool HasPendingSettings(const Settings& settings) const;
+    void RequestConfigFileCheck();
+    bool ConfigFilesChanged() const;
     std::vector<UnexpectedXrayExit> TakeUnexpectedExits();
 private:
     enum class Operation { Run, Stop, Restart };
     struct Command { Operation operation; Settings settings; };
     bool Enqueue(Command command, DWORD expectedPid = 0);
     void Worker();
+    void CheckConfigFiles(std::stop_token stop);
     void StartProcess(Settings settings);
     bool StopProcess();
     void DrainOutput();
@@ -65,6 +70,11 @@ private:
     mutable std::mutex infoMutex_;
     XrayRunInfo info_;
     Settings launchSettings_;
+    struct ConfigBaseline { Settings settings; XrayConfigFingerprint fingerprint; };
+    std::shared_ptr<const ConfigBaseline> configBaseline_;
+    std::condition_variable_any configCheckWake_;
+    bool configCheckPending_ = false;
+    bool configFilesChanged_ = false;
     std::chrono::steady_clock::time_point startedAt_{};
     std::mutex mutex_;
     std::condition_variable wake_;
@@ -75,6 +85,8 @@ private:
     Handle process_;
     Handle job_;
     Handle output_;
+    std::atomic<bool> capturingConfigBaseline_ = false;
+    std::jthread configWorker_;
     std::thread worker_;
 };
 
