@@ -1,5 +1,6 @@
 #include "xray_process.h"
 
+#include <algorithm>
 #include <array>
 
 namespace xtray {
@@ -59,7 +60,7 @@ bool XrayProcess::HasPendingSettings(const Settings& settings) const
     std::lock_guard lock(infoMutex_);
     return info_.started && !info_.ended &&
         (launchSettings_.executable != settings.executable ||
-            launchSettings_.configFiles != settings.configFiles ||
+            !std::ranges::equal(launchSettings_.EnabledConfigFiles(), settings.EnabledConfigFiles()) ||
             launchSettings_.configDirectory != settings.configDirectory ||
             launchSettings_.LoadsConfigDirectoryFirst() != settings.LoadsConfigDirectoryFirst());
 }
@@ -261,8 +262,9 @@ void XrayProcess::StartProcess(Settings settings)
         fail(FromUtf8(exception.what()));
         return;
     }
-    if (settings.configFiles.empty() && settings.configDirectory.empty()) {
-        fail(Text(L"Set at least one configuration file or one configuration directory.", L"请至少设置一个配置文件或一个配置目录。"));
+    if (!settings.HasConfigSources()) {
+        fail(Text(L"Enable at least one configuration file or set a configuration directory.",
+            L"请至少启用一个配置文件，或设置一个配置目录。"));
         return;
     }
     if (settings.executable.empty()) {

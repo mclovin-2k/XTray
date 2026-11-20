@@ -189,10 +189,9 @@ std::vector<std::wstring> EffectiveConfigFiles(const std::filesystem::path& root
         if (existingDirectory(inherited)) { directoryFiles = DirectoryFiles(root, inherited); }
     }
 
-    auto files = expanded ? std::move(directoryFiles) : settings.configFiles;
-    const auto& remaining = expanded ? settings.configFiles : directoryFiles;
-    files.insert(files.end(), remaining.begin(), remaining.end());
-    if (!files.empty()) { return files; }
+    auto enabled = settings.EnabledConfigFiles();
+    directoryFiles.insert(expanded ? directoryFiles.end() : directoryFiles.begin(), enabled.begin(), enabled.end());
+    if (!directoryFiles.empty()) { return directoryFiles; }
 
     for (const auto* name : {L"config.json", L"config.jsonc", L"config.toml", L"config.yaml", L"config.yml"}) {
         const auto path = root / name;
@@ -291,7 +290,7 @@ XrayConfigArguments PrepareXrayConfigArguments(
     } else if (!settings.configDirectory.empty()) {
         result.arguments += L" -confdir " + QuoteArgument(settings.configDirectory);
     }
-    for (const auto& file : settings.configFiles) {
+    for (const auto& file : settings.EnabledConfigFiles()) {
         result.arguments += L" -config " + QuoteArgument(file);
     }
     return result;

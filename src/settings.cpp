@@ -162,7 +162,15 @@ SettingsResult LoadSettings(const std::filesystem::path& root)
             throw std::runtime_error(Text("Incomplete configuration file list.", "配置文件列表不完整。"));
         }
         for (size_t index = 0; index < count; ++index) {
-            settings.configFiles.push_back(take(L"ConfigFiles", std::to_wstring(index)));
+            const auto key = std::to_wstring(index);
+            settings.configFiles.push_back(take(L"ConfigFiles", key));
+            const auto disabledKey = L"Disabled." + key;
+            if (values.contains({L"ConfigFiles", disabledKey})) {
+                if (take(L"ConfigFiles", disabledKey) != L"1") {
+                    throw std::runtime_error(Text("Invalid configuration file state.", "无效的配置文件启用状态。"));
+                }
+                settings.disabledConfigFiles.insert(index);
+            }
         }
         if (!values.empty() || IsBlank(settings.executable) ||
             !IsPathValue(settings.executable) || !IsPathValue(settings.configDirectory) ||
@@ -202,6 +210,12 @@ bool SaveSettings(const std::filesystem::path& root, const Settings& settings, s
         }
     }
 
+    if (!settings.disabledConfigFiles.empty() &&
+        *settings.disabledConfigFiles.rbegin() >= settings.configFiles.size()) {
+        error = Text(L"Invalid configuration file state.", L"无效的配置文件启用状态。");
+        return false;
+    }
+
     std::string bytes;
     try {
         std::wstring text = L"[XTray]\r\nVersion=1\r\nExecutable=" + settings.executable +
@@ -216,7 +230,11 @@ bool SaveSettings(const std::filesystem::path& root, const Settings& settings, s
             L"\r\nConfigCount=" + std::to_wstring(settings.configFiles.size()) +
             L"\r\n\r\n[ConfigFiles]\r\n";
         for (size_t index = 0; index < settings.configFiles.size(); ++index) {
-            text += std::to_wstring(index) + L"=" + settings.configFiles[index] + L"\r\n";
+            const auto key = std::to_wstring(index);
+            text += key + L"=" + settings.configFiles[index] + L"\r\n";
+            if (settings.disabledConfigFiles.contains(index)) {
+                text += L"Disabled." + key + L"=1\r\n";
+            }
         }
         bytes = ToUtf8(text);
     } catch (const std::exception&) {

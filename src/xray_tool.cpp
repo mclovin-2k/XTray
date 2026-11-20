@@ -109,9 +109,9 @@ void XrayTool::Execute(XrayToolKind kind, const Settings& settings, bool setting
         result_.error = Text(L"Cannot resolve the Xray executable path.", L"无法解析 Xray 程序路径。");
         return;
     }
-    if (kind != XrayToolKind::Version && settings.configFiles.empty() && settings.configDirectory.empty()) {
-        result_.error = Text(L"Set at least one configuration file or one configuration directory.",
-            L"请至少设置一个配置文件或一个配置目录。");
+    if (kind != XrayToolKind::Version && !settings.HasConfigSources()) {
+        result_.error = Text(L"Enable at least one configuration file or set a configuration directory.",
+            L"请至少启用一个配置文件，或设置一个配置目录。");
         return;
     }
     auto command = QuoteArgument(result_.executable.native()) +

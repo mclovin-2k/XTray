@@ -63,7 +63,10 @@ When you return to the main window, XTray also compares the local configuration
 files to the list and contents recorded at launch. Edits, additions, and removals
 show a restart hint. Restoring the original files or restarting clears it.
 
-Configuration files load in list order. Use Ctrl or Shift to select multiple
+Checked configuration files load in list order. Uncheck a file to keep its path
+and position without passing it as an explicit config. The configuration
+directory still loads normally, including files also listed separately.
+Use Ctrl or Shift to select multiple
 files before moving or removing them. **Convert paths** switches each selected
 path between relative and absolute. The arrow next to **Browse** opens the
 path conversion menu for the executable or the

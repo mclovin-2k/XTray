@@ -385,8 +385,9 @@ bool ThemeWindow::AttachControl(HWND control)
 {
     const bool combo = IsClass(control, L"ComboBox");
     const bool edit = IsClass(control, L"Edit") || IsRichEdit(control);
-    if (!combo && !edit && !IsFramedText(control) && !IsClass(control, L"Button") &&
-        !IsClass(control, L"ComboLBox") && !IsClass(control, L"ListBox")) {
+    const bool list = IsClass(control, WC_LISTVIEWW);
+    if (!combo && !edit && !list && !IsFramedText(control) &&
+        !IsClass(control, L"Button") && !IsClass(control, L"ComboLBox")) {
         return true;
     }
     const wchar_t* visualStyle = colors_.dark
@@ -395,6 +396,11 @@ bool ThemeWindow::AttachControl(HWND control)
     SetWindowTheme(control, visualStyle, nullptr);
     if (IsRichEdit(control)) {
         SendMessageW(control, EM_SETBKGNDCOLOR, 0, colors_.logBackground);
+    }
+    if (list) {
+        ListView_SetBkColor(control, colors_.surface);
+        ListView_SetTextBkColor(control, CLR_NONE);
+        ListView_SetTextColor(control, colors_.text);
     }
     if (combo) {
         // Forward the native list's color query without intercepting any painting.

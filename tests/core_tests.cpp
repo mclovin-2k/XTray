@@ -653,6 +653,17 @@ void TestSettings(const std::filesystem::path& root)
             restored.settings.configFiles == settings.configFiles,
             "The configuration loading order did not round-trip.");
     }
+    auto disabled = settings;
+    disabled.disabledConfigFiles = {0, 1};
+    Check(SaveSettings(root, disabled, error), "Saving disabled configuration files failed.");
+    const auto disabledLoaded = LoadSettings(root);
+    Check(disabledLoaded.success && disabledLoaded.settings.configFiles == settings.configFiles &&
+        disabledLoaded.settings.disabledConfigFiles == disabled.disabledConfigFiles &&
+        std::ranges::equal(disabledLoaded.settings.EnabledConfigFiles(),
+            std::vector<std::wstring>{settings.configFiles[2]}),
+        "Configuration enabled states did not round-trip by row, including duplicate paths.");
+    disabled.disabledConfigFiles.insert(disabled.configFiles.size());
+    Check(!SaveSettings(root, disabled, error), "An out-of-range disabled file index was accepted.");
     const auto orderLine = bytes.find("ConfigDirectoryFirst=1\r\n");
     Check(orderLine != std::string::npos, "The configuration loading order key was not saved.");
     auto legacyOrder = bytes;
@@ -664,8 +675,8 @@ void TestSettings(const std::filesystem::path& root)
     const auto legacyLoaded = LoadSettings(root);
     Check(legacyLoaded.success && !legacyLoaded.settings.configDirectoryFirst &&
         legacyLoaded.settings.configDirectory == settings.configDirectory &&
-        legacyLoaded.settings.configFiles == settings.configFiles,
-        "Older settings must retain native loading order and all configuration paths.");
+        legacyLoaded.settings.configFiles == settings.configFiles && legacyLoaded.settings.disabledConfigFiles.empty(),
+        "Older settings must retain native loading order and enable all configuration files.");
     auto invalidOrder = bytes;
     invalidOrder.replace(orderLine, std::string_view("ConfigDirectoryFirst=1").size(), "ConfigDirectoryFirst=invalid");
     {
@@ -971,6 +982,21 @@ void TestConfigurationOrder(const std::filesystem::path& root)
     Check(native.arguments == arguments(settings, settings.configFiles, false) && native.environment.empty(),
         "Default loading order unexpectedly enumerated a directory or replaced the inherited environment.");
     settings.configDirectoryFirst = true;
+    auto disabled = settings;
+    disabled.disabledConfigFiles = {0, 2};
+    auto partiallyExpanded = expanded;
+    partiallyExpanded.erase(partiallyExpanded.end() - 2);
+    partiallyExpanded.erase(partiallyExpanded.end() - 3);
+    Check(PrepareXrayConfigArguments(base, disabled).arguments == arguments(disabled, partiallyExpanded, true),
+        "Disabled entries changed the relative order or duplicate handling of active configuration files.");
+    disabled.disabledConfigFiles = {0, 1, 2, 3};
+    const auto directoryOnly = PrepareXrayConfigArguments(base, disabled);
+    Check(disabled.HasConfigSources() && !disabled.LoadsConfigDirectoryFirst() &&
+        directoryOnly.arguments == arguments(disabled, {}, false) && directoryOnly.environment.empty(),
+        "Disabling every explicit file did not preserve native directory-only loading.");
+    disabled.configDirectory.clear();
+    Check(!disabled.HasConfigSources() && PrepareXrayConfigArguments(base, disabled).arguments.empty(),
+        "Disabled files were counted as configuration sources.");
     const auto prepared = PrepareXrayConfigArguments(base, settings);
     Check(prepared.arguments == arguments(settings, expanded, true),
         "Directory expansion changed filtering, UTF-8 filename ordering, raw paths, explicit order, or duplicates.");
@@ -1113,12 +1139,14 @@ void TestConfigFileChanges(const std::filesystem::path& root)
 
     Settings settings;
     settings.executable = ExecutablePath().native();
-    settings.configFiles = {L".\\hold.conf"};
+    settings.configFiles = {L".\\hold.conf", L".\\disabled.json"};
+    settings.disabledConfigFiles = {1};
     settings.configDirectory = L".\\shared";
     const auto baseline = CaptureXrayConfigFiles(base, settings, {});
     Check(baseline && baseline->size() == 2 && (*baseline)[0].hash && (*baseline)[1].hash,
         "The fingerprint did not include the explicit file and configuration directory.");
     write(directory / L"shared.json.bak", "not loaded");
+    write(base / L"disabled.json", "never loaded");
     Check(CaptureXrayConfigFiles(base, settings, {}) == baseline,
         "A file outside Xray's directory filter changed the fingerprint.");
 
@@ -1238,6 +1266,12 @@ void TestProcesses(const std::filesystem::path& root)
     std::swap(saved.configFiles[0], saved.configFiles[1]);
     Check(process.HasPendingSettings(saved) && process.RunInfo().commandLine == runningInfo.commandLine,
         "Changing file order did not mark settings pending or rewrote the launch record.");
+    saved = settings;
+    saved.configFiles.push_back(L".\\disabled.json");
+    saved.disabledConfigFiles.insert(saved.configFiles.size() - 1);
+    Check(!process.HasPendingSettings(saved), "A disabled file incorrectly required a restart.");
+    saved.disabledConfigFiles.insert(0);
+    Check(process.HasPendingSettings(saved), "Disabling a loaded file did not require a restart.");
     saved = settings;
     saved.configDirectory += L"new";
     Check(process.HasPendingSettings(saved), "A changed configuration directory was missed.");
