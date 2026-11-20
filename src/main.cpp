@@ -303,7 +303,8 @@ public:
             SS_LEFTNOWORDWRAP | SS_CENTERIMAGE | SS_NOPREFIX | SS_NOTIFY);
         openDirectory_ = child(0, L"BUTTON", L"", WS_TABSTOP, OpenDirectory);
         filterLabel_ = child(0, L"STATIC", L"", SS_CENTERIMAGE);
-        filter_ = child(0, L"COMBOBOX", L"", CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, Filter);
+        filter_ = child(0, L"COMBOBOX", L"",
+            CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP, Filter);
         keywordFrame_ = child(WS_EX_CLIENTEDGE | WS_EX_CONTROLPARENT, L"STATIC", L"",
             SS_LEFTNOWORDWRAP | WS_CLIPCHILDREN);
         if (!SetWindowSubclass(keywordFrame_, LogFilterFrameProcedure, 1, 0)) {
@@ -417,6 +418,10 @@ public:
             directoryX - gap - inputX, directoryHeight);
         move(openDirectory_, directoryX, directoryY, directoryWidth, Scale(26));
         const int filterY = Scale(134) + rowOffset;
+        const auto nativeItemHeight = SendMessageW(files_, CB_GETITEMHEIGHT, 0, 0);
+        if (SendMessageW(filter_, CB_GETITEMHEIGHT, 0, 0) != nativeItemHeight) {
+            SendMessageW(filter_, CB_SETITEMHEIGHT, 0, nativeItemHeight);
+        }
         const int filterHeight = SetClosedComboBoxHeight(filter_, Scale(28));
         move(filterLabel_, margin, filterY, labelWidth, filterHeight);
         int toolX = width - margin - filterHeight * 4 - gap * 3;
@@ -615,6 +620,19 @@ public:
             menuActive_ = false;
             if (std::exchange(menuThemePending_, false)) {
                 PostMessageW(window_, kSystemThemeMessage, 0, 0);
+            }
+        }
+        if (wParam == Filter && lParam != 0) {
+            if (message == WM_MEASUREITEM) {
+                auto& item = *reinterpret_cast<MEASUREITEMSTRUCT*>(lParam);
+                item.itemHeight = static_cast<UINT>(SendMessageW(files_, CB_GETITEMHEIGHT, 0, 0));
+                result = TRUE;
+                return true;
+            }
+            if (message == WM_DRAWITEM) {
+                DrawLogSourceItem(*reinterpret_cast<const DRAWITEMSTRUCT*>(lParam));
+                result = TRUE;
+                return true;
             }
         }
         if (message == WM_NOTIFY && lParam != 0) {
@@ -973,6 +991,34 @@ private:
         ApplyUiText();
         UpdateTheme(themeMonitor_->SystemDark());
         return passed;
+    }
+
+    void DrawLogSourceItem(const DRAWITEMSTRUCT& item) const
+    {
+        const auto& colors = theme_.Colors();
+        const bool disabled = (item.itemState & (ODS_DISABLED | ODS_GRAYED)) != 0;
+        const bool selected = !disabled && (item.itemState & ODS_SELECTED) != 0;
+        const bool field = (item.itemState & ODS_COMBOBOXEDIT) != 0;
+        const auto background = selected ? colors.selection : field && colors.dark ? colors.button : colors.surface;
+        const auto foreground = disabled ? colors.disabled : selected ? colors.selectionText : colors.text;
+        const int saved = SaveDC(item.hDC);
+        SetDCBrushColor(item.hDC, background);
+        FillRect(item.hDC, &item.rcItem, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+        SetBkMode(item.hDC, TRANSPARENT);
+        SetTextColor(item.hDC, foreground);
+        if (font_ != nullptr) { SelectObject(item.hDC, font_); }
+        const auto captions = LogSourceCaptions();
+        if (item.itemID < captions.size()) {
+            RECT text = item.rcItem;
+            text.left += Scale(3);
+            text.right -= Scale(2);
+            DrawTextW(item.hDC, captions[item.itemID], -1, &text,
+                DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        }
+        if ((item.itemState & ODS_FOCUS) != 0 && (item.itemState & ODS_NOFOCUSRECT) == 0) {
+            DrawFocusRect(item.hDC, &item.rcItem);
+        }
+        if (saved != 0) { RestoreDC(item.hDC, saved); }
     }
 
     void DrawKeywordButton(const NMCUSTOMDRAW& item) const
@@ -2415,7 +2461,7 @@ private:
                 return fail(L"native window background");
             }
             if (!SmokeTestTextWordWrap(logWindow_)) { return fail(L"native log scrollbar repaint after wrapping"); }
-            for (const auto control : {run_, copyLogs_, clearLogs_, scrollToEnd_, wordWrap_, filter_, files_}) {
+            for (const auto control : {run_, copyLogs_, clearLogs_, scrollToEnd_, wordWrap_, files_}) {
                 if (!SmokeTestNativeControl(control)) {
                     return fail(L"system-rendered button and combo controls");
                 }
@@ -2424,6 +2470,28 @@ private:
             buttonColors[dark ? 1 : 0] = GetPixel(canvas.device, Scale(8), Scale(5));
             SendMessageW(filter_, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(canvas.device), PRF_CLIENT);
             comboColors[dark ? 1 : 0] = GetPixel(canvas.device, Scale(8), Scale(5));
+            COMBOBOXINFO source{sizeof(COMBOBOXINFO)};
+            if (!GetComboBoxInfo(filter_, &source)) { return fail(L"log source selection rectangle"); }
+            const RECT field = source.rcItem;
+            const LONG center = (field.top + field.bottom) / 2;
+            const auto fieldBackground = GetPixel(canvas.device, field.right - Scale(3), center);
+            LONG firstTextRow = field.bottom, lastTextRow = field.top - 1;
+            for (LONG y = field.top + Scale(2); y < field.bottom - Scale(2); ++y) {
+                for (LONG x = field.left + Scale(2); x < field.right - Scale(3); ++x) {
+                    const auto pixel = GetPixel(canvas.device, x, y);
+                    if (pixel != CLR_INVALID && pixel != fieldBackground) {
+                        firstTextRow = (std::min)(firstTextRow, y);
+                        lastTextRow = y;
+                        break;
+                    }
+                }
+            }
+            if (firstTextRow > lastTextRow ||
+                std::abs(firstTextRow + lastTextRow + 1 - field.top - field.bottom) > Scale(6)) {
+                std::fwprintf(stderr, L"Smoke: log source text rows %ld..%ld in %ld..%ld.\n",
+                    firstTextRow, lastTextRow, field.top, field.bottom);
+                return fail(L"vertically centered log source caption");
+            }
             const HMENU menu = CreateTrayMenu();
             wchar_t caption[64]{};
             MENUITEMINFOW item{};
