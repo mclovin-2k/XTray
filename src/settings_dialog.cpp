@@ -3,9 +3,11 @@
 #include "win32.h"
 #include "theme_window.h"
 #include "ui_layout.h"
+#include "xray_config.h"
 #include "xray_tool_window.h"
 
 #include <commctrl.h>
+#include <oleacc.h>
 #include <shobjidl.h>
 #include <uxtheme.h>
 #include <wrl/client.h>
@@ -46,6 +48,7 @@ struct Context {
     ThemeWindow contentTheme;
     HWND contents = nullptr;
     HWND tooltip = nullptr;
+    std::vector<std::wstring> configFiles;
     int scroll = 0;
     int contentHeight = 0;
     int wheelRemainder = 0;
@@ -85,13 +88,13 @@ LRESULT CALLBACK SettingsMessageFilter(int code, WPARAM wParam, LPARAM lParam)
     return CallNextHookEx(nullptr, code, wParam, lParam);
 }
 
-Settings ConfigDraft(HWND dialog, const Settings& saved)
+Settings ConfigDraft(const Context& context)
 {
-    Settings draft = saved;
-    const HWND body = GetDlgItem(dialog, IDC_SETTINGS_BODY);
+    Settings draft = context.settings;
+    const HWND body = context.contents;
     draft.executable = WindowText(GetDlgItem(body, IDC_EXECUTABLE));
     draft.configDirectory = WindowText(GetDlgItem(body, IDC_CONFIG_DIRECTORY));
-    draft.configFiles = SplitConfigFiles(WindowText(GetDlgItem(body, IDC_CONFIG_FILES)));
+    draft.configFiles = context.configFiles;
     draft.configDirectoryFirst = SendMessageW(GetDlgItem(body, IDC_CONFIG_DIRECTORY_FIRST), BM_GETCHECK, 0, 0) == BST_CHECKED;
     return draft;
 }
@@ -140,6 +143,280 @@ void CheckSettingsButton(HWND dialog, int id, UINT state)
 UINT SettingsButtonState(HWND dialog, int id)
 {
     return static_cast<UINT>(SendMessageW(SettingsControl(dialog, id), BM_GETCHECK, 0, 0));
+}
+
+std::vector<int> SelectedConfigFiles(HWND list)
+{
+    const auto count = SendMessageW(list, LB_GETSELCOUNT, 0, 0);
+    if (count <= 0) { return {}; }
+    std::vector<int> selected(static_cast<size_t>(count));
+    if (SendMessageW(list, LB_GETSELITEMS, count, reinterpret_cast<LPARAM>(selected.data())) != count) {
+        throw std::runtime_error(Text("Cannot read the config file selection.", "无法读取选中的配置文件。"));
+    }
+    std::sort(selected.begin(), selected.end());
+    return selected;
+}
+
+void UpdateConfigFileActions(const Context& context)
+{
+    const auto selected = SelectedConfigFiles(GetDlgItem(context.contents, IDC_CONFIG_FILES));
+    const int count = static_cast<int>(selected.size());
+    const int fileCount = static_cast<int>(context.configFiles.size());
+    const auto enable = [&](int id, bool enabled) {
+        const HWND button = GetDlgItem(context.contents, id);
+        if (!enabled && GetFocus() == button) {
+            SetFocus(GetDlgItem(context.contents, IDC_CONFIG_FILES));
+        }
+        EnableWindow(button, enabled);
+    };
+    enable(IDC_MOVE_CONFIG_UP, count != 0 && selected.back() >= count);
+    enable(IDC_MOVE_CONFIG_DOWN, count != 0 && selected.front() < fileCount - count);
+    enable(IDC_REMOVE_CONFIG, count != 0);
+    enable(IDC_CONVERT_CONFIG, count != 0);
+}
+
+void UpdateConfigFileExtent(HWND list, const std::vector<std::wstring>& paths)
+{
+    LONG width = 0;
+    for (size_t index = 0; index < paths.size(); ++index) {
+        const auto label = std::to_wstring(index + 1) + L".  " + paths[index];
+        width = (std::max)(width, ControlTextSize(list, label).cx);
+    }
+    SendMessageW(list, LB_SETHORIZONTALEXTENT, width + UiScale(list, 8), 0);
+}
+
+void RefreshConfigFiles(Context& context, const std::vector<int>& selected = {}, int reveal = -1)
+{
+    const HWND list = GetDlgItem(context.contents, IDC_CONFIG_FILES);
+    const auto top = SendMessageW(list, LB_GETTOPINDEX, 0, 0);
+    {
+        SendMessageW(list, WM_SETREDRAW, FALSE, 0);
+        struct Redraw {
+            HWND list;
+            ~Redraw() {
+                SendMessageW(list, WM_SETREDRAW, TRUE, 0);
+                RedrawWindow(list, nullptr, nullptr, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME);
+            }
+        } redraw{list};
+        SendMessageW(list, LB_RESETCONTENT, 0, 0);
+        for (size_t index = 0; index < context.configFiles.size(); ++index) {
+            const auto label = std::to_wstring(index + 1) + L".  " + context.configFiles[index];
+            if (SendMessageW(list, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(label.c_str())) < 0) {
+                throw std::runtime_error(Text("Cannot display the config file list.", "无法显示配置文件列表。"));
+            }
+        }
+        UpdateConfigFileExtent(list, context.configFiles);
+        for (const int index : selected) {
+            SendMessageW(list, LB_SETSEL, TRUE, index);
+        }
+        if (!context.configFiles.empty()) {
+            SendMessageW(list, LB_SETTOPINDEX, static_cast<WPARAM>(top), 0);
+            if (reveal >= 0) {
+                SendMessageW(list, LB_SETANCHORINDEX, reveal, 0);
+                SendMessageW(list, LB_SETCARETINDEX, reveal, FALSE);
+            }
+        }
+    }
+    UpdateConfigFileActions(context);
+}
+
+void MoveConfigFiles(Context& context, bool up)
+{
+    auto selected = SelectedConfigFiles(GetDlgItem(context.contents, IDC_CONFIG_FILES));
+    const int count = static_cast<int>(selected.size());
+    if (count == 0) { return; }
+    for (int step = 0; step < count; ++step) {
+        const int position = up ? step : count - step - 1;
+        int& index = selected[position];
+        const int next = index + (up ? -1 : 1);
+        const int neighbor = position + (up ? -1 : 1);
+        if (next < 0 || next >= static_cast<int>(context.configFiles.size()) ||
+            (neighbor >= 0 && neighbor < count && selected[neighbor] == next)) {
+            continue;
+        }
+        std::swap(context.configFiles[index], context.configFiles[next]);
+        index = next;
+    }
+    RefreshConfigFiles(context, selected, up ? selected.front() : selected.back());
+}
+
+void RemoveConfigFiles(Context& context)
+{
+    const auto selected = SelectedConfigFiles(GetDlgItem(context.contents, IDC_CONFIG_FILES));
+    if (selected.empty()) { return; }
+    auto nextSelected = selected.begin();
+    int index = 0;
+    std::erase_if(context.configFiles, [&](const std::wstring&) {
+        const bool remove = nextSelected != selected.end() && *nextSelected == index;
+        if (remove) { ++nextSelected; }
+        ++index;
+        return remove;
+    });
+    if (context.configFiles.empty()) {
+        RefreshConfigFiles(context);
+    } else {
+        const int next = (std::min)(selected.front(), static_cast<int>(context.configFiles.size()) - 1);
+        RefreshConfigFiles(context, {next}, next);
+    }
+}
+
+bool EqualWindowsRoot(const std::wstring& left, const std::wstring& right)
+{
+    return CompareStringOrdinal(left.c_str(), -1, right.c_str(), -1, TRUE) == CSTR_EQUAL;
+}
+
+std::optional<std::wstring> ConvertWindowsPath(
+    const std::filesystem::path& root, const std::wstring& value, bool toAbsolute)
+{
+    using std::filesystem::path;
+    if (value.empty() || value == L"stdin:" || value.find(L"://") != std::wstring::npos) {
+        return std::nullopt;
+    }
+    path input(value);
+    input.make_preferred();
+    if (input.is_absolute() == toAbsolute) {
+        // Drive-relative and rooted paths do not have a portable relative representation.
+        if (!toAbsolute && (input.has_root_name() || input.has_root_directory())) { return std::nullopt; }
+        return value;
+    }
+    if ((input.has_root_name() || input.has_root_directory()) && !input.is_absolute()) {
+        return std::nullopt;
+    }
+    const auto base = root.lexically_normal().make_preferred();
+    const auto absolute = ResolvePath(root, value).make_preferred();
+    if (!base.is_absolute() || !absolute.is_absolute() ||
+        base.native().starts_with(L"\\\\?\\") || base.native().starts_with(L"\\\\.\\") ||
+        absolute.native().starts_with(L"\\\\?\\") || absolute.native().starts_with(L"\\\\.\\")) {
+        return std::nullopt;
+    }
+    if (toAbsolute) { return absolute.native(); }
+    const auto baseRoot = base.root_name().native();
+    if (!EqualWindowsRoot(baseRoot, absolute.root_name().native())) { return std::nullopt; }
+    const auto baseParts = base.relative_path();
+    const auto targetParts = absolute.relative_path();
+    auto from = baseParts.begin();
+    auto to = targetParts.begin();
+    if (baseRoot.starts_with(L"\\\\")) {
+        // The MSVC root name includes the UNC server. The share is the first component.
+        if (from == baseParts.end() || to == targetParts.end() ||
+            !EqualWindowsRoot(from->native(), to->native())) {
+            return std::nullopt;
+        }
+        ++from;
+        ++to;
+    }
+    while (from != baseParts.end() && to != targetParts.end() && *from == *to) {
+        ++from;
+        ++to;
+    }
+    path relative;
+    for (; from != baseParts.end(); ++from) {
+        if (!from->empty()) { relative /= L".."; }
+    }
+    if (relative.empty()) { relative = L"."; }
+    for (; to != targetParts.end(); ++to) {
+        relative /= *to;
+    }
+    return relative == path(L".") ? L".\\" : relative.native();
+}
+
+int SplitButtonWidth(HWND button)
+{
+    return TextButtonWidth(button) + UiScale(button, 22);
+}
+
+void ConvertSettingPaths(Context& context, int buttonId, bool toAbsolute)
+{
+    const bool fileList = buttonId == IDC_CONVERT_CONFIG;
+    const int inputId = buttonId == IDC_BROWSE_EXECUTABLE ? IDC_EXECUTABLE : IDC_CONFIG_DIRECTORY;
+    const HWND input = GetDlgItem(context.contents, fileList ? IDC_CONFIG_FILES : inputId);
+    const auto selected = fileList ? SelectedConfigFiles(input) : std::vector<int>{0};
+    auto values = fileList ? context.configFiles : std::vector<std::wstring>{WindowText(input)};
+    struct Change { int index; std::wstring value; };
+    std::vector<Change> changes, needsConsent;
+    std::wstring skipped, tailPaths;
+    const bool directory = buttonId == IDC_BROWSE_DIRECTORY;
+    for (const int index : selected) {
+        const auto& value = values[index];
+        if (value.empty()) { continue; }
+        auto converted = ConvertWindowsPath(context.root, value, toAbsolute);
+        if (!converted) {
+            skipped += L"\n" + value;
+        } else if (*converted != value) {
+            if ((fileList || directory) &&
+                XrayConfigPathUsesTail(value, directory) != XrayConfigPathUsesTail(*converted, directory)) {
+                tailPaths += L"\n" + value + L"\n  → " + *converted;
+                needsConsent.push_back({index, std::move(*converted)});
+            } else {
+                changes.push_back({index, std::move(*converted)});
+            }
+        }
+    }
+    if (!needsConsent.empty()) {
+        const auto message = Text(
+            L"These path changes add or remove “tail”. Xray may change where it inserts new outbounds when merging configurations.\n\nConvert these paths too?\n",
+            L"以下路径转换会增加或移除 “tail”。Xray 合并配置时，新增出站的插入位置可能改变。\n\n也要转换这些路径吗？\n") + tailPaths;
+        if (MessageBoxW(context.dialog, message.c_str(), Text(L"Convert paths", L"转换路径"),
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES) {
+            for (auto& change : needsConsent) { changes.push_back(std::move(change)); }
+        }
+    }
+    if (!changes.empty()) {
+        for (auto& change : changes) { values[change.index] = std::move(change.value); }
+        if (fileList) {
+            context.configFiles = std::move(values);
+            const auto caret = static_cast<int>(SendMessageW(input, LB_GETCARETINDEX, 0, 0));
+            RefreshConfigFiles(context, selected, caret);
+        } else {
+            SetWindowTextW(input, values.front().c_str());
+        }
+    }
+    if (!skipped.empty()) {
+        const auto message = Text(
+            L"These paths could not be converted. Relative paths require the same drive or network share as XTray.exe.\n",
+            L"以下路径无法转换。相对路径要求目标与 XTray.exe 位于同一盘符或网络共享。\n") + skipped;
+        MessageBoxW(context.dialog, message.c_str(), Text(L"Convert paths", L"转换路径"), MB_OK | MB_ICONINFORMATION);
+    }
+}
+
+void ShowPathConversions(Context& context, int id)
+{
+    struct Popup {
+        HMENU menu = CreatePopupMenu();
+        ~Popup() { if (menu != nullptr) { DestroyMenu(menu); } }
+    } popup;
+    const auto captions = std::array{
+        Text(L"Make relative", L"转为相对路径"), Text(L"Make absolute", L"转为绝对路径")};
+    std::array<MSAAMENUINFO, 2> accessible{};
+    const bool dark = context.theme.Colors().dark;
+    const HWND button = GetDlgItem(context.contents, id);
+    const bool enabled = id == IDC_CONVERT_CONFIG
+        ? IsWindowEnabled(button) != FALSE
+        : GetWindowTextLengthW(GetDlgItem(context.contents,
+            id == IDC_BROWSE_EXECUTABLE ? IDC_EXECUTABLE : IDC_CONFIG_DIRECTORY)) != 0;
+    if (popup.menu == nullptr) {
+        throw std::runtime_error(Text("Cannot create the path conversion menu.", "无法创建路径转换菜单。"));
+    }
+    for (UINT index = 0; index < captions.size(); ++index) {
+        const auto caption = const_cast<wchar_t*>(captions[index]);
+        accessible[index] = {MSAA_MENU_SIG, static_cast<DWORD>(std::wcslen(caption)), caption};
+        MENUITEMINFOW item{sizeof(item)};
+        item.fMask = MIIM_FTYPE | MIIM_STRING | MIIM_STATE | MIIM_ID | MIIM_DATA;
+        item.fType = dark ? MFT_OWNERDRAW : MFT_STRING;
+        item.fState = enabled ? MFS_ENABLED : MFS_DISABLED;
+        item.wID = index + 1;
+        item.dwTypeData = caption;
+        item.dwItemData = dark ? reinterpret_cast<ULONG_PTR>(&accessible[index]) : 0;
+        if (!InsertMenuItemW(popup.menu, index, TRUE, &item)) {
+            throw std::runtime_error(Text("Cannot populate the path conversion menu.", "无法设置路径转换菜单。"));
+        }
+    }
+    RECT bounds{};
+    GetWindowRect(button, &bounds);
+    const UINT command = TrackPopupMenuEx(popup.menu,
+        TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTALIGN | TPM_RIGHTBUTTON,
+        bounds.right, bounds.bottom, context.dialog, nullptr);
+    if (command != 0) { ConvertSettingPaths(context, id, command == 2); }
 }
 
 const wchar_t* ConfigOrderTooltip()
@@ -205,7 +482,7 @@ void LayoutSettingsContent(Context& context)
             y += height + gap;
         };
         const auto pathRow = [&](int editId, int browseId, int height) {
-            const int buttonWidth = TextButtonWidth(GetDlgItem(body, browseId));
+            const int buttonWidth = SplitButtonWidth(GetDlgItem(body, browseId));
             const int buttonX = margin + available - buttonWidth;
             place(browseId, buttonX, y, buttonWidth, rowHeight);
             place(editId, margin, y + (std::max)(0, (rowHeight - height) / 2),
@@ -244,7 +521,26 @@ void LayoutSettingsContent(Context& context)
         label(IDC_LABEL_CONFIG_FILES);
         units = {0, 0, 0, 75};
         MapDialogRect(body, &units);
-        pathRow(IDC_CONFIG_FILES, IDC_ADD_FILES, static_cast<int>(units.bottom));
+        const int moveUpWidth = TextButtonWidth(GetDlgItem(body, IDC_MOVE_CONFIG_UP));
+        const int moveDownWidth = TextButtonWidth(GetDlgItem(body, IDC_MOVE_CONFIG_DOWN));
+        const int actionsWidth = (std::max)({TextButtonWidth(GetDlgItem(body, IDC_ADD_FILES)),
+            moveUpWidth + gap + moveDownWidth, TextButtonWidth(GetDlgItem(body, IDC_REMOVE_CONFIG)),
+            SplitButtonWidth(GetDlgItem(body, IDC_CONVERT_CONFIG))});
+        const int actionHeight = rowHeight * 4 + gap * 3;
+        const int listHeight = (std::max)(static_cast<int>(units.bottom), actionHeight);
+        const bool stackFileActions = available - actionsWidth - gap < UiScale(body, 80);
+        const int actionX = margin + available - actionsWidth;
+        const int actionY = stackFileActions ? y + listHeight + gap : y;
+        const int actionStep = rowHeight + gap;
+        place(IDC_CONFIG_FILES, margin, y, stackFileActions ? available : actionX - gap - margin, listHeight);
+        place(IDC_ADD_FILES, actionX, actionY, actionsWidth, rowHeight);
+        place(IDC_MOVE_CONFIG_UP, actionX, actionY + actionStep,
+            actionsWidth - gap - moveDownWidth, rowHeight);
+        place(IDC_MOVE_CONFIG_DOWN, actionX + actionsWidth - moveDownWidth,
+            actionY + actionStep, moveDownWidth, rowHeight);
+        place(IDC_REMOVE_CONFIG, actionX, actionY + actionStep * 2, actionsWidth, rowHeight);
+        place(IDC_CONVERT_CONFIG, actionX, actionY + actionStep * 3, actionsWidth, rowHeight);
+        y += listHeight + sectionGap + (stackFileActions ? actionHeight + gap : 0);
         label(IDC_LABEL_CONFIG_DIRECTORY);
         pathRow(IDC_CONFIG_DIRECTORY, IDC_BROWSE_DIRECTORY, SingleLineControlHeight(GetDlgItem(body, IDC_CONFIG_DIRECTORY)));
         place(IDC_CONFIG_DIRECTORY_FIRST, margin, y, available, rowHeight);
@@ -396,6 +692,15 @@ INT_PTR CALLBACK SettingsContentsProcedure(HWND window, UINT message, WPARAM wPa
             }
             return themed;
         }
+        if (message == WM_NOTIFY && lParam != 0) {
+            const auto& notification = *reinterpret_cast<const NMHDR*>(lParam);
+            const auto id = static_cast<int>(notification.idFrom);
+            if (notification.code == BCN_DROPDOWN && (id == IDC_BROWSE_EXECUTABLE ||
+                id == IDC_BROWSE_DIRECTORY || id == IDC_CONVERT_CONFIG)) {
+                ShowPathConversions(*context, id);
+                return TRUE;
+            }
+        }
         if (message == WM_COMMAND) {
             SendMessageW(GetParent(window), message, wParam, lParam);
             return TRUE;
@@ -546,8 +851,8 @@ void SetDialogLanguage(HWND dialog)
     SetWindowTextW(dialog, Text(L"Settings", L"设置"));
     const auto set = [dialog](int id, const wchar_t* text) { SetWindowTextW(SettingsControl(dialog, id), text); };
     set(IDC_LABEL_EXECUTABLE, Text(L"Xray executable:", L"Xray 程序路径："));
-    set(IDC_LABEL_CONFIG_FILES, Text(L"Config files (one per line, in load order; optional):",
-        L"配置文件（每行一个，按顺序加载；可留空）："));
+    set(IDC_LABEL_CONFIG_FILES, Text(L"Config files (in load order; optional):",
+        L"配置文件（按列表顺序加载，可留空）："));
     set(IDC_LABEL_CONFIG_DIRECTORY, Text(L"Config directory (optional):", L"配置目录（可留空）："));
     set(IDC_CONFIG_DIRECTORY_FIRST, Text(L"Load config directory before config files", L"先加载配置目录，再加载配置文件"));
     set(IDC_LABEL_LOG_LINES, Text(L"Log lines per source:", L"每类日志保留行数："));
@@ -556,6 +861,10 @@ void SetDialogLanguage(HWND dialog)
     set(IDC_LOGON_STARTUP, Text(L"Start XTray and Xray when I sign in", L"登录后自动启动 XTray 和 Xray"));
     set(IDC_BROWSE_EXECUTABLE, Text(L"Browse...", L"浏览…"));
     set(IDC_ADD_FILES, Text(L"Add files...", L"添加文件…"));
+    set(IDC_MOVE_CONFIG_UP, Text(L"↑ Up", L"↑ 上移"));
+    set(IDC_MOVE_CONFIG_DOWN, Text(L"↓ Down", L"↓ 下移"));
+    set(IDC_REMOVE_CONFIG, Text(L"Remove", L"移除"));
+    set(IDC_CONVERT_CONFIG, Text(L"Convert paths", L"转换路径"));
     set(IDC_BROWSE_DIRECTORY, Text(L"Browse...", L"浏览…"));
     set(IDC_CHECK_CONFIG, Text(L"Check current configuration", L"检查当前配置"));
     set(IDC_PREVIEW_CONFIG, Text(L"Preview current configuration", L"预览当前配置"));
@@ -607,11 +916,8 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         SetWindowTextW(SettingsControl(dialog, IDC_CONFIG_DIRECTORY), context->settings.configDirectory.c_str());
         CheckSettingsButton(dialog, IDC_CONFIG_DIRECTORY_FIRST,
             context->settings.configDirectoryFirst ? BST_CHECKED : BST_UNCHECKED);
-        std::wstring files;
-        for (const auto& file : context->settings.configFiles) {
-            files += file + L"\r\n";
-        }
-        SetWindowTextW(SettingsControl(dialog, IDC_CONFIG_FILES), files.c_str());
+        context->configFiles = context->settings.configFiles;
+        RefreshConfigFiles(*context);
         SetWindowTextW(SettingsControl(dialog, IDC_LOG_LINES), std::to_wstring(context->settings.logLines).c_str());
         const auto startup = context->startup.Query();
         context->startupAvailable = startup.success;
@@ -673,6 +979,7 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
     if (message == kRefreshDialogTheme) {
         SetDialogIcons(dialog, *context);
         context->theme.Apply(context->theme.Colors().dark, true);
+        UpdateConfigFileExtent(SettingsControl(dialog, IDC_CONFIG_FILES), context->configFiles);
         FitSettingsWindow(dialog, *context);
         LayoutSettings(dialog, *context);
         return TRUE;
@@ -701,7 +1008,7 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
     case IDC_PREVIEW_CONFIG: {
         try {
             const auto kind = LOWORD(wParam) == IDC_CHECK_CONFIG ? XrayToolKind::Check : XrayToolKind::Preview;
-            context->tools->Open(dialog, kind, ConfigDraft(dialog, context->settings), true,
+            context->tools->Open(dialog, kind, ConfigDraft(*context), true,
                 context->theme.Colors().dark, context->quietTools, XrayToolSource::SettingsDraft);
         } catch (const std::exception& exception) {
             context->tools->CloseOwned(dialog);
@@ -711,6 +1018,19 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         }
         return TRUE;
     }
+    case IDC_CONFIG_FILES:
+        if (HIWORD(wParam) == LBN_SELCHANGE) { UpdateConfigFileActions(*context); }
+        return TRUE;
+    case IDC_MOVE_CONFIG_UP:
+    case IDC_MOVE_CONFIG_DOWN:
+        MoveConfigFiles(*context, LOWORD(wParam) == IDC_MOVE_CONFIG_UP);
+        return TRUE;
+    case IDC_REMOVE_CONFIG:
+        RemoveConfigFiles(*context);
+        return TRUE;
+    case IDC_CONVERT_CONFIG:
+        ShowPathConversions(*context, IDC_CONVERT_CONFIG);
+        return TRUE;
     case IDC_BROWSE_EXECUTABLE:
     case IDC_ADD_FILES:
     case IDC_BROWSE_DIRECTORY: {
@@ -720,14 +1040,13 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
             return TRUE;
         }
         if (id == IDC_ADD_FILES) {
-            std::wstring text = WindowText(SettingsControl(dialog, IDC_CONFIG_FILES));
-            if (!text.empty() && text.back() != L'\n') {
-                text += L"\r\n";
+            const int first = static_cast<int>(context->configFiles.size());
+            context->configFiles.insert(context->configFiles.end(), paths.begin(), paths.end());
+            std::vector<int> added;
+            for (int index = first; index < static_cast<int>(context->configFiles.size()); ++index) {
+                added.push_back(index);
             }
-            for (const auto& path : paths) {
-                text += path + L"\r\n";
-            }
-            SetWindowTextW(SettingsControl(dialog, IDC_CONFIG_FILES), text.c_str());
+            RefreshConfigFiles(*context, added, added.back());
         } else {
             SetWindowTextW(SettingsControl(dialog, id == IDC_BROWSE_EXECUTABLE
                 ? IDC_EXECUTABLE : IDC_CONFIG_DIRECTORY), paths.front().c_str());
@@ -735,7 +1054,7 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         return TRUE;
     }
     case IDOK: {
-        Settings draft = ConfigDraft(dialog, context->settings);
+        Settings draft = ConfigDraft(*context);
         draft.language = static_cast<Language>(
             SendMessageW(SettingsControl(dialog, IDC_LANGUAGE), CB_GETCURSEL, 0, 0));
         draft.theme = static_cast<ThemeMode>(
@@ -823,6 +1142,22 @@ bool EditSettings(HWND owner, const std::filesystem::path& root, Settings& setti
 bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
 {
     std::fwprintf(stderr, L"Smoke: settings scroll viewport, fixed footer, and text-sized buttons.\n");
+    std::fwprintf(stderr, L"Smoke: Windows config path forms and Xray tail matching.\n");
+    const std::filesystem::path pathRoot(L"D:\\XTray");
+    if (ConvertWindowsPath(pathRoot, L"d:/XTray/configs/中文.json", false) != L".\\configs\\中文.json" ||
+        ConvertWindowsPath(pathRoot, L"D:\\shared\\one.json", false) != L"..\\shared\\one.json" ||
+        ConvertWindowsPath(pathRoot, L".\\configs\\中文.json", true) != L"D:\\XTray\\configs\\中文.json" ||
+        ConvertWindowsPath(pathRoot, L"D:\\XTray", false) != L".\\" ||
+        ConvertWindowsPath(pathRoot, L"D:config.json", true) ||
+        ConvertWindowsPath(pathRoot, L"E:\\other\\config.json", false) ||
+        ConvertWindowsPath(pathRoot, L"https://example.invalid/config.json", true) ||
+        ConvertWindowsPath(L"\\\\server\\share\\XTray", L"\\\\SERVER\\SHARE\\config.json", false) != L"..\\config.json" ||
+        ConvertWindowsPath(L"\\\\server\\share\\XTray", L"\\\\server\\other\\config.json", false) ||
+        !XrayConfigPathUsesTail(L".\\TAIL\\config.json", false) ||
+        XrayConfigPathUsesTail(L"./tail/../config", true)) {
+        std::fwprintf(stderr, L"Smoke: config path conversion failed.\n");
+        return false;
+    }
     std::filesystem::create_directories(root);
     const auto language = CurrentLanguage();
     bool passed = true;
@@ -874,6 +1209,60 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                 GetNextDlgTabItem(window, SettingsControl(window, IDC_BROWSE_DIRECTORY), FALSE) == SettingsControl(window, IDC_CONFIG_DIRECTORY_FIRST) &&
                 GetNextDlgTabItem(window, SettingsControl(window, IDC_CONFIG_DIRECTORY_FIRST), FALSE) == SettingsControl(window, IDC_CHECK_CONFIG) &&
                 SettingsButtonState(window, IDC_CONFIG_DIRECTORY_FIRST) == BST_UNCHECKED;
+            std::fwprintf(stderr, L"Smoke: ordered multi-select config list, move arrows, and draft path conversion.\n");
+            const HWND list = SettingsControl(window, IDC_CONFIG_FILES);
+            const HWND up = SettingsControl(window, IDC_MOVE_CONFIG_UP);
+            const HWND down = SettingsControl(window, IDC_MOVE_CONFIG_DOWN);
+            const HWND remove = SettingsControl(window, IDC_REMOVE_CONFIG);
+            const auto browseStyle = [&](int id) {
+                return (GetWindowLongPtrW(SettingsControl(window, id), GWL_STYLE) & BS_TYPEMASK) == BS_SPLITBUTTON;
+            };
+            const auto checkList = [&] {
+                if ((GetWindowLongPtrW(list, GWL_STYLE) & LBS_EXTENDEDSEL) == 0 ||
+                    !browseStyle(IDC_BROWSE_EXECUTABLE) || !browseStyle(IDC_BROWSE_DIRECTORY) ||
+                    !browseStyle(IDC_CONVERT_CONFIG) ||
+                    WindowText(up) != Text(L"↑ Up", L"↑ 上移") ||
+                    WindowText(down) != Text(L"↓ Down", L"↓ 下移") ||
+                    IsWindowEnabled(up) || IsWindowEnabled(down) || IsWindowEnabled(remove)) {
+                    return false;
+                }
+                const std::wstring longPath = L".\\" + std::wstring(220, L'中') + L"-tail.json";
+                const std::vector<std::wstring> files{L".\\one-tail.json", longPath, L".\\two.json",
+                    L".\\one-tail.json", L".\\three.json"};
+                context.configFiles = files;
+                RefreshConfigFiles(context, {1, 2, 4});
+                if (SendMessageW(list, LB_GETHORIZONTALEXTENT, 0, 0) <= UiScale(list, 360) ||
+                    !IsWindowEnabled(up) || !IsWindowEnabled(down)) { return false; }
+                SendMessageW(up, BM_CLICK, 0, 0);
+                if (SelectedConfigFiles(list) != std::vector<int>{0, 1, 3} ||
+                    ConfigDraft(context).configFiles != std::vector<std::wstring>{
+                        files[1], files[2], files[0], files[4], files[3]}) { return false; }
+                SendMessageW(down, BM_CLICK, 0, 0);
+                if (SelectedConfigFiles(list) != std::vector<int>{1, 2, 4} || ConfigDraft(context).configFiles != files) {
+                    return false;
+                }
+                RefreshConfigFiles(context, {0, 1});
+                if (IsWindowEnabled(up) || !IsWindowEnabled(down)) { return false; }
+                ConvertSettingPaths(context, IDC_CONVERT_CONFIG, true);
+                const auto absolute = root / L"one-tail.json";
+                if (ConfigDraft(context).configFiles.front() != absolute.native() ||
+                    ConfigDraft(context).configFiles[3] != files[3] ||
+                    SelectedConfigFiles(list) != std::vector<int>{0, 1}) { return false; }
+                ConvertSettingPaths(context, IDC_CONVERT_CONFIG, false);
+                if (ConfigDraft(context).configFiles != files) { return false; }
+                SendMessageW(remove, BM_CLICK, 0, 0);
+                std::array<wchar_t, 64> first{};
+                const auto length = SendMessageW(list, LB_GETTEXTLEN, 0, 0);
+                if (length < 0 || length >= static_cast<LRESULT>(first.size())) { return false; }
+                SendMessageW(list, LB_GETTEXT, 0, reinterpret_cast<LPARAM>(first.data()));
+                return ConfigDraft(context).configFiles == std::vector<std::wstring>{files[2], files[3], files[4]} &&
+                    SendMessageW(list, LB_GETCOUNT, 0, 0) == 3 &&
+                    std::wstring_view(first.data()) == L"1.  .\\two.json" && settings.configFiles.empty();
+            };
+            if (!checkList()) {
+                std::fwprintf(stderr, L"Smoke: config file list order, selection, or path conversion failed.\n");
+                passed = false;
+            }
             const auto dispatchFocusMessages = [&] {
                 MSG pending{};
                 while (PeekMessageW(&pending, context.contents, kEnsureSettingVisible, kEnsureSettingVisible, PM_REMOVE)) {
@@ -932,6 +1321,25 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                     RECT button{};
                     GetWindowRect(SettingsControl(window, id), &button);
                     if (button.right != browse.right) { return false; }
+                }
+                RECT listBounds{}, add{}, moveUp{}, moveDown{}, remove{}, convert{};
+                GetWindowRect(list, &listBounds);
+                GetWindowRect(SettingsControl(window, IDC_ADD_FILES), &add);
+                GetWindowRect(up, &moveUp);
+                GetWindowRect(down, &moveDown);
+                GetWindowRect(SettingsControl(window, IDC_REMOVE_CONFIG), &remove);
+                GetWindowRect(SettingsControl(window, IDC_CONVERT_CONFIG), &convert);
+                const int controlsGap = UiScale(window, 8);
+                const bool actionsBeside = add.left > listBounds.right;
+                if (add.left != moveUp.left || add.left != remove.left || add.left != convert.left ||
+                    add.right != moveDown.right || add.right != remove.right || add.right != convert.right ||
+                    moveUp.top != moveDown.top || moveDown.left - moveUp.right != controlsGap ||
+                    add.bottom + controlsGap != moveUp.top ||
+                    moveUp.bottom + controlsGap != remove.top || remove.bottom + controlsGap != convert.top ||
+                    (actionsBeside ? add.top != listBounds.top || convert.bottom > listBounds.bottom
+                        : add.top - listBounds.bottom != controlsGap)) {
+                    std::fwprintf(stderr, L"Smoke: configuration file actions overlap or are not aligned.\n");
+                    return false;
                 }
                 RECT directory{}, order{}, hint{}, check{}, preview{}, startup{};
                 const HWND orderControl = SettingsControl(window, IDC_CONFIG_DIRECTORY_FIRST);
@@ -1035,13 +1443,16 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
             passed = passed && footer.left >= 0 && footer.top >= 0 &&
                 footer.right <= client.right && footer.bottom <= client.bottom &&
                 bodyBounds.bottom <= saveBefore.top && registry.writes == 0;
-            for (const int id : {IDOK, IDCANCEL, IDC_BROWSE_EXECUTABLE, IDC_ADD_FILES, IDC_BROWSE_DIRECTORY}) {
+            for (const int id : {IDOK, IDCANCEL, IDC_BROWSE_EXECUTABLE, IDC_BROWSE_DIRECTORY}) {
                 RECT button{};
                 const HWND control = SettingsControl(window, id);
                 GetWindowRect(control, &button);
                 const auto text = ControlTextSize(control);
                 const int padding = static_cast<int>(button.right - button.left - text.cx);
-                passed = passed && padding >= UiScale(control, 23) && padding <= UiScale(control, 25);
+                const int split = id == IDC_BROWSE_EXECUTABLE || id == IDC_BROWSE_DIRECTORY
+                    ? UiScale(control, 22) : 0;
+                passed = passed && padding >= UiScale(control, 23) + split &&
+                    padding <= UiScale(control, 25) + split;
             }
             const auto checkInputs = [&] {
                 for (const auto& [id, neighbor] : {std::pair{IDC_EXECUTABLE, IDC_BROWSE_EXECUTABLE},
@@ -1098,14 +1509,16 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
             std::fwprintf(stderr, L"Smoke: settings draft tools, saved-settings isolation, keyboard navigation, and owner cancellation.\n");
             const auto original = settings;
             SetWindowTextW(executable, (CurrentExecutable().parent_path() / L"XTray.Tests.exe").c_str());
-            SetWindowTextW(SettingsControl(window, IDC_CONFIG_FILES), L".\\tool-ok.conf\r\n.\\重复 ;= config.json");
+            context.configFiles = {L".\\tool-ok.conf", L".\\重复 ;= config.json"};
+            RefreshConfigFiles(context);
             std::filesystem::create_directories(root / L"draft configs");
             SetWindowTextW(SettingsControl(window, IDC_CONFIG_DIRECTORY), L".\\draft configs\\");
             CheckSettingsButton(window, IDC_CONFIG_DIRECTORY_FIRST, BST_CHECKED);
             SetWindowTextW(SettingsControl(window, IDC_LOG_LINES), L"0");
             SendMessageW(SettingsControl(window, IDC_CHECK_CONFIG), BM_CLICK, 0, 0);
             CheckSettingsButton(window, IDC_CONFIG_DIRECTORY_FIRST, BST_UNCHECKED);
-            SetWindowTextW(SettingsControl(window, IDC_CONFIG_FILES), L".\\tool-fail.conf");
+            context.configFiles = {L".\\tool-fail.conf"};
+            RefreshConfigFiles(context);
             const auto waitTool = [&] {
                 const auto until = GetTickCount64() + 4000;
                 while (context.tools->Running() && GetTickCount64() < until) {
@@ -1143,7 +1556,8 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
             passed = CallMsgFilterW(&tabTool, MSGF_DIALOGBOX) &&
                 GetFocus() == GetDlgItem(result, 4104) && passed;
             SetFocus(executable);
-            SetWindowTextW(SettingsControl(window, IDC_CONFIG_FILES), L".\\tool-ok.conf");
+            context.configFiles = {L".\\tool-ok.conf"};
+            RefreshConfigFiles(context);
             SendMessageW(SettingsControl(window, IDC_PREVIEW_CONFIG), BM_CLICK, 0, 0);
             passed = waitTool() && passed;
             passed = passed && WindowText(context.tools->Window()) == Text(L"Preview current configuration", L"预览当前配置") &&
@@ -1152,7 +1566,8 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                 settings.configDirectory == original.configDirectory && settings.logLines == original.logLines &&
                 settings.configDirectoryFirst == original.configDirectoryFirst &&
                 registry.writes == 0 && !std::filesystem::exists(root / L"data" / L"settings.ini");
-            SetWindowTextW(SettingsControl(window, IDC_CONFIG_FILES), L".\\tool-hold.conf");
+            context.configFiles = {L".\\tool-hold.conf"};
+            RefreshConfigFiles(context);
             SendMessageW(SettingsControl(window, IDC_PREVIEW_CONFIG), BM_CLICK, 0, 0);
             std::fwprintf(stderr, L"Smoke: closing settings cancels its unfinished draft tool.\n");
             SendMessageW(window, WM_COMMAND, IDCANCEL, 0);
@@ -1186,6 +1601,7 @@ bool SmokeTestSettingsTheme(HWND owner, const std::filesystem::path& root)
                 (SettingsButtonState(window, IDC_CONFIG_DIRECTORY_FIRST) == BST_CHECKED) == (action == 3);
             std::fwprintf(stderr, L"Smoke: settings native buttons, checkbox, and combo boxes.\n");
             for (const int id : {IDOK, IDCANCEL, IDC_BROWSE_EXECUTABLE, IDC_ADD_FILES,
+                IDC_MOVE_CONFIG_UP, IDC_MOVE_CONFIG_DOWN, IDC_REMOVE_CONFIG, IDC_CONVERT_CONFIG,
                 IDC_BROWSE_DIRECTORY, IDC_CHECK_CONFIG, IDC_PREVIEW_CONFIG,
                 IDC_CONFIG_DIRECTORY_FIRST, IDC_LOGON_STARTUP, IDC_LANGUAGE, IDC_THEME}) {
                 passed = SmokeTestNativeControl(SettingsControl(window, id)) && passed;

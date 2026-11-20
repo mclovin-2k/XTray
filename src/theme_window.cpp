@@ -385,7 +385,8 @@ bool ThemeWindow::AttachControl(HWND control)
 {
     const bool combo = IsClass(control, L"ComboBox");
     const bool edit = IsClass(control, L"Edit") || IsRichEdit(control);
-    if (!combo && !edit && !IsFramedText(control) && !IsClass(control, L"Button") && !IsClass(control, L"ComboLBox")) {
+    if (!combo && !edit && !IsFramedText(control) && !IsClass(control, L"Button") &&
+        !IsClass(control, L"ComboLBox") && !IsClass(control, L"ListBox")) {
         return true;
     }
     const wchar_t* visualStyle = colors_.dark

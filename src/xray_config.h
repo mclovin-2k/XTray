@@ -5,6 +5,7 @@
 #include <array>
 #include <optional>
 #include <stop_token>
+#include <string_view>
 
 namespace xtray {
 
@@ -26,6 +27,8 @@ using XrayConfigFingerprint = std::vector<XrayConfigFileFingerprint>;
 std::optional<XrayConfigFingerprint> CaptureXrayConfigFiles(
     const std::filesystem::path& root, const Settings& settings, std::stop_token stop,
     const XrayConfigArguments* prepared = nullptr);
+
+bool XrayConfigPathUsesTail(std::wstring_view path, bool directory);
 
 XrayConfigArguments PrepareXrayConfigArguments(
     const std::filesystem::path& root, const Settings& settings);

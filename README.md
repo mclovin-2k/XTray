@@ -44,7 +44,7 @@ with different listening ports. Each copy manages one Xray process.
    its accompanying files.
 3. Open `XTray.exe`, then choose **File → Settings**.
 4. Confirm the Xray executable path (`.\bin\xray.exe` by default), add configuration
-   files (one per line) and/or select one configuration directory, then click **Save**.
+   files and/or select one configuration directory, then click **Save**.
 5. Click **Run** to start Xray.
 
 Both configuration inputs start empty. Select at least one configuration file or
@@ -63,8 +63,10 @@ When you return to the main window, XTray also compares the local configuration
 files to the list and contents recorded at launch. Edits, additions, and removals
 show a restart hint. Restoring the original files or restarting clears it.
 
-You can choose files outside the XTray folder or enter relative paths. Relative
-paths are resolved from the folder containing `XTray.exe`.
+Configuration files load in list order. Use Ctrl or Shift to select multiple
+files before moving, removing, or converting their paths. The arrow next to
+**Browse** opens the same path conversion options for the executable or the
+configuration directory. Relative paths use the folder containing `XTray.exe`.
 
 For help preparing your configuration, see the [Xray documentation](https://xtls.github.io/).
 XTray does not generate or edit Xray configuration files.

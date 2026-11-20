@@ -33,6 +33,5 @@ struct SettingsResult {
 
 SettingsResult LoadSettings(const std::filesystem::path& root);
 bool SaveSettings(const std::filesystem::path& root, const Settings& settings, std::wstring& error);
-std::vector<std::wstring> SplitConfigFiles(const std::wstring& text);
 
 } // namespace xtray

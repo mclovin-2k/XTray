@@ -267,6 +267,17 @@ std::optional<XrayConfigFingerprint> CaptureXrayConfigFiles(
     }
 }
 
+bool XrayConfigPathUsesTail(std::wstring_view path, bool directory)
+{
+    // Xray matches "tail" in the entire input name, after joining directory entries.
+    auto name = directory ? DirectoryArgument(path, L"config.json") : std::wstring(path);
+    for (wchar_t& letter : name) {
+        if (letter >= L'A' && letter <= L'Z') { letter += L'a' - L'A'; }
+        if (letter == L'\u0130') { letter = L'i'; }
+    }
+    return name.find(L"tail") != std::wstring::npos;
+}
+
 XrayConfigArguments PrepareXrayConfigArguments(
     const std::filesystem::path& root, const Settings& settings)
 {

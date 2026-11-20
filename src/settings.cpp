@@ -48,28 +48,6 @@ size_t ParseNumber(const std::wstring& value)
 
 } // namespace
 
-std::vector<std::wstring> SplitConfigFiles(const std::wstring& text)
-{
-    std::vector<std::wstring> result;
-    size_t begin = 0;
-    while (begin < text.size()) {
-        const auto newline = text.find(L'\n', begin);
-        const auto end = newline == std::wstring::npos ? text.size() : newline;
-        auto line = text.substr(begin, end - begin);
-        if (!line.empty() && line.back() == L'\r') {
-            line.pop_back();
-        }
-        if (!IsBlank(line)) {
-            result.push_back(std::move(line));
-        }
-        if (newline == std::wstring::npos) {
-            break;
-        }
-        begin = newline + 1;
-    }
-    return result;
-}
-
 SettingsResult LoadSettings(const std::filesystem::path& root)
 {
     SettingsResult result;
