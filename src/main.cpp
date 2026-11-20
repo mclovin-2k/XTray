@@ -3090,26 +3090,8 @@ private:
 
     void OpenPath(const std::wstring& value, bool directory)
     {
-        const auto path = ResolvePath(root_, value);
-        const DWORD attributes = GetFileAttributesW(path.c_str());
-        if (attributes == INVALID_FILE_ATTRIBUTES) {
-            logs_.Tray(WindowsError(Text(L"Cannot open path: ", L"无法打开路径：") + path.native()));
-            return;
-        }
-        if (directory != ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0)) {
-            logs_.Tray(Text(L"Incorrect path type: ", L"路径类型不正确：") + path.native());
-            return;
-        }
-        SHELLEXECUTEINFOW info{};
-        info.cbSize = sizeof(info);
-        info.fMask = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
-        info.hwnd = window_;
-        info.lpVerb = L"open";
-        info.lpFile = path.c_str();
-        info.nShow = SW_SHOWNORMAL;
-        if (!ShellExecuteExW(&info)) {
-            logs_.Tray(WindowsError(Text(L"Cannot open path: ", L"打开路径失败：") + path.native()));
-        }
+        const auto error = OpenPathInShell(window_, ResolvePath(root_, value), directory);
+        if (!error.empty()) { logs_.Tray(error); }
     }
 
     const std::filesystem::path root_;

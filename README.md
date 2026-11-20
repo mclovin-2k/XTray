@@ -67,7 +67,8 @@ Checked configuration files load in list order. Uncheck a file to keep its path
 and position without passing it as an explicit config. The configuration
 directory still loads normally, including files also listed separately.
 Use Ctrl or Shift to select multiple
-files before moving or removing them. **Convert paths** switches each selected
+files before moving or removing them. Right-click a row to open the file or its
+containing folder using the current settings draft. **Convert paths** switches each selected
 path between relative and absolute. The arrow next to **Browse** opens the
 path conversion menu for the executable or the
 configuration directory. Relative paths use the folder containing `XTray.exe`.

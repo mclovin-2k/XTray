@@ -3,6 +3,7 @@
 #include "language.h"
 
 #include <windows.h>
+#include <shellapi.h>
 
 #include <filesystem>
 #include <limits>
@@ -82,6 +83,28 @@ inline std::filesystem::path ResolvePath(
 {
     std::filesystem::path path(value);
     return (path.is_absolute() ? path : root / path).lexically_normal();
+}
+
+inline std::wstring OpenPathInShell(HWND owner, const std::filesystem::path& path, bool directory)
+{
+    const DWORD attributes = GetFileAttributesW(path.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES) {
+        const DWORD error = GetLastError();
+        return WindowsError(Text(L"Cannot open path: ", L"无法打开路径：") + path.native(), error);
+    }
+    if (directory != ((attributes & FILE_ATTRIBUTE_DIRECTORY) != 0)) {
+        return Text(L"Incorrect path type: ", L"路径类型不正确：") + path.native();
+    }
+    SHELLEXECUTEINFOW info{};
+    info.cbSize = sizeof(info);
+    info.fMask = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
+    info.hwnd = owner;
+    info.lpVerb = L"open";
+    info.lpFile = path.c_str();
+    info.nShow = SW_SHOWNORMAL;
+    if (ShellExecuteExW(&info)) { return {}; }
+    const DWORD error = GetLastError();
+    return WindowsError(Text(L"Cannot open path: ", L"打开路径失败：") + path.native(), error);
 }
 
 // Quote each argument using the Windows C/C++ command-line parsing rules.

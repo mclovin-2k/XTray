@@ -10,6 +10,7 @@
 #include <oleacc.h>
 #include <shobjidl.h>
 #include <uxtheme.h>
+#include <windowsx.h>
 #include <wrl/client.h>
 
 #include <array>
@@ -545,21 +546,17 @@ void ConvertSettingPaths(Context& context, int buttonId, PathConversion directio
     }
 }
 
-void ShowPathConversions(Context& context, int id)
+UINT TrackSettingsPopup(const Context& context, const std::array<const wchar_t*, 2>& captions,
+    POINT point, UINT alignment, bool enabled = true)
 {
     struct Popup {
         HMENU menu = CreatePopupMenu();
         ~Popup() { if (menu != nullptr) { DestroyMenu(menu); } }
     } popup;
-    const auto captions = std::array{
-        Text(L"Make relative", L"转为相对路径"), Text(L"Make absolute", L"转为绝对路径")};
     std::array<MSAAMENUINFO, 2> accessible{};
     const bool dark = context.theme.Colors().dark;
-    const HWND button = GetDlgItem(context.contents, id);
-    const bool enabled = GetWindowTextLengthW(GetDlgItem(context.contents,
-        id == IDC_BROWSE_EXECUTABLE ? IDC_EXECUTABLE : IDC_CONFIG_DIRECTORY)) != 0;
     if (popup.menu == nullptr) {
-        throw std::runtime_error(Text("Cannot create the path conversion menu.", "无法创建路径转换菜单。"));
+        throw std::runtime_error(Text("Cannot create the settings menu.", "无法创建设置菜单。"));
     }
     for (UINT index = 0; index < captions.size(); ++index) {
         const auto caption = const_cast<wchar_t*>(captions[index]);
@@ -572,16 +569,64 @@ void ShowPathConversions(Context& context, int id)
         item.dwTypeData = caption;
         item.dwItemData = dark ? reinterpret_cast<ULONG_PTR>(&accessible[index]) : 0;
         if (!InsertMenuItemW(popup.menu, index, TRUE, &item)) {
-            throw std::runtime_error(Text("Cannot populate the path conversion menu.", "无法设置路径转换菜单。"));
+            throw std::runtime_error(Text("Cannot populate the settings menu.", "无法设置菜单项。"));
         }
     }
+    if (context.tooltip != nullptr) { SendMessageW(context.tooltip, TTM_POP, 0, 0); }
+    return TrackPopupMenuEx(popup.menu, TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON | alignment,
+        point.x, point.y, context.dialog, nullptr);
+}
+
+void ShowPathConversions(Context& context, int id)
+{
+    const HWND input = GetDlgItem(context.contents,
+        id == IDC_BROWSE_EXECUTABLE ? IDC_EXECUTABLE : IDC_CONFIG_DIRECTORY);
     RECT bounds{};
-    GetWindowRect(button, &bounds);
-    const UINT command = TrackPopupMenuEx(popup.menu,
-        TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTALIGN | TPM_RIGHTBUTTON,
-        bounds.right, bounds.bottom, context.dialog, nullptr);
+    GetWindowRect(GetDlgItem(context.contents, id), &bounds);
+    const UINT command = TrackSettingsPopup(context,
+        {Text(L"Make relative", L"转为相对路径"), Text(L"Make absolute", L"转为绝对路径")},
+        {bounds.right, bounds.bottom}, TPM_RIGHTALIGN, GetWindowTextLengthW(input) != 0);
     if (command != 0) {
         ConvertSettingPaths(context, id, command == 2 ? PathConversion::Absolute : PathConversion::Relative);
+    }
+}
+
+int ConfigFileMenuRow(HWND list, POINT& point)
+{
+    if (point.x != -1 || point.y != -1) {
+        LVHITTESTINFO hit{};
+        hit.pt = point;
+        ScreenToClient(list, &hit.pt);
+        return ListView_SubItemHitTest(list, &hit);
+    }
+    int index = ListView_GetNextItem(list, -1, LVNI_FOCUSED);
+    if (index == -1) { index = ListView_GetNextItem(list, -1, LVNI_SELECTED); }
+    if (index == -1) { return -1; }
+
+    ListView_EnsureVisible(list, index, FALSE);
+    RECT row{}, client{};
+    if (!ListView_GetItemRect(list, index, &row, LVIR_LABEL) || !GetClientRect(list, &client)) { return -1; }
+    point = {std::clamp(row.left, client.left, client.right),
+        std::clamp(row.bottom, client.top, client.bottom)};
+    ClientToScreen(list, &point);
+    return index;
+}
+
+void ShowConfigFileMenu(Context& context, HWND list, POINT point)
+{
+    const int index = ConfigFileMenuRow(list, point);
+    if (index < 0 || static_cast<size_t>(index) >= context.configFiles.size()) { return; }
+
+    const auto file = ResolvePath(context.root, context.configFiles[index].path);
+    const UINT command = TrackSettingsPopup(context,
+        {Text(L"Open configuration file", L"打开配置文件"), Text(L"Open containing folder", L"打开所在文件夹")},
+        point, TPM_LEFTALIGN);
+    if (command == 0) { return; }
+    const bool directory = command == 2;
+    const auto error = OpenPathInShell(context.dialog, directory ? file.parent_path() : file, directory);
+    if (!error.empty()) {
+        context.logs.Tray(error);
+        MessageBoxW(context.dialog, error.c_str(), Text(L"Open configuration", L"打开配置"), MB_OK | MB_ICONERROR);
     }
 }
 
@@ -892,6 +937,13 @@ INT_PTR CALLBACK SettingsContentsProcedure(HWND window, UINT message, WPARAM wPa
         if (message == WM_NOTIFY && lParam != 0) {
             const auto& notification = *reinterpret_cast<const NMHDR*>(lParam);
             const auto id = static_cast<int>(notification.idFrom);
+            if (id == IDC_CONFIG_FILES && notification.code == NM_RCLICK) {
+                auto point = reinterpret_cast<const NMITEMACTIVATE*>(lParam)->ptAction;
+                ClientToScreen(notification.hwndFrom, &point);
+                ShowConfigFileMenu(*context, notification.hwndFrom, point);
+                SetWindowLongPtrW(window, DWLP_MSGRESULT, TRUE);
+                return TRUE;
+            }
             if (id == IDC_CONFIG_FILES && notification.code == NM_CUSTOMDRAW) {
                 const auto& draw = *reinterpret_cast<const NMLVCUSTOMDRAW*>(lParam);
                 if (draw.nmcd.dwDrawStage == CDDS_POSTPAINT && !context->refreshingConfigFiles) {
@@ -934,6 +986,13 @@ INT_PTR CALLBACK SettingsContentsProcedure(HWND window, UINT message, WPARAM wPa
                 ShowPathConversions(*context, id);
                 return TRUE;
             }
+        }
+        if (message == WM_CONTEXTMENU && reinterpret_cast<HWND>(wParam) == GetDlgItem(window, IDC_CONFIG_FILES)) {
+            const POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            if (point.x == -1 && point.y == -1) {
+                ShowConfigFileMenu(*context, reinterpret_cast<HWND>(wParam), point);
+            }
+            return TRUE;
         }
         if (message == WM_COMMAND) {
             SendMessageW(GetParent(window), message, wParam, lParam);
@@ -1589,6 +1648,21 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                 SendMessageW(convert, BM_CLICK, 0, 0);
                 if (context.configFiles[0].path != files[0] || context.configFiles[1].path != longAbsolute) { return false; }
                 SendMessageW(remove, BM_CLICK, 0, 0);
+                RECT second{}, third{}, client{};
+                if (!ListView_GetItemRect(list, 1, &second, LVIR_LABEL) ||
+                    !ListView_GetItemRect(list, 2, &third, LVIR_BOUNDS) || !GetClientRect(list, &client)) {
+                    return false;
+                }
+                POINT mouse{client.right - UiScale(list, 12), (second.top + second.bottom) / 2};
+                POINT blank{second.left + UiScale(list, 4), third.bottom + 1};
+                POINT keyboard{-1, -1};
+                ClientToScreen(list, &mouse);
+                ClientToScreen(list, &blank);
+                if (ConfigFileMenuRow(list, mouse) != 1 || ConfigFileMenuRow(list, blank) != -1 ||
+                    ConfigFileMenuRow(list, keyboard) != 0 || SelectedConfigFiles(list) != std::vector<int>{0}) {
+                    std::fwprintf(stderr, L"Smoke: config file context menu targeting failed.\n");
+                    return false;
+                }
                 std::array<wchar_t, 64> first{};
                 ListView_GetItemText(list, 0, 0, first.data(), static_cast<int>(first.size()));
                 const auto draft = ConfigDraft(context);
