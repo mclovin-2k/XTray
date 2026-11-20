@@ -298,6 +298,46 @@ void UpdateConfigFileExtent(Context& context)
     SizeConfigFileColumn(context);
 }
 
+void DrawConfigFileSelection(HWND list, HDC device, const ThemePalette& colors)
+{
+    RECT client{};
+    GetClientRect(list, &client);
+    const int saved = SaveDC(device);
+    if (saved == 0) { return; }
+    SetDCBrushColor(device, colors.selection);
+    SetTextColor(device, colors.selectionText);
+    SetBkMode(device, TRANSPARENT);
+    if (const auto font = reinterpret_cast<HFONT>(SendMessageW(list, WM_GETFONT, 0, 0))) {
+        SelectObject(device, font);
+    }
+    const HBRUSH brush = static_cast<HBRUSH>(GetStockObject(DC_BRUSH));
+    const bool showFocus = GetFocus() == list && (SendMessageW(list, WM_QUERYUISTATE, 0, 0) & UISF_HIDEFOCUS) == 0;
+    const int top = (std::max)(0, ListView_GetTopIndex(list));
+    for (int index = ListView_GetNextItem(list, top - 1, LVNI_SELECTED); index != -1;
+        index = ListView_GetNextItem(list, index, LVNI_SELECTED)) {
+        RECT row{}, label{};
+        if (!ListView_GetItemRect(list, index, &row, LVIR_BOUNDS) ||
+            !ListView_GetItemRect(list, index, &label, LVIR_LABEL)) { continue; }
+        if (row.top >= client.bottom) { break; }
+        // Keep the checkbox column native. Windows has already drawn the state image.
+        row.left = label.left;
+        RECT visible{};
+        if (!IntersectRect(&visible, &row, &client)) { continue; }
+        FillRect(device, &visible, brush);
+        std::array<wchar_t, 261> caption{};
+        ListView_GetItemText(list, index, 0, caption.data(), static_cast<int>(caption.size()));
+        RECT text = row;
+        text.left += UiScale(list, 2);
+        text.right -= UiScale(list, 2);
+        DrawTextW(device, caption.data(), -1, &text,
+            DT_LEFT | DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        if (showFocus && (ListView_GetItemState(list, index, LVIS_FOCUSED) & LVIS_FOCUSED) != 0) {
+            DrawFocusRect(device, &row);
+        }
+    }
+    RestoreDC(device, saved);
+}
+
 void RefreshConfigFiles(Context& context, const std::vector<int>& selected = {}, int reveal = -1)
 {
     const HWND list = GetDlgItem(context.contents, IDC_CONFIG_FILES);
@@ -852,6 +892,15 @@ INT_PTR CALLBACK SettingsContentsProcedure(HWND window, UINT message, WPARAM wPa
         if (message == WM_NOTIFY && lParam != 0) {
             const auto& notification = *reinterpret_cast<const NMHDR*>(lParam);
             const auto id = static_cast<int>(notification.idFrom);
+            if (id == IDC_CONFIG_FILES && notification.code == NM_CUSTOMDRAW) {
+                const auto& draw = *reinterpret_cast<const NMLVCUSTOMDRAW*>(lParam);
+                if (draw.nmcd.dwDrawStage == CDDS_POSTPAINT && !context->refreshingConfigFiles) {
+                    DrawConfigFileSelection(notification.hwndFrom, draw.nmcd.hdc, context->contentTheme.Colors());
+                }
+                SetWindowLongPtrW(window, DWLP_MSGRESULT,
+                    draw.nmcd.dwDrawStage == CDDS_PREPAINT ? CDRF_NOTIFYPOSTPAINT : CDRF_DODEFAULT);
+                return TRUE;
+            }
             if (id == IDC_CONFIG_FILES && notification.code == LVN_ITEMCHANGED &&
                 !context->refreshingConfigFiles) {
                 const auto& item = *reinterpret_cast<const NMLISTVIEW*>(lParam);
@@ -1335,6 +1384,62 @@ bool EditSettings(HWND owner, const std::filesystem::path& root, Settings& setti
     return result == IDOK;
 }
 
+static bool SmokeTestConfigFileSelection(HWND list, HWND pathInput, const ThemePalette& colors)
+{
+    const int index = ListView_GetNextItem(list, -1, LVNI_SELECTED);
+    RECT client{}, row{}, label{};
+    if (index == -1 || !GetClientRect(list, &client) ||
+        !ListView_GetItemRect(list, index, &row, LVIR_BOUNDS) ||
+        !ListView_GetItemRect(list, index, &label, LVIR_LABEL)) {
+        return false;
+    }
+    struct Canvas {
+        HDC device = CreateCompatibleDC(nullptr);
+        HBITMAP bitmap = nullptr;
+        HGDIOBJ previous = nullptr;
+        ~Canvas() {
+            if (previous != nullptr && previous != HGDI_ERROR) { SelectObject(device, previous); }
+            if (bitmap != nullptr) { DeleteObject(bitmap); }
+            if (device != nullptr) { DeleteDC(device); }
+        }
+    } canvas;
+    HDC screen = GetDC(list);
+    if (screen == nullptr || canvas.device == nullptr) {
+        if (screen != nullptr) { ReleaseDC(list, screen); }
+        return false;
+    }
+    canvas.bitmap = CreateCompatibleBitmap(screen, client.right, client.bottom);
+    ReleaseDC(list, screen);
+    if (canvas.bitmap == nullptr) { return false; }
+    canvas.previous = SelectObject(canvas.device, canvas.bitmap);
+    if (canvas.previous == nullptr || canvas.previous == HGDI_ERROR) { return false; }
+
+    const int x = (std::min)(row.right, client.right) - UiScale(list, 10);
+    const int y = (row.top + row.bottom) / 2;
+    for (const HWND focus : {list, pathInput}) {
+        SetFocus(focus);
+        PatBlt(canvas.device, 0, 0, client.right, client.bottom, BLACKNESS);
+        SendMessageW(list, WM_PRINTCLIENT, reinterpret_cast<WPARAM>(canvas.device), PRF_CLIENT | PRF_ERASEBKGND);
+        const COLORREF background = GetPixel(canvas.device, x, y);
+        bool readable = false;
+        const int right = (std::min)(static_cast<int>(label.left) + UiScale(list, 100), x);
+        for (int textY = row.top + 2; textY < row.bottom - 2 && !readable; ++textY) {
+            for (int textX = label.left + 2; textX < right; ++textX) {
+                if (GetPixel(canvas.device, textX, textY) == colors.selectionText) {
+                    readable = true;
+                    break;
+                }
+            }
+        }
+        if (GetFocus() != focus || background != colors.selection || !readable) {
+            std::fwprintf(stderr, L"Smoke: config file selection color failed (dark=%d, focused=%d, background=%lx, text=%d).\n",
+                colors.dark, focus == list, background, readable);
+            return false;
+        }
+    }
+    return true;
+}
+
 bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
 {
     std::fwprintf(stderr, L"Smoke: settings scroll viewport, fixed footer, and text-sized buttons.\n");
@@ -1650,6 +1755,8 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
             for (const bool dark : {false, true}) {
                 context.theme.Apply(dark, true);
                 passed = checkAlignment() && passed;
+                passed = SmokeTestConfigFileSelection(list, SettingsControl(window, IDC_EXECUTABLE),
+                    context.contentTheme.Colors()) && passed;
                 passed = checkDropdowns() && passed;
             }
             context.theme.Apply(initialDark, true);
