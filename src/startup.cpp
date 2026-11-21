@@ -85,33 +85,46 @@ public:
     bool Write(const std::wstring& name, const std::optional<std::wstring>& command,
         std::wstring& error) override
     {
+        if (command && (command->size() > kMaximumCommand ||
+            command->find(L'\0') != std::wstring::npos)) {
+            error = Text(L"The login startup command exceeds the Windows Run limit.",
+                L"登录自启命令超过 Windows Run 项长度限制。");
+            return false;
+        }
+
         RegistryKey key;
-        LSTATUS code = ERROR_SUCCESS;
-        if (command) {
-            if (command->size() > kMaximumCommand ||
-                command->find(L'\0') != std::wstring::npos) {
-                error = Text(L"The login startup command exceeds the Windows Run limit.",
-                    L"登录自启命令超过 Windows Run 项长度限制。");
-                return false;
-            }
+        auto code = RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_SET_VALUE, &key.value);
+        if (code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND) {
+            if (!command) { return true; }
             code = RegCreateKeyExW(HKEY_CURRENT_USER, kRunKey, 0, nullptr, 0,
                 KEY_SET_VALUE, nullptr, &key.value, nullptr);
-        } else {
-            code = RegOpenKeyExW(HKEY_CURRENT_USER, kRunKey, 0, KEY_SET_VALUE, &key.value);
-            if (code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND) {
-                return true;
+            if (code != ERROR_SUCCESS) {
+                error = WindowsError(Text(L"Cannot create the current user's login startup key",
+                    L"无法创建当前用户的登录自启注册表项"), code);
+                return false;
             }
-        }
-        if (code == ERROR_SUCCESS) {
-            code = command
-                ? RegSetValueExW(key.value, name.c_str(), 0, REG_SZ,
-                    reinterpret_cast<const BYTE*>(command->c_str()),
-                    static_cast<DWORD>((command->size() + 1) * sizeof(wchar_t)))
-                : RegDeleteValueW(key.value, name.c_str());
-        }
-        if (code != ERROR_SUCCESS && !(code == ERROR_FILE_NOT_FOUND && !command)) {
-            error = WindowsError(Text(L"Cannot update the login startup entry", L"无法更新登录自启记录"), code);
+        } else if (code != ERROR_SUCCESS) {
+            error = WindowsError(Text(L"Cannot open the current user's login startup key for writing",
+                L"无法以写入权限打开当前用户的登录自启注册表项"), code);
             return false;
+        }
+
+        if (command) {
+            code = RegSetValueExW(key.value, name.c_str(), 0, REG_SZ,
+                reinterpret_cast<const BYTE*>(command->c_str()),
+                static_cast<DWORD>((command->size() + 1) * sizeof(wchar_t)));
+            if (code != ERROR_SUCCESS) {
+                error = WindowsError(Text(L"Cannot write this XTray instance's login startup entry",
+                    L"无法写入本 XTray 实例的登录自启记录"), code);
+                return false;
+            }
+        } else {
+            code = RegDeleteValueW(key.value, name.c_str());
+            if (code != ERROR_SUCCESS && code != ERROR_FILE_NOT_FOUND) {
+                error = WindowsError(Text(L"Cannot remove this XTray instance's login startup entry",
+                    L"无法删除本 XTray 实例的登录自启记录"), code);
+                return false;
+            }
         }
         return true;
     }
