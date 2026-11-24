@@ -3,10 +3,13 @@
 #include "win32.h"
 #include "theme_window.h"
 #include "ui_layout.h"
+#include "appearance_font.h"
 #include "xray_config.h"
 #include "xray_tool_window.h"
 
 #include <commctrl.h>
+#include <commdlg.h>
+#include <dlgs.h>
 #include <oleacc.h>
 #include <shobjidl.h>
 #include <uxtheme.h>
@@ -56,7 +59,8 @@ struct Context {
     ThemeWindow contentTheme;
     HWND contents = nullptr;
     HWND tooltip = nullptr;
-    HFONT pathFont = nullptr;
+    HFONT font = nullptr, pathFont = nullptr;
+    FontPreferences fonts;
     std::vector<ConfigFileRow> configFiles;
     bool refreshingConfigFiles = false;
     int configFileColumnWidth = 0;
@@ -79,6 +83,7 @@ Context::~Context()
     if (messageFilter != nullptr) { UnhookWindowsHookEx(messageFilter); }
     if (activeSettings == this) { activeSettings = nullptr; }
     if (pathFont != nullptr) { DeleteObject(pathFont); }
+    if (font != nullptr) { DeleteObject(font); }
     for (const auto icon : icons) { if (icon != nullptr) { DestroyIcon(icon); } }
 }
 
@@ -104,6 +109,7 @@ LRESULT CALLBACK SettingsMessageFilter(int code, WPARAM wParam, LPARAM lParam)
 Settings ConfigDraft(const Context& context)
 {
     Settings draft = context.settings;
+    draft.fonts = context.fonts;
     const HWND body = context.contents;
     draft.executable = WindowText(GetDlgItem(body, IDC_EXECUTABLE));
     draft.configDirectory = WindowText(GetDlgItem(body, IDC_CONFIG_DIRECTORY));
@@ -666,23 +672,77 @@ void CreateSettingsTooltip(Context& context)
     SendMessageW(context.tooltip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 15000);
 }
 
-void SetSettingsPathFont(Context& context)
+void SetSettingsFonts(Context& context)
 {
-    LOGFONTW description{};
-    const auto bodyFont = reinterpret_cast<HFONT>(SendMessageW(context.contents, WM_GETFONT, 0, 0));
-    if (GetObjectW(bodyFont, sizeof(description), &description) == 0) {
-        throw std::runtime_error(Text("Cannot read the settings font.", "无法读取设置窗口字体。"));
-    }
-    description.lfHeight = -MulDiv(11, static_cast<int>(GetDpiForWindow(context.contents)), 72);
+    const UINT dpi = GetDpiForWindow(context.contents);
+    const auto description = AppearanceFont(dpi, context.settings.fonts.interfaceFont);
+    LOGFONTW pathDescription = description;
+    pathDescription.lfHeight -= MulDiv(2, static_cast<int>(dpi), 72);
     const HFONT font = CreateFontIndirectW(&description);
-    if (font == nullptr) {
-        throw std::runtime_error(Text("Cannot create the settings path font.", "无法创建设置路径字体。"));
+    const HFONT pathFont = CreateFontIndirectW(&pathDescription);
+    if (font == nullptr || pathFont == nullptr) {
+        if (font != nullptr) { DeleteObject(font); }
+        if (pathFont != nullptr) { DeleteObject(pathFont); }
+        throw std::runtime_error(Text("Cannot create settings window fonts.", "无法创建设置窗口字体。"));
+    }
+    for (const HWND parent : {context.dialog, context.contents}) {
+        SendMessageW(parent, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        for (HWND child = GetWindow(parent, GW_CHILD); child != nullptr; child = GetWindow(child, GW_HWNDNEXT)) {
+            SendMessageW(child, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        }
     }
     for (const int id : {IDC_EXECUTABLE, IDC_CONFIG_FILES, IDC_CONFIG_DIRECTORY}) {
-        SendMessageW(GetDlgItem(context.contents, id), WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+        SendMessageW(GetDlgItem(context.contents, id), WM_SETFONT, reinterpret_cast<WPARAM>(pathFont), TRUE);
     }
+    SendMessageW(context.tooltip, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+    if (context.font != nullptr) { DeleteObject(context.font); }
     if (context.pathFont != nullptr) { DeleteObject(context.pathFont); }
-    context.pathFont = font;
+    context.font = font;
+    context.pathFont = pathFont;
+}
+
+void UpdateFontLabels(const Context& context)
+{
+    for (const bool interfaceFont : {true, false}) {
+        const auto& font = interfaceFont ? context.fonts.interfaceFont : context.fonts.logFont;
+        std::wstring label = interfaceFont ? Text(L"Interface font: ", L"界面字体：") : Text(L"Log font: ", L"日志字体：");
+        if (font.face.empty()) {
+            label += Text(L"Follow system", L"跟随系统");
+        } else {
+            label += font.face + L" " + std::to_wstring(font.sizeInTenths / 10);
+            if (font.sizeInTenths % 10 != 0) {
+                label += L"." + std::to_wstring(font.sizeInTenths % 10);
+            }
+            label += L" pt";
+        }
+        SetWindowTextW(GetDlgItem(context.contents, interfaceFont ? IDC_INTERFACE_FONT_LABEL : IDC_LOG_FONT_LABEL),
+            label.c_str());
+    }
+}
+
+UINT_PTR CALLBACK FontPickerHook(HWND dialog, UINT message, WPARAM, LPARAM)
+{
+    if (message == WM_INITDIALOG) { EnableWindow(GetDlgItem(dialog, cmb2), FALSE); }
+    return 0;
+}
+
+void ChooseSettingsFont(HWND dialog, FontPreference& preference, int maxPoints)
+{
+    auto font = AppearanceFont(GetDpiForWindow(dialog), preference);
+    CHOOSEFONTW picker{sizeof(CHOOSEFONTW)};
+    picker.hwndOwner = dialog;
+    picker.lpLogFont = &font;
+    picker.Flags = CF_INITTOLOGFONTSTRUCT | CF_FORCEFONTEXIST | CF_SCALABLEONLY |
+        CF_LIMITSIZE | CF_NOSCRIPTSEL | CF_ENABLEHOOK;
+    picker.lpfnHook = FontPickerHook;
+    picker.nSizeMin = kMinFontPoints;
+    picker.nSizeMax = maxPoints;
+    if (ChooseFontW(&picker)) {
+        preference = {font.lfFaceName, picker.iPointSize};
+    } else if (CommDlgExtendedError() != 0) {
+        MessageBoxW(dialog, Text(L"Cannot open the Windows font picker.", L"无法打开 Windows 字体选择窗口。"),
+            L"XTray", MB_OK | MB_ICONERROR);
+    }
 }
 
 void LayoutSettingsContent(Context& context)
@@ -756,6 +816,25 @@ void LayoutSettingsContent(Context& context)
             if (stacked && index + 1 != groups.size()) { y += rowHeight + gap; }
         }
         y += rowHeight + sectionGap;
+        for (const bool interfaceFont : {true, false}) {
+            const int fontLabel = interfaceFont ? IDC_INTERFACE_FONT_LABEL : IDC_LOG_FONT_LABEL;
+            const int choose = interfaceFont ? IDC_INTERFACE_FONT_CHOOSE : IDC_LOG_FONT_CHOOSE;
+            const int reset = interfaceFont ? IDC_INTERFACE_FONT_RESET : IDC_LOG_FONT_RESET;
+            const int resetWidth = TextButtonWidth(GetDlgItem(body, reset));
+            const int chooseWidth = TextButtonWidth(GetDlgItem(body, choose));
+            const int resetX = margin + available - resetWidth;
+            const int chooseX = resetX - gap - chooseWidth;
+            const int height = ControlTextSize(GetDlgItem(body, fontLabel)).cy;
+            if (chooseX - margin - gap < UiScale(body, 96)) {
+                place(fontLabel, margin, y, available, height);
+                y += height + gap;
+            } else {
+                place(fontLabel, margin, y + (rowHeight - height) / 2, chooseX - margin - gap, height);
+            }
+            place(choose, chooseX, y, chooseWidth, rowHeight);
+            place(reset, resetX, y, resetWidth, rowHeight);
+            y += rowHeight + (interfaceFont ? gap : sectionGap);
+        }
         label(IDC_LABEL_EXECUTABLE);
         pathRow(IDC_EXECUTABLE, IDC_EXECUTABLE_FRAME, IDC_BROWSE_EXECUTABLE);
         label(IDC_LABEL_CONFIG_FILES);
@@ -1151,6 +1230,12 @@ void SetDialogLanguage(HWND dialog)
     set(IDC_LABEL_LOG_LINES, Text(L"Log lines per source:", L"每类日志保留行数："));
     set(IDC_LABEL_LANGUAGE, Text(L"Language:", L"语言："));
     set(IDC_LABEL_THEME, Text(L"Appearance:", L"外观："));
+    for (const int id : {IDC_INTERFACE_FONT_CHOOSE, IDC_LOG_FONT_CHOOSE}) {
+        set(id, Text(L"Choose…", L"选择…"));
+    }
+    for (const int id : {IDC_INTERFACE_FONT_RESET, IDC_LOG_FONT_RESET}) {
+        set(id, Text(L"Restore default", L"恢复默认"));
+    }
     set(IDC_LOGON_STARTUP, Text(L"Start XTray and Xray when I sign in", L"登录后自动启动 XTray 和 Xray"));
     set(IDC_BROWSE_EXECUTABLE, Text(L"Browse...", L"浏览…"));
     set(IDC_ADD_FILES, Text(L"Add files...", L"添加文件…"));
@@ -1200,8 +1285,10 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         }
         SetWindowPos(context->contents, HWND_TOP, 0, 0, 0, 0,
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        context->fonts = context->settings.fonts;
         SetDialogLanguage(dialog);
-        SetSettingsPathFont(*context);
+        UpdateFontLabels(*context);
+        SetSettingsFonts(*context);
         SendMessageW(SettingsControl(dialog, IDC_LANGUAGE), CB_SETCURSEL,
             static_cast<WPARAM>(context->settings.language), 0);
         SendMessageW(SettingsControl(dialog, IDC_THEME), CB_SETCURSEL,
@@ -1229,6 +1316,7 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         context->theme.Apply(owner != nullptr && owner->Colors().dark, true);
         SizeConfigFileChecks(SettingsControl(dialog, IDC_CONFIG_FILES));
         CreateSettingsTooltip(*context);
+        SendMessageW(context->tooltip, WM_SETFONT, reinterpret_cast<WPARAM>(context->font), TRUE);
         FitSettingsWindow(dialog, *context);
         LayoutSettings(dialog, *context);
         SetFocus(SettingsControl(dialog, IDC_LANGUAGE));
@@ -1276,7 +1364,7 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
     }
     if (message == kRefreshDialogTheme) {
         SetDialogIcons(dialog, *context);
-        SetSettingsPathFont(*context);
+        SetSettingsFonts(*context);
         context->theme.Apply(context->theme.Colors().dark, true);
         SizeConfigFileChecks(SettingsControl(dialog, IDC_CONFIG_FILES));
         UpdateConfigFileExtent(*context);
@@ -1304,6 +1392,24 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
         return FALSE;
     }
     switch (LOWORD(wParam)) {
+    case IDC_INTERFACE_FONT_CHOOSE:
+    case IDC_LOG_FONT_CHOOSE:
+        if (HIWORD(wParam) == BN_CLICKED) {
+            const bool interfaceFont = LOWORD(wParam) == IDC_INTERFACE_FONT_CHOOSE;
+            ChooseSettingsFont(dialog, interfaceFont ? context->fonts.interfaceFont : context->fonts.logFont,
+                interfaceFont ? kMaxInterfaceFontPoints : kMaxLogFontPoints);
+            UpdateFontLabels(*context);
+        }
+        return TRUE;
+    case IDC_INTERFACE_FONT_RESET:
+    case IDC_LOG_FONT_RESET:
+        if (HIWORD(wParam) == BN_CLICKED) {
+            auto& font = LOWORD(wParam) == IDC_INTERFACE_FONT_RESET
+                ? context->fonts.interfaceFont : context->fonts.logFont;
+            font = {};
+            UpdateFontLabels(*context);
+        }
+        return TRUE;
     case IDC_EXECUTABLE_FRAME:
     case IDC_CONFIG_DIRECTORY_FRAME:
         if (HIWORD(wParam) == STN_CLICKED) {
@@ -1565,7 +1671,11 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
             passed = passed && GetFocus() == languageChoice &&
                 GetNextDlgTabItem(window, languageChoice, FALSE) == themeChoice &&
                 GetNextDlgTabItem(window, themeChoice, FALSE) == SettingsControl(window, IDC_LOG_LINES) &&
-                GetNextDlgTabItem(window, SettingsControl(window, IDC_LOG_LINES), FALSE) == SettingsControl(window, IDC_EXECUTABLE) &&
+                GetNextDlgTabItem(window, SettingsControl(window, IDC_LOG_LINES), FALSE) == SettingsControl(window, IDC_INTERFACE_FONT_CHOOSE) &&
+                GetNextDlgTabItem(window, SettingsControl(window, IDC_INTERFACE_FONT_CHOOSE), FALSE) == SettingsControl(window, IDC_INTERFACE_FONT_RESET) &&
+                GetNextDlgTabItem(window, SettingsControl(window, IDC_INTERFACE_FONT_RESET), FALSE) == SettingsControl(window, IDC_LOG_FONT_CHOOSE) &&
+                GetNextDlgTabItem(window, SettingsControl(window, IDC_LOG_FONT_CHOOSE), FALSE) == SettingsControl(window, IDC_LOG_FONT_RESET) &&
+                GetNextDlgTabItem(window, SettingsControl(window, IDC_LOG_FONT_RESET), FALSE) == SettingsControl(window, IDC_EXECUTABLE) &&
                 GetNextDlgTabItem(window, SettingsControl(window, IDC_BROWSE_DIRECTORY), FALSE) == SettingsControl(window, IDC_CONFIG_DIRECTORY_FIRST) &&
                 GetNextDlgTabItem(window, SettingsControl(window, IDC_CONFIG_DIRECTORY_FIRST), FALSE) == SettingsControl(window, IDC_CHECK_CONFIG) &&
                 SettingsButtonState(window, IDC_CONFIG_DIRECTORY_FIRST) == BST_UNCHECKED;

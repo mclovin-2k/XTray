@@ -24,6 +24,7 @@ public:
     void CloseOwned(HWND owner);
     void RefreshLanguage();
     void SetAppearance(bool dark);
+    void SetFontPreferences(const FontPreferences& fonts);
     bool Translate(MSG& message) const;
     static bool TranslateAny(MSG& message);
     HWND Window() const { return window_; }
@@ -50,6 +51,7 @@ private:
     std::optional<XrayToolResult> result_;
     std::wstring document_;
     ThemeWindow theme_;
+    FontPreferences fonts_;
     HWND window_ = nullptr, owner_ = nullptr;
     HWND status_ = nullptr, note_ = nullptr, output_ = nullptr, copy_ = nullptr, close_ = nullptr;
     HWND wordWrapButton_ = nullptr, tooltip_ = nullptr;

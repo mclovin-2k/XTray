@@ -11,6 +11,21 @@
 
 namespace xtray {
 
+inline constexpr int kMinFontPoints = 6;
+inline constexpr int kMaxInterfaceFontPoints = 18;
+inline constexpr int kMaxLogFontPoints = 48;
+
+struct FontPreference {
+    std::wstring face;
+    int sizeInTenths = 0;
+    bool operator==(const FontPreference&) const = default;
+};
+
+struct FontPreferences {
+    FontPreference interfaceFont, logFont;
+    bool operator==(const FontPreferences&) const = default;
+};
+
 struct Settings {
     std::wstring executable = L".\\bin\\xray.exe";
     std::vector<std::wstring> configFiles;
@@ -20,6 +35,7 @@ struct Settings {
     Language language = Language::Automatic;
     ThemeMode theme = ThemeMode::System;
     bool logWordWrap = true;
+    FontPreferences fonts;
     std::set<size_t> disabledConfigFiles;
 
     auto EnabledConfigFiles() const

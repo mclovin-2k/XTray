@@ -21,6 +21,35 @@ inline bool TextViewAtEnd(HWND window)
         scroll.nPos + static_cast<int>(scroll.nPage) >= scroll.nMax - 1;
 }
 
+inline void SetTextViewFont(HWND window, HFONT font, UINT dpi)
+{
+    CHARRANGE selection{};
+    POINT scroll{}, before{};
+    SendMessageW(window, EM_EXGETSEL, 0, reinterpret_cast<LPARAM>(&selection));
+    SendMessageW(window, EM_GETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&scroll));
+    const auto line = SendMessageW(window, EM_GETFIRSTVISIBLELINE, 0, 0);
+    const LONG character = (std::max)(0L, static_cast<LONG>(SendMessageW(window, EM_LINEINDEX, line, 0)));
+    SendMessageW(window, EM_POSFROMCHAR, reinterpret_cast<WPARAM>(&before), character);
+
+    LOGFONTW description{};
+    GetObjectW(font, sizeof(description), &description);
+    CHARFORMAT2W format{};
+    format.cbSize = sizeof(format);
+    format.dwMask = CFM_FACE | CFM_SIZE | CFM_CHARSET;
+    format.yHeight = MulDiv(-description.lfHeight, 1440, static_cast<int>(dpi));
+    format.bCharSet = description.lfCharSet;
+    wcscpy_s(format.szFaceName, description.lfFaceName);
+    SendMessageW(window, EM_SETCHARFORMAT, SCF_DEFAULT, reinterpret_cast<LPARAM>(&format));
+    SendMessageW(window, EM_SETCHARFORMAT, SCF_ALL, reinterpret_cast<LPARAM>(&format));
+    SendMessageW(window, EM_EXSETSEL, 0, reinterpret_cast<LPARAM>(&selection));
+
+    POINT after{}, current{};
+    SendMessageW(window, EM_POSFROMCHAR, reinterpret_cast<WPARAM>(&after), character);
+    SendMessageW(window, EM_GETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&current));
+    POINT target{scroll.x, (std::max)(0L, current.y + after.y - before.y)};
+    SendMessageW(window, EM_SETSCROLLPOS, 0, reinterpret_cast<LPARAM>(&target));
+}
+
 struct TextViewStream {
     std::vector<BYTE> bytes;
     size_t offset = 0;

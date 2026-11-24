@@ -20,9 +20,15 @@ struct OutboundTraffic {
     TrafficDirection upload, download;
 };
 
+enum class TrafficAvailability {
+    Stopped, Checking, ConfigurationUnavailable, MetricsDisabled, InvalidMetricsAddress,
+    StatisticsDisabled, MetricsUnavailable, NoCounters, Available
+};
+
 struct XrayTrafficSample {
     OutboundTraffic total;
     std::map<std::wstring, OutboundTraffic> outbounds;
+    TrafficAvailability availability = TrafficAvailability::Stopped;
 };
 
 std::wstring FormatTraffic(std::optional<double> value, bool speed);

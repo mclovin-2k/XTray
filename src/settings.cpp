@@ -35,6 +35,13 @@ std::string ReadFileBytes(HANDLE file)
     }
 }
 
+bool IsValidFont(const FontPreference& font, int maxPoints)
+{
+    if (font.face.empty()) { return font.sizeInTenths == 0; }
+    return font.face.size() < LF_FACESIZE && !IsBlank(font.face) && IsPathValue(font.face) &&
+        font.sizeInTenths >= kMinFontPoints * 10 && font.sizeInTenths <= maxPoints * 10;
+}
+
 size_t ParseNumber(const std::wstring& value)
 {
     const auto text = ToUtf8(value);
@@ -157,6 +164,19 @@ SettingsResult LoadSettings(const std::filesystem::path& root)
             }
             settings.logWordWrap = wrap == L"1";
         }
+        const auto readFont = [&](const wchar_t* faceKey, const wchar_t* sizeKey, int maxPoints) {
+            FontPreference font;
+            if (values.contains({L"XTray", faceKey}) || values.contains({L"XTray", sizeKey})) {
+                font.face = take(L"XTray", faceKey);
+                const size_t size = ParseNumber(take(L"XTray", sizeKey));
+                if (size <= static_cast<size_t>(maxPoints * 10)) { font.sizeInTenths = static_cast<int>(size); }
+                if (!font.face.empty() && !IsValidFont(font, maxPoints)) { return FontPreference{}; }
+                if (font.face.empty()) { font.sizeInTenths = 0; }
+            }
+            return font;
+        };
+        settings.fonts.interfaceFont = readFont(L"InterfaceFont", L"InterfaceFontSize", kMaxInterfaceFontPoints);
+        settings.fonts.logFont = readFont(L"LogFont", L"LogFontSize", kMaxLogFontPoints);
         const size_t count = ParseNumber(take(L"XTray", L"ConfigCount"));
         if (count > values.size()) {
             throw std::runtime_error(Text("Incomplete configuration file list.", "配置文件列表不完整。"));
@@ -193,6 +213,11 @@ SettingsResult LoadSettings(const std::filesystem::path& root)
 
 bool SaveSettings(const std::filesystem::path& root, const Settings& settings, std::wstring& error)
 {
+    if (!IsValidFont(settings.fonts.interfaceFont, kMaxInterfaceFontPoints) ||
+        !IsValidFont(settings.fonts.logFont, kMaxLogFontPoints)) {
+        error = Text(L"Choose a valid font and size.", L"请选择有效的字体和字号。");
+        return false;
+    }
     if (IsBlank(settings.executable) || !IsPathValue(settings.executable) ||
         !IsPathValue(settings.configDirectory) || settings.logLines == 0 ||
         settings.logLines > INT_MAX ||
@@ -218,6 +243,11 @@ bool SaveSettings(const std::filesystem::path& root, const Settings& settings, s
 
     std::string bytes;
     try {
+        const auto writeFont = [](const FontPreference& font, const wchar_t* faceKey, const wchar_t* sizeKey) {
+            if (font.face.empty()) { return std::wstring{}; }
+            return std::wstring(L"\r\n") + faceKey + L"=" + font.face +
+                L"\r\n" + sizeKey + L"=" + std::to_wstring(font.sizeInTenths);
+        };
         std::wstring text = L"[XTray]\r\nVersion=1\r\nExecutable=" + settings.executable +
             L"\r\nConfigDirectory=" + settings.configDirectory +
             L"\r\nConfigDirectoryFirst=" + (settings.configDirectoryFirst ? L"1" : L"0") +
@@ -227,6 +257,8 @@ bool SaveSettings(const std::filesystem::path& root, const Settings& settings, s
             L"\r\nTheme=" + (settings.theme == ThemeMode::System ? L"system"
                 : settings.theme == ThemeMode::Light ? L"light" : L"dark") +
             L"\r\nLogWordWrap=" + (settings.logWordWrap ? L"1" : L"0") +
+            writeFont(settings.fonts.interfaceFont, L"InterfaceFont", L"InterfaceFontSize") +
+            writeFont(settings.fonts.logFont, L"LogFont", L"LogFontSize") +
             L"\r\nConfigCount=" + std::to_wstring(settings.configFiles.size()) +
             L"\r\n\r\n[ConfigFiles]\r\n";
         for (size_t index = 0; index < settings.configFiles.size(); ++index) {

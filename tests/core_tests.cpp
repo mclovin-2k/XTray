@@ -752,7 +752,13 @@ void TestSettings(const std::filesystem::path& root)
         std::string preserved(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>{});
         Check(preserved == invalidTheme, "An invalid appearance file was silently modified.");
     }
-    Check(SaveSettings(root, settings, error), "Cannot restore settings after appearance tests.");
+    auto withFonts = settings;
+    withFonts.fonts.interfaceFont = {L"Segoe UI", 115};
+    withFonts.fonts.logFont = {L"Consolas", 180};
+    Check(SaveSettings(root, withFonts, error) && LoadSettings(root).success &&
+        LoadSettings(root).settings.fonts == withFonts.fonts, "Font families and point sizes did not round-trip.");
+    Check(SaveSettings(root, settings, error) && LoadSettings(root).success &&
+        LoadSettings(root).settings.fonts == FontPreferences{}, "Saving system fonts did not clear custom font preferences.");
     auto invalid = settings;
     invalid.theme = static_cast<ThemeMode>(99);
     Check(!SaveSettings(root, invalid, error) && LoadSettings(root).settings.theme == ThemeMode::Dark,

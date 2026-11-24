@@ -14,6 +14,7 @@
 #include "xray_tool_window.h"
 #include "win32.h"
 #include "ui_layout.h"
+#include "appearance_font.h"
 
 #include <commdlg.h>
 #include <objbase.h>
@@ -327,8 +328,6 @@ public:
         wordWrap_ = child(0, L"BUTTON", L"", WS_TABSTOP | BS_ICON | BS_AUTOCHECKBOX | BS_PUSHLIKE, WordWrap);
         speed_ = child(0, L"STATIC", L"", SS_OWNERDRAW | SS_NOTIFY, TrafficSpeed);
         totalTraffic_ = child(0, L"STATIC", L"", SS_OWNERDRAW | SS_NOTIFY, TrafficTotal);
-        ShowWindow(speed_, SW_HIDE);
-        ShowWindow(totalTraffic_, SW_HIDE);
         CreateTooltips();
         CreateTrayTooltip();
         logWindow_ = child(WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
@@ -338,8 +337,6 @@ public:
         if (smokeTest_) {
             std::fwprintf(stderr, L"Smoke: configuring fonts and icons.\n");
         }
-        SetFontsAndIcons();
-        CreateMenus();
         if (!smokeTest_) {
             const auto loaded = LoadSettings(root_);
             settings_ = loaded.settings;
@@ -351,6 +348,8 @@ public:
         if (smokeTest_) {
             settings_.theme = ThemeMode::Light;
         }
+        SetFontsAndIcons();
+        CreateMenus();
         view_->SetWordWrap(settings_.logWordWrap);
         logWindow_ = view_->Window();
         ApplyLanguage(settings_.language);
@@ -383,7 +382,10 @@ public:
         const auto move = [](HWND control, int x, int y, int widthValue, int height) {
             MoveWindow(control, x, y, (std::max)(1, widthValue), height, TRUE);
         };
-        const int actionY = Scale(16), actionHeight = Scale(28), statusX = Scale(48);
+        const int extra = settings_.fonts.interfaceFont.face.empty() ? 0 :
+            (std::max)(0, static_cast<int>(ControlTextSize(status_, L"Ag").cy) - Scale(16));
+        const int actionY = Scale(16), actionHeight = Scale(28) + extra, statusX = Scale(48);
+        const int fieldHeight = Scale(26) + extra;
         int actionX = width - margin;
         for (const auto control : {restart_, stop_, run_}) {
             const int buttonWidth = TextButtonWidth(control);
@@ -401,8 +403,8 @@ public:
                 move(pendingSettings_, hintX, actionY, hintWidth, actionHeight);
                 statusRight = hintX - gap;
             } else {
-                move(pendingSettings_, margin, Scale(48), width - 2 * margin, actionHeight);
-                rowOffset = Scale(24);
+                move(pendingSettings_, margin, Scale(48) + extra, width - 2 * margin, actionHeight);
+                rowOffset = Scale(24) + extra;
             }
         }
         move(status_, statusX, actionY, statusRight - statusX, actionHeight);
@@ -413,26 +415,26 @@ public:
         const int fileWidth = TextButtonWidth(openFile_);
         const int folderX = width - margin - folderWidth;
         const int fileX = folderX - gap - fileWidth;
-        const int fileY = Scale(60) + rowOffset;
-        move(fileLabel_, margin, fileY, labelWidth, Scale(26));
-        move(files_, inputX, fileY + (Scale(26) - ComboBoxHeight(files_)) / 2,
+        const int fileY = Scale(60) + extra + rowOffset;
+        move(fileLabel_, margin, fileY, labelWidth, fieldHeight);
+        move(files_, inputX, fileY + (fieldHeight - ComboBoxHeight(files_)) / 2,
             fileX - gap - inputX, Scale(240));
-        move(openFile_, fileX, fileY, fileWidth, Scale(26));
-        move(openFileDirectory_, folderX, fileY, folderWidth, Scale(26));
+        move(openFile_, fileX, fileY, fileWidth, fieldHeight);
+        move(openFileDirectory_, folderX, fileY, folderWidth, fieldHeight);
         const int directoryWidth = TextButtonWidth(openDirectory_);
         const int directoryX = width - margin - directoryWidth;
-        const int directoryY = Scale(98) + rowOffset;
-        move(directoryLabel_, margin, directoryY, labelWidth, Scale(26));
+        const int directoryY = Scale(98) + 2 * extra + rowOffset;
+        move(directoryLabel_, margin, directoryY, labelWidth, fieldHeight);
         const int directoryHeight = SingleLineControlHeight(directory_);
-        move(directory_, inputX, directoryY + (Scale(26) - directoryHeight) / 2,
+        move(directory_, inputX, directoryY + (fieldHeight - directoryHeight) / 2,
             directoryX - gap - inputX, directoryHeight);
-        move(openDirectory_, directoryX, directoryY, directoryWidth, Scale(26));
-        const int filterY = Scale(134) + rowOffset;
+        move(openDirectory_, directoryX, directoryY, directoryWidth, fieldHeight);
+        const int filterY = Scale(134) + 3 * extra + rowOffset;
         const auto nativeItemHeight = SendMessageW(files_, CB_GETITEMHEIGHT, 0, 0);
         if (SendMessageW(filter_, CB_GETITEMHEIGHT, 0, 0) != nativeItemHeight) {
             SendMessageW(filter_, CB_SETITEMHEIGHT, 0, nativeItemHeight);
         }
-        const int filterHeight = SetClosedComboBoxHeight(filter_, Scale(28));
+        const int filterHeight = SetClosedComboBoxHeight(filter_, Scale(28) + extra);
         move(filterLabel_, margin, filterY, labelWidth, filterHeight);
         int toolX = width - margin - filterHeight * 4 - gap * 3;
         LONG sourceTextWidth = 0;
@@ -467,10 +469,7 @@ public:
             toolX += filterHeight + gap;
         }
         const int logY = filterY + filterHeight + gap;
-        int bottom = static_cast<int>(client.bottom) - margin;
-        if (!trafficSample_.outbounds.empty()) {
-            bottom = LayoutTrafficFooter(width - margin, bottom) - gap;
-        }
+        const int bottom = LayoutTrafficFooter(width - margin, static_cast<int>(client.bottom) - margin) - gap;
         move(logWindow_, margin, logY, width - margin * 2, (std::max)(1, bottom - logY));
     }
 
@@ -570,8 +569,10 @@ public:
                 MessageBoxW(window_, error.c_str(), Text(L"Xray tool", L"Xray 工具"), MB_OK | MB_ICONERROR);
             }
         } else if (id == SettingsButton) {
+            const auto previousFonts = settings_.fonts;
             if (EditSettings(window_, root_, settings_, logs_, startup_, &toolWindow_)) {
                 settingsValid_ = true;
+                if (settings_.fonts != previousFonts) { SetFontsAndIcons(); }
                 ApplyUiText();
                 UpdateTheme(themeMonitor_->SystemDark());
                 UpdatePaths();
@@ -1338,28 +1339,51 @@ private:
         if (saved != 0) { RestoreDC(item.hDC, saved); }
     }
 
+    const wchar_t* TrafficUnavailableReason() const
+    {
+        switch (trafficSample_.availability) {
+        case TrafficAvailability::Stopped:
+            return Text(L"Xray is not running.", L"Xray 尚未运行。");
+        case TrafficAvailability::Checking:
+            return Text(L"Checking Xray Metrics settings…", L"正在检查 Xray Metrics 配置…");
+        case TrafficAvailability::ConfigurationUnavailable:
+            return Text(L"XTray could not read the merged Xray configuration.", L"无法读取 Xray 的合并配置。");
+        case TrafficAvailability::MetricsDisabled:
+            return Text(L"Enable metrics.listen in the Xray configuration.", L"Xray 配置中未设置 metrics.listen。");
+        case TrafficAvailability::InvalidMetricsAddress:
+            return Text(L"Xray metrics.listen does not contain a valid listening address.", L"Xray 的 metrics.listen 监听地址无效。");
+        case TrafficAvailability::StatisticsDisabled:
+            return Text(L"Outbound traffic statistics are disabled in Xray.", L"Xray 配置中未开启出站流量统计。");
+        case TrafficAvailability::MetricsUnavailable:
+            return Text(L"XTray cannot read the Xray Metrics endpoint. Retrying…", L"无法读取 Xray Metrics 接口，正在重试…");
+        case TrafficAvailability::NoCounters:
+            return Text(L"Xray Metrics has not returned any outbound counters.", L"Xray Metrics 未返回出站流量计数。");
+        default:
+            return L"";
+        }
+    }
+
     void UpdateTrafficDisplay()
     {
-        const bool visible = !trafficSample_.outbounds.empty();
-        const bool wasVisible = (GetWindowLongPtrW(speed_, GWL_STYLE) & WS_VISIBLE) != 0;
-        if (visible != wasVisible) {
-            Layout();
-        } else if (visible && !IsIconic(window_)) {
+        if (!IsIconic(window_)) {
             RECT client{};
             GetClientRect(window_, &client);
             LayoutTrafficFooter(client.right - Scale(16), client.bottom - Scale(16));
         }
         for (const bool speed : {true, false}) {
             const HWND control = speed ? speed_ : totalTraffic_;
-            std::wstring details;
-            std::wstring caption;
-            if (visible) {
-                caption = std::wstring(TrafficCaption(speed)) + L" " + TrafficText(trafficSample_.total, speed);
-                for (const auto& [tag, traffic] : trafficSample_.outbounds) {
-                    if (!details.empty()) { details += L'\n'; }
-                    details += tag + L"   " + TrafficText(traffic, speed);
-                }
+            std::wstring details = TrafficUnavailableReason();
+            const auto& totals = trafficSample_.total;
+            if (speed && !trafficSample_.outbounds.empty() &&
+                ((totals.upload.bytes && !totals.upload.bytesPerSecond) ||
+                    (totals.download.bytes && !totals.download.bytesPerSecond))) {
+                details = Text(L"Waiting for the next traffic sample.", L"正在等待下一次流量采样。");
             }
+            for (const auto& [tag, traffic] : trafficSample_.outbounds) {
+                if (!details.empty()) { details += L'\n'; }
+                details += tag + L"   " + TrafficText(traffic, speed);
+            }
+            const auto caption = std::wstring(TrafficCaption(speed)) + L" " + TrafficText(totals, speed);
             if (caption != WindowText(control)) { SetWindowTextW(control, caption.c_str()); }
             auto& stored = speed ? speedTooltip_ : totalTrafficTooltip_;
             if (stored != details) {
@@ -1371,7 +1395,6 @@ private:
                 tool.lpszText = stored.data();
                 SendMessageW(tooltip_, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tool));
             }
-            if (wasVisible != visible) { ShowWindow(control, visible ? SW_SHOWNA : SW_HIDE); }
         }
         InvalidateRect(speed_, nullptr, FALSE);
         InvalidateRect(totalTraffic_, nullptr, FALSE);
@@ -1383,9 +1406,11 @@ private:
         bool changed = false;
         if (trafficPid_ != pid) {
             trafficPid_ = pid;
-            traffic_.SetLaunch(process_.LaunchConfiguration(pid));
-            changed = !trafficSample_.outbounds.empty();
-            trafficSample_ = {};
+            auto launch = process_.LaunchConfiguration(pid);
+            trafficSample_ = {{}, {}, pid == 0 ? TrafficAvailability::Stopped :
+                launch ? TrafficAvailability::Checking : TrafficAvailability::ConfigurationUnavailable};
+            traffic_.SetLaunch(std::move(launch));
+            changed = true;
         }
         if (auto sample = traffic_.TakeSample()) {
             trafficSample_ = std::move(*sample);
@@ -1774,7 +1799,7 @@ private:
         toolWindow_.RefreshLanguage();
         runInfoWindow_.RefreshLanguage();
         restartFailureWindow_.RefreshLanguage();
-        if (!trafficSample_.outbounds.empty()) { UpdateTrafficDisplay(); }
+        UpdateTrafficDisplay();
         shownPid_ = MAXDWORD;
         updatingUi_ = false;
         Layout();
@@ -1789,9 +1814,9 @@ private:
             FormatTraffic(1536, true) == L"1.5 KiB/s" &&
             FormatTraffic(512, false) == L"512 B" &&
             FormatTraffic(1280, false) == L"1.25 KiB" &&
-            FormatTraffic(std::nullopt, true) == L"—";
+            FormatTraffic(std::nullopt, true) == L"--";
         const OutboundTraffic sample{{1024, 128}, {0, 0}};
-        trafficSample_ = {sample, {{L"OutboundProxy", sample}}};
+        trafficSample_ = {sample, {{L"OutboundProxy", sample}}, TrafficAvailability::Available};
         UpdateTrafficDisplay();
         const bool details = TooltipText(speed_) == L"OutboundProxy   ↑ 128 B/s   ↓ 0 B/s" &&
             TooltipText(totalTraffic_) == L"OutboundProxy   ↑ 1 KiB   ↓ 0 B";
@@ -1807,11 +1832,18 @@ private:
         const auto tooltip = TrayTooltipText(L"C:\\" + std::wstring(200, L'长'), ProcessState::Running, 1234, trayTraffic);
         const bool trayFits = tooltip.size() <= 127 && tooltip.ends_with(trayTraffic);
         const bool liveTray = SmokeTestLiveTrayTooltip();
+        trafficSample_ = {{}, {}, TrafficAvailability::StatisticsDisabled};
+        UpdateTrafficDisplay();
+        RECT unavailableLog{};
+        GetWindowRect(logWindow_, &unavailableLog);
+        const bool unavailable = EqualRect(&logBounds, &unavailableLog) &&
+            WindowText(speed_).ends_with(L"↑ --   ↓ --") &&
+            WindowText(totalTraffic_).ends_with(L"↑ --   ↓ --") &&
+            TooltipText(speed_) == TrafficUnavailableReason() &&
+            TooltipText(totalTraffic_) == TrafficUnavailableReason();
         trafficSample_ = {};
         UpdateTrafficDisplay();
-        const bool hidden = (GetWindowLongPtrW(speed_, GWL_STYLE) & WS_VISIBLE) == 0 &&
-            (GetWindowLongPtrW(totalTraffic_, GWL_STYLE) & WS_VISIBLE) == 0;
-        return units && details && aligned && trayFits && liveTray && hidden;
+        return units && details && aligned && trayFits && liveTray && unavailable;
     }
 
     bool SmokeTestLiveTrayTooltip()
@@ -3334,16 +3366,9 @@ private:
 
     void SetFontsAndIcons()
     {
-        NONCLIENTMETRICSW metrics{};
-        metrics.cbSize = sizeof(metrics);
-        if (!SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0, dpi_)) {
-            throw std::runtime_error(Text("Cannot read the system UI font.", "无法读取系统界面字体。"));
-        }
-        HFONT font = CreateFontIndirectW(&metrics.lfMessageFont);
-        LOGFONTW log = metrics.lfMessageFont;
-        log.lfHeight = -MulDiv(10, static_cast<int>(dpi_), 72);
-        log.lfWeight = FW_NORMAL;
-        wcscpy_s(log.lfFaceName, L"Consolas");
+        const auto ui = AppearanceFont(dpi_, settings_.fonts.interfaceFont);
+        const auto log = AppearanceFont(dpi_, settings_.fonts.logFont);
+        HFONT font = CreateFontIndirectW(&ui);
         HFONT logFont = CreateFontIndirectW(&log);
         if (font == nullptr || logFont == nullptr) {
             if (font != nullptr) {
@@ -3357,11 +3382,12 @@ private:
         const std::array controls{status_, run_, stop_, restart_, pendingSettings_, fileLabel_,
             files_, openFile_, openFileDirectory_, directoryLabel_, directory_, openDirectory_,
             filterLabel_, filter_, keyword_, wildcards_, matchCase_, clearKeyword_,
-            copyLogs_, clearLogs_, scrollToEnd_, wordWrap_, speed_, totalTraffic_};
+            copyLogs_, clearLogs_, scrollToEnd_, wordWrap_, speed_, totalTraffic_, tooltip_, trayTooltip_};
         for (const auto control : controls) {
             SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         }
-        SendMessageW(logWindow_, WM_SETFONT, reinterpret_cast<WPARAM>(logFont), TRUE);
+        const bool following = view_->Following();
+        SetTextViewFont(logWindow_, logFont, dpi_);
         if (font_ != nullptr) {
             DeleteObject(font_);
         }
@@ -3372,6 +3398,10 @@ private:
         logFont_ = logFont;
         theme_.SetFont(font_);
         view_->InvalidateFormat(logFont_);
+        if (following) { view_->ScrollToEnd(); }
+        toolWindow_.SetFontPreferences(settings_.fonts);
+        runInfoWindow_.SetFontPreferences(settings_.fonts);
+        restartFailureWindow_.SetFontPreferences(settings_.fonts);
         UpdateTooltips();
 
         SvgIconRenderer renderer;

@@ -27,18 +27,25 @@ struct MetricsAddress {
     INTERNET_PORT port;
 };
 
-std::optional<MetricsAddress> MetricsListener(std::string_view preview)
+std::optional<MetricsAddress> MetricsListener(std::string_view preview, TrafficAvailability& availability)
 {
     JsonObject config{nullptr};
     if (!JsonObject::TryParse(winrt::hstring(FromUtf8(preview)), config)) { return std::nullopt; }
     const auto metrics = config.GetNamedObject(L"metrics", nullptr);
+    if (!metrics || metrics.GetNamedString(L"listen", L"").empty()) {
+        availability = TrafficAvailability::MetricsDisabled;
+        return std::nullopt;
+    }
     const auto counters = config.GetNamedObject(L"stats", nullptr);
     const auto policy = config.GetNamedObject(L"policy", nullptr);
-    if (!metrics || !counters || !policy) { return std::nullopt; }
-    const auto system = policy.GetNamedObject(L"system", nullptr);
-    if (!system || (!system.GetNamedBoolean(L"statsOutboundUplink", false) &&
-        !system.GetNamedBoolean(L"statsOutboundDownlink", false))) { return std::nullopt; }
-    auto listen = std::wstring(metrics.GetNamedString(L"listen", L"").c_str());
+    const auto system = policy ? policy.GetNamedObject(L"system", nullptr) : JsonObject{nullptr};
+    if (!counters || !system || (!system.GetNamedBoolean(L"statsOutboundUplink", false) &&
+        !system.GetNamedBoolean(L"statsOutboundDownlink", false))) {
+        availability = TrafficAvailability::StatisticsDisabled;
+        return std::nullopt;
+    }
+    availability = TrafficAvailability::InvalidMetricsAddress;
+    const auto listen = std::wstring(metrics.GetNamedString(L"listen").c_str());
     const auto separator = listen.rfind(L':');
     if (separator == std::wstring::npos) { return std::nullopt; }
     const auto portText = ToUtf8(std::wstring_view(listen).substr(separator + 1));
@@ -95,14 +102,14 @@ std::optional<double> ReadCounter(const JsonObject& counters, std::wstring_view 
     return std::isfinite(value) && value >= 0 ? std::optional<double>{value} : std::nullopt;
 }
 
-std::map<std::wstring, OutboundTraffic> ReadOutbounds(std::string_view response)
+std::optional<std::map<std::wstring, OutboundTraffic>> ReadOutbounds(std::string_view response)
 {
     JsonObject document{nullptr};
-    if (!JsonObject::TryParse(winrt::hstring(FromUtf8(response)), document)) { return {}; }
+    if (!JsonObject::TryParse(winrt::hstring(FromUtf8(response)), document)) { return std::nullopt; }
     const auto stats = document.GetNamedObject(L"stats", nullptr);
-    if (!stats) { return {}; }
+    if (!stats) { return std::map<std::wstring, OutboundTraffic>{}; }
     const auto outbounds = stats.GetNamedObject(L"outbound", nullptr);
-    if (!outbounds) { return {}; }
+    if (!outbounds) { return std::map<std::wstring, OutboundTraffic>{}; }
 
     std::map<std::wstring, OutboundTraffic> result;
     for (const auto& entry : outbounds) {
@@ -133,7 +140,7 @@ void UpdateDirection(TrafficDirection& direction, TrafficDirection& total,
 
 std::wstring FormatTraffic(std::optional<double> value, bool speed)
 {
-    if (!value) { return L"—"; }
+    if (!value) { return L"--"; }
     static constexpr std::array sizeUnits{L"B", L"KiB", L"MiB", L"GiB", L"TiB"};
     static constexpr std::array speedUnits{L"B/s", L"KiB/s", L"MiB/s"};
     double scaled = *value;
@@ -205,41 +212,63 @@ void XrayTraffic::Run(std::stop_token stop)
             Monitor(stop, generation, std::move(*launch));
         } catch (...) {
             // Statistics are optional and must not affect the running proxy.
+            Publish(generation, {{}, {}, TrafficAvailability::ConfigurationUnavailable});
         }
     }
 }
 
 void XrayTraffic::Monitor(std::stop_token stop, uint64_t generation, XrayLaunchConfiguration launch)
 {
+    const auto publishUnavailable = [&](TrafficAvailability availability) {
+        Publish(generation, {{}, {}, availability});
+    };
     XrayTool preview(root_);
     if (!preview.Start(XrayToolKind::Preview, std::move(launch.settings), true,
-        std::move(launch.arguments))) { return; }
+        std::move(launch.arguments))) {
+        publishUnavailable(TrafficAvailability::ConfigurationUnavailable);
+        return;
+    }
 
     std::optional<MetricsAddress> address;
+    auto availability = TrafficAvailability::ConfigurationUnavailable;
     const auto deadline = Clock::now() + 5s;
     do {
         if (auto result = preview.TakeResult()) {
             if (result->exitCode == 0 && result->error.empty()) {
-                address = MetricsListener(result->output);
+                address = MetricsListener(result->output, availability);
             }
             break;
         }
     } while (Clock::now() < deadline && !Interrupted(stop, generation, 50ms));
-    if (!address || Interrupted(stop, generation, 0ms)) { return; }
+    if (Interrupted(stop, generation, 0ms)) { return; }
+    if (!address) {
+        publishUnavailable(availability);
+        return;
+    }
 
     HttpHandle session(WinHttpOpen(L"XTray", WINHTTP_ACCESS_TYPE_NO_PROXY,
         WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
-    if (!session || !WinHttpSetTimeouts(session.get(), 750, 750, 750, 750)) { return; }
+    if (!session || !WinHttpSetTimeouts(session.get(), 750, 750, 750, 750)) {
+        publishUnavailable(TrafficAvailability::MetricsUnavailable);
+        return;
+    }
     HttpHandle connection(WinHttpConnect(session.get(), address->host.c_str(), address->port, 0));
-    if (!connection) { return; }
+    if (!connection) {
+        publishUnavailable(TrafficAvailability::MetricsUnavailable);
+        return;
+    }
 
     XrayTrafficSample previous;
     auto previousTime = Clock::now();
     for (;;) {
         const auto next = Clock::now() + 1s;
-        XrayTrafficSample current;
+        XrayTrafficSample current{{}, {}, TrafficAvailability::MetricsUnavailable};
         try {
-            current.outbounds = ReadOutbounds(RequestStats(connection.get(), stop));
+            if (auto outbounds = ReadOutbounds(RequestStats(connection.get(), stop))) {
+                current.outbounds = std::move(*outbounds);
+                current.availability = current.outbounds.empty()
+                    ? TrafficAvailability::NoCounters : TrafficAvailability::Available;
+            }
         } catch (const winrt::hresult_error&) {
             // A missing or invalid reply drops the baseline; the next valid one starts a new sample.
         } catch (const std::runtime_error&) {}
@@ -257,7 +286,7 @@ void XrayTraffic::Monitor(std::stop_token stop, uint64_t generation, XrayLaunchC
         if (!uploadComplete) { current.total.upload.bytesPerSecond.reset(); }
         if (!downloadComplete) { current.total.download.bytesPerSecond.reset(); }
         const bool empty = current.outbounds.empty();
-        if (!empty || !previous.outbounds.empty()) { Publish(generation, current); }
+        if (!empty || current.availability != previous.availability) { Publish(generation, current); }
         previous = std::move(current);
         previousTime = now;
         const auto delay = empty ? 3s : std::max(Clock::duration::zero(), next - now);

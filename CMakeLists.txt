@@ -74,7 +74,7 @@ add_executable(XTray WIN32
 )
 add_dependencies(XTray XTray.IconResources)
 target_include_directories(XTray PRIVATE resources "${CMAKE_CURRENT_BINARY_DIR}/generated")
-target_link_libraries(XTray PRIVATE XTray.Core XTray.Graphics user32 gdi32 shell32 ole32 uuid comctl32 uxtheme dwmapi)
+target_link_libraries(XTray PRIVATE XTray.Core XTray.Graphics user32 gdi32 shell32 ole32 uuid comctl32 comdlg32 uxtheme dwmapi)
 # The resource script embeds the manifest, so disable the linker's generated one.
 target_link_options(XTray PRIVATE /MANIFEST:NO)
 

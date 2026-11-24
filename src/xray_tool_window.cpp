@@ -1,5 +1,6 @@
 #include "xray_tool_window.h"
 #include "ui_layout.h"
+#include "appearance_font.h"
 #include "resource.h"
 #include "svg_icons.h"
 #include "text_view.h"
@@ -155,6 +156,7 @@ void XrayToolWindow::Open(HWND owner, XrayToolKind kind, const Settings& setting
     process_ = nullptr;
     kind_ = kind;
     source_ = source;
+    fonts_ = settings.fonts;
     Prepare(owner, dark, quiet);
     RefreshLanguage();
     SetAppearance(dark);
@@ -292,26 +294,32 @@ void XrayToolWindow::Initialize()
     SetFonts();
 }
 
+void XrayToolWindow::SetFontPreferences(const FontPreferences& fonts)
+{
+    if (fonts_ == fonts) { return; }
+    fonts_ = fonts;
+    if (window_ != nullptr) {
+        SetFonts();
+        Layout();
+    }
+}
+
 void XrayToolWindow::SetFonts()
 {
-    NONCLIENTMETRICSW metrics{sizeof(NONCLIENTMETRICSW)};
     const UINT dpi = GetDpiForWindow(window_);
-    if (!SystemParametersInfoForDpi(SPI_GETNONCLIENTMETRICS, sizeof(metrics), &metrics, 0, dpi)) {
-        throw std::runtime_error("Cannot read the system UI font.");
-    }
-    HFONT font = CreateFontIndirectW(&metrics.lfMessageFont);
-    wcscpy_s(metrics.lfMessageFont.lfFaceName, L"Consolas");
-    metrics.lfMessageFont.lfHeight = -MulDiv(10, static_cast<int>(dpi), 72);
-    HFONT outputFont = CreateFontIndirectW(&metrics.lfMessageFont);
+    const auto ui = AppearanceFont(dpi, fonts_.interfaceFont);
+    const auto log = AppearanceFont(dpi, fonts_.logFont);
+    HFONT font = CreateFontIndirectW(&ui);
+    HFONT outputFont = CreateFontIndirectW(&log);
     if (font == nullptr || outputFont == nullptr) {
         if (font != nullptr) { DeleteObject(font); }
         if (outputFont != nullptr) { DeleteObject(outputFont); }
         throw std::runtime_error("Cannot create result window fonts.");
     }
-    for (const auto control : {status_, note_, copy_, wordWrapButton_, close_}) {
+    for (const auto control : {status_, note_, copy_, wordWrapButton_, close_, tooltip_}) {
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
     }
-    SendMessageW(output_, WM_SETFONT, reinterpret_cast<WPARAM>(outputFont), TRUE);
+    SetTextViewFont(output_, outputFont, dpi);
     if (font_ != nullptr) { DeleteObject(font_); }
     if (outputFont_ != nullptr) { DeleteObject(outputFont_); }
     font_ = font;
