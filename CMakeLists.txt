@@ -64,6 +64,7 @@ set_source_files_properties(resources/XTray.rc PROPERTIES
 
 add_executable(XTray WIN32
     src/main.cpp
+    src/traffic_chart.cpp
     src/log_view.cpp
     src/theme_window.cpp
     src/menu_theme.cpp

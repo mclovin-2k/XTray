@@ -8,6 +8,7 @@
 #include "menu_theme.h"
 #include "log_view.h"
 #include "text_view.h"
+#include "traffic_chart.h"
 #include "xray_process.h"
 #include "xray_traffic.h"
 #include "settings_dialog.h"
@@ -334,6 +335,9 @@ public:
             ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_NOHIDESEL | ES_DISABLENOSCROLL |
             WS_VSCROLL | WS_TABSTOP);
         view_ = std::make_unique<LogView>(logWindow_, logs_);
+        if (!trafficChart_.Create(window_)) {
+            throw std::runtime_error(Text("Cannot create the traffic chart.", "无法创建流量图表。"));
+        }
         if (smokeTest_) {
             std::fwprintf(stderr, L"Smoke: configuring fonts and icons.\n");
         }
@@ -470,7 +474,12 @@ public:
         }
         const int logY = filterY + filterHeight + gap;
         const int bottom = LayoutTrafficFooter(width - margin, static_cast<int>(client.bottom) - margin) - gap;
-        move(logWindow_, margin, logY, width - margin * 2, (std::max)(1, bottom - logY));
+        const int available = bottom - logY;
+        const int chartHeight = (std::min)({Scale(224), (std::max)(Scale(116), available * 2 / 5),
+            (std::max)(1, available - Scale(74) - gap)});
+        const int chartY = bottom - chartHeight;
+        move(logWindow_, margin, logY, width - margin * 2, (std::max)(1, chartY - gap - logY));
+        move(trafficChart_.Window(), margin, chartY, width - margin * 2, chartHeight);
     }
 
     void DpiChanged(UINT dpi)
@@ -493,6 +502,7 @@ public:
         const bool running = pid != 0;
         const bool statusChanged = state != shownState_ || pid != shownPid_;
         const bool trafficChanged = PollTraffic(state == ProcessState::Running ? pid : 0);
+        trafficChart_.Tick();
         if (statusChanged) {
             const auto status = XrayStatusText(state, pid);
             SetWindowTextW(status_, status.c_str());
@@ -1258,6 +1268,7 @@ private:
         if (view_) {
             view_->SetTheme(theme_.Colors());
         }
+        trafficChart_.SetAppearance(theme_.Colors());
         theme_.ApplyOwned(dark);
         toolWindow_.SetAppearance(dark);
         runInfoWindow_.SetAppearance(dark);
@@ -1271,13 +1282,13 @@ private:
         return speed ? Text(L"Speed", L"速度") : Text(L"Total", L"累计");
     }
 
-    static std::array<std::wstring, 2> TrafficValues(const OutboundTraffic& traffic, bool speed)
+    static std::array<std::wstring, 2> TrafficValues(const EndpointTraffic& traffic, bool speed)
     {
         return {FormatTraffic(speed ? traffic.upload.bytesPerSecond : traffic.upload.bytes, speed),
             FormatTraffic(speed ? traffic.download.bytesPerSecond : traffic.download.bytes, speed)};
     }
 
-    static std::wstring TrafficText(const OutboundTraffic& traffic, bool speed)
+    static std::wstring TrafficText(const EndpointTraffic& traffic, bool speed)
     {
         const auto values = TrafficValues(traffic, speed);
         return L"↑ " + values[0] + L"   ↓ " + values[1];
@@ -1290,7 +1301,7 @@ private:
 
     int TrafficWidth(HWND control, bool speed) const
     {
-        const auto values = TrafficValues(trafficSample_.total, speed);
+        const auto values = TrafficValues(trafficSample_.outbound.total, speed);
         const auto valueWidth = (std::max)(ControlTextSize(control, values[0]).cx,
             ControlTextSize(control, values[1]).cx);
         return TrafficCaptionWidth(control, speed) + Scale(kTrafficArrowWidth) + valueWidth;
@@ -1326,7 +1337,7 @@ private:
         const LONG half = (row.bottom - row.top) / 2;
         row.bottom = row.top + half;
         row.left = caption.right;
-        const auto values = TrafficValues(trafficSample_.total, speed);
+        const auto values = TrafficValues(trafficSample_.outbound.total, speed);
         for (size_t index = 0; index < values.size(); ++index) {
             RECT arrow = row;
             arrow.right = arrow.left + Scale(kTrafficArrowWidth);
@@ -1339,30 +1350,6 @@ private:
         if (saved != 0) { RestoreDC(item.hDC, saved); }
     }
 
-    const wchar_t* TrafficUnavailableReason() const
-    {
-        switch (trafficSample_.availability) {
-        case TrafficAvailability::Stopped:
-            return Text(L"Xray is not running.", L"Xray 尚未运行。");
-        case TrafficAvailability::Checking:
-            return Text(L"Checking Xray Metrics settings…", L"正在检查 Xray Metrics 配置…");
-        case TrafficAvailability::ConfigurationUnavailable:
-            return Text(L"XTray could not read the merged Xray configuration.", L"无法读取 Xray 的合并配置。");
-        case TrafficAvailability::MetricsDisabled:
-            return Text(L"The Xray configuration has no metrics.listen address.", L"Xray 配置中未设置 metrics.listen。");
-        case TrafficAvailability::InvalidMetricsAddress:
-            return Text(L"Xray metrics.listen does not contain a valid listening address.", L"Xray 的 metrics.listen 监听地址无效。");
-        case TrafficAvailability::StatisticsDisabled:
-            return Text(L"Outbound traffic statistics are disabled in Xray.", L"Xray 配置中未开启出站流量统计。");
-        case TrafficAvailability::MetricsUnavailable:
-            return Text(L"XTray cannot read the Xray Metrics endpoint.", L"无法读取 Xray Metrics 接口。");
-        case TrafficAvailability::NoCounters:
-            return Text(L"Xray Metrics has not returned any outbound counters.", L"Xray Metrics 未返回出站流量计数。");
-        default:
-            return L"";
-        }
-    }
-
     void UpdateTrafficDisplay()
     {
         if (!IsIconic(window_)) {
@@ -1370,16 +1357,23 @@ private:
             GetClientRect(window_, &client);
             LayoutTrafficFooter(client.right - Scale(16), client.bottom - Scale(16));
         }
+        const auto& group = trafficSample_.outbound;
         for (const bool speed : {true, false}) {
             const HWND control = speed ? speed_ : totalTraffic_;
-            std::wstring details = TrafficUnavailableReason();
-            const auto& totals = trafficSample_.total;
-            if (speed && !trafficSample_.outbounds.empty() &&
+            std::wstring details = TrafficUnavailableReason(group.availability, false);
+            const auto& totals = group.total;
+            if (speed && !group.endpoints.empty() &&
                 ((totals.upload.bytes && !totals.upload.bytesPerSecond) ||
                     (totals.download.bytes && !totals.download.bytesPerSecond))) {
                 details = Text(L"Waiting for the next traffic sample.", L"正在等待下一次流量采样。");
             }
-            for (const auto& [tag, traffic] : trafficSample_.outbounds) {
+            if (group.counters.Any() && group.counters.upload != group.counters.download) {
+                if (!details.empty()) { details += L'\n'; }
+                details += group.counters.upload
+                    ? Text(L"Download statistics are disabled.", L"未启用下载流量统计。")
+                    : Text(L"Upload statistics are disabled.", L"未启用上传流量统计。");
+            }
+            for (const auto& [tag, traffic] : group.endpoints) {
                 if (!details.empty()) { details += L'\n'; }
                 details += tag + L"   " + TrafficText(traffic, speed);
             }
@@ -1407,13 +1401,18 @@ private:
         if (trafficPid_ != pid) {
             trafficPid_ = pid;
             auto launch = process_.LaunchConfiguration(pid);
-            trafficSample_ = {{}, {}, pid == 0 ? TrafficAvailability::Stopped :
-                launch ? TrafficAvailability::Checking : TrafficAvailability::ConfigurationUnavailable};
+            trafficSample_ = {};
+            trafficSample_.inbound.availability = trafficSample_.outbound.availability =
+                pid == 0 ? TrafficAvailability::Stopped :
+                launch ? TrafficAvailability::Checking : TrafficAvailability::ConfigurationUnavailable;
+            trafficChart_.Reset();
+            trafficChart_.Append(trafficSample_);
             traffic_.SetLaunch(std::move(launch));
             changed = true;
         }
         if (auto sample = traffic_.TakeSample()) {
             trafficSample_ = std::move(*sample);
+            trafficChart_.Append(trafficSample_);
             changed = true;
         }
         if (changed) { UpdateTrafficDisplay(); }
@@ -1424,9 +1423,10 @@ private:
     {
         const DWORD pid = shownPid_ != MAXDWORD ? shownPid_ : 0;
         std::wstring traffic;
-        if (pid != 0 && !trafficSample_.outbounds.empty()) {
+        if (pid != 0 && !trafficSample_.outbound.endpoints.empty()) {
             for (const bool speed : {true, false}) {
-                traffic += L"\n" + std::wstring(TrafficCaption(speed)) + L" " + TrafficText(trafficSample_.total, speed);
+                traffic += L"\n" + std::wstring(TrafficCaption(speed)) + L" " +
+                    TrafficText(trafficSample_.outbound.total, speed);
             }
         }
         return TrayTooltipText(root_, shownState_, pid, traffic);
@@ -1799,6 +1799,7 @@ private:
         toolWindow_.RefreshLanguage();
         runInfoWindow_.RefreshLanguage();
         restartFailureWindow_.RefreshLanguage();
+        trafficChart_.RefreshLanguage();
         UpdateTrafficDisplay();
         shownPid_ = MAXDWORD;
         updatingUi_ = false;
@@ -1815,35 +1816,39 @@ private:
             FormatTraffic(512, false) == L"512 B" &&
             FormatTraffic(1280, false) == L"1.25 KiB" &&
             FormatTraffic(std::nullopt, true) == L"--";
-        const OutboundTraffic sample{{1024, 128}, {0, 0}};
-        trafficSample_ = {sample, {{L"OutboundProxy", sample}}, TrafficAvailability::Available};
+        const EndpointTraffic sample{{1024, 128}, {0, 0}};
+        trafficSample_.outbound = {sample, {{L"OutboundProxy", sample}}, {true, true}, TrafficAvailability::Available};
         UpdateTrafficDisplay();
         const bool details = TooltipText(speed_) == L"OutboundProxy   ↑ 128 B/s   ↓ 0 B/s" &&
             TooltipText(totalTraffic_) == L"OutboundProxy   ↑ 1 KiB   ↓ 0 B";
-        RECT speedBounds{}, totalBounds{}, logBounds{};
+        RECT speedBounds{}, totalBounds{}, logBounds{}, chartBounds{};
         GetWindowRect(speed_, &speedBounds);
         GetWindowRect(totalTraffic_, &totalBounds);
         GetWindowRect(logWindow_, &logBounds);
+        GetWindowRect(trafficChart_.Window(), &chartBounds);
         const bool aligned = speedBounds.top == totalBounds.top && speedBounds.bottom == totalBounds.bottom &&
             speedBounds.right + Scale(30) == totalBounds.left &&
-            totalBounds.right == logBounds.right && logBounds.bottom < speedBounds.top;
+            totalBounds.right == logBounds.right && chartBounds.right == logBounds.right &&
+            chartBounds.left == logBounds.left && logBounds.bottom < chartBounds.top &&
+            chartBounds.bottom < speedBounds.top;
         const std::wstring trayTraffic = L"\nSpeed " + TrafficText(sample, true) +
             L"\nTotal " + TrafficText(sample, false);
         const auto tooltip = TrayTooltipText(L"C:\\" + std::wstring(200, L'长'), ProcessState::Running, 1234, trayTraffic);
         const bool trayFits = tooltip.size() <= 127 && tooltip.ends_with(trayTraffic);
         const bool liveTray = SmokeTestLiveTrayTooltip();
-        trafficSample_ = {{}, {}, TrafficAvailability::StatisticsDisabled};
+        trafficSample_ = {};
+        trafficSample_.outbound.availability = TrafficAvailability::StatisticsDisabled;
         UpdateTrafficDisplay();
         RECT unavailableLog{};
         GetWindowRect(logWindow_, &unavailableLog);
         const bool unavailable = EqualRect(&logBounds, &unavailableLog) &&
             WindowText(speed_).ends_with(L"↑ --   ↓ --") &&
             WindowText(totalTraffic_).ends_with(L"↑ --   ↓ --") &&
-            TooltipText(speed_) == TrafficUnavailableReason() &&
-            TooltipText(totalTraffic_) == TrafficUnavailableReason();
+            TooltipText(speed_) == TrafficUnavailableReason(TrafficAvailability::StatisticsDisabled, false) &&
+            TooltipText(totalTraffic_) == TrafficUnavailableReason(TrafficAvailability::StatisticsDisabled, false);
         trafficSample_ = {};
         UpdateTrafficDisplay();
-        return units && details && aligned && trayFits && liveTray && unavailable;
+        return units && details && aligned && trayFits && liveTray && unavailable && trafficChart_.SmokeTest();
     }
 
     bool SmokeTestLiveTrayTooltip()
@@ -1861,7 +1866,7 @@ private:
         };
         const bool opened = trayTooltipActive_ && IsWindowVisible(trayTooltip_) &&
             text().find(L"128 B/s") != std::wstring::npos;
-        trafficSample_.total.upload.bytesPerSecond = 1024;
+        trafficSample_.outbound.total.upload.bytesPerSecond = 1024;
         RefreshTrayTooltip();
         const bool updated = trayTooltipActive_ && IsWindowVisible(trayTooltip_) &&
             text().find(L"1 KiB/s") != std::wstring::npos;
@@ -3386,6 +3391,7 @@ private:
         for (const auto control : controls) {
             SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         }
+        trafficChart_.SetFont(font);
         const bool following = view_->Following();
         SetTextViewFont(logWindow_, logFont, dpi_);
         if (font_ != nullptr) {
@@ -3465,6 +3471,7 @@ private:
     XrayTraffic traffic_;
     DWORD trafficPid_ = 0;
     XrayTrafficSample trafficSample_;
+    TrafficChart trafficChart_;
     XrayTool restartCheck_;
     struct RestartRequest { Settings settings; DWORD pid; ULONGLONG deadline; };
     struct RestartCheckFailure { DWORD pid; XrayToolResult result; };

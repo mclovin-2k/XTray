@@ -16,7 +16,7 @@ struct TrafficDirection {
     std::optional<double> bytesPerSecond;
 };
 
-struct OutboundTraffic {
+struct EndpointTraffic {
     TrafficDirection upload, download;
 };
 
@@ -25,13 +25,26 @@ enum class TrafficAvailability {
     StatisticsDisabled, MetricsUnavailable, NoCounters, Available
 };
 
-struct XrayTrafficSample {
-    OutboundTraffic total;
-    std::map<std::wstring, OutboundTraffic> outbounds;
+struct TrafficCounters {
+    bool upload = false;
+    bool download = false;
+    bool Any() const { return upload || download; }
+};
+
+struct TrafficGroup {
+    EndpointTraffic total;
+    std::map<std::wstring, EndpointTraffic> endpoints;
+    TrafficCounters counters;
     TrafficAvailability availability = TrafficAvailability::Stopped;
 };
 
+struct XrayTrafficSample {
+    TrafficGroup outbound, inbound;
+    std::chrono::steady_clock::time_point time;
+};
+
 std::wstring FormatTraffic(std::optional<double> value, bool speed);
+const wchar_t* TrafficUnavailableReason(TrafficAvailability availability, bool inbound);
 
 class XrayTraffic {
 public:

@@ -144,13 +144,15 @@ later does not mean every field simply replaces the earlier value.
   entry when the icon becomes available again.
   XTray keeps logs in memory and does not save historical logs.
   To save Xray logs to files, use [Xray's own logging configuration](https://xtls.github.io/config/log.html).
-- **Traffic:** Below the logs, XTray shows total outbound upload and download
-  rates and cumulative traffic. Hover over either group for the per-outbound
-  breakdown, or hover over the tray icon for totals. In Xray, configure
-  `metrics.listen`, enable `stats`, and turn on the desired outbound counters
-  in `policy.system` (`statsOutboundUplink` and `statsOutboundDownlink`).
-  When a value is unavailable, XTray displays `--` and explains why in the
-  footer tooltip. See [Xray Metrics](https://xtls.github.io/en/config/metrics.html).
+- **Traffic:** Switch between **Outbound** and **Inbound** charts below the
+  logs to see the last 60 seconds. Upload is dashed and download is solid.
+  Use the legend to show or hide each tag. The footer and tray tooltip show
+  outbound totals, and hovering over a footer group shows its per-outbound
+  breakdown. In Xray, set `metrics.listen`, enable `stats`, and enable the
+  counters you want in `policy.system` (`statsOutboundUplink`,
+  `statsOutboundDownlink`, `statsInboundUplink`, `statsInboundDownlink`).
+  The chart explains unavailable data, and the footer shows `--` for any
+  unavailable direction. See [Xray Metrics](https://xtls.github.io/en/config/metrics.html).
 - **Language and appearance:** Settings offers automatic, English or Chinese
   language selection, light/dark/system appearance, and a configurable log limit.
   Interface and log fonts and sizes can be set separately. Both follow the
