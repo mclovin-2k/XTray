@@ -816,24 +816,49 @@ void LayoutSettingsContent(Context& context)
             if (stacked && index + 1 != groups.size()) { y += rowHeight + gap; }
         }
         y += rowHeight + sectionGap;
-        for (const bool interfaceFont : {true, false}) {
-            const int fontLabel = interfaceFont ? IDC_INTERFACE_FONT_LABEL : IDC_LOG_FONT_LABEL;
-            const int choose = interfaceFont ? IDC_INTERFACE_FONT_CHOOSE : IDC_LOG_FONT_CHOOSE;
-            const int reset = interfaceFont ? IDC_INTERFACE_FONT_RESET : IDC_LOG_FONT_RESET;
-            const int resetWidth = TextButtonWidth(GetDlgItem(body, reset));
-            const int chooseWidth = TextButtonWidth(GetDlgItem(body, choose));
-            const int resetX = margin + available - resetWidth;
-            const int chooseX = resetX - gap - chooseWidth;
-            const int height = ControlTextSize(GetDlgItem(body, fontLabel)).cy;
-            if (chooseX - margin - gap < UiScale(body, 96)) {
-                place(fontLabel, margin, y, available, height);
-                y += height + gap;
-            } else {
-                place(fontLabel, margin, y + (rowHeight - height) / 2, chooseX - margin - gap, height);
+        struct FontGroup {
+            int label, choose, reset;
+            SIZE summary{};
+            int chooseWidth = 0, resetWidth = 0;
+        };
+        std::array fontGroups{FontGroup{IDC_INTERFACE_FONT_LABEL, IDC_INTERFACE_FONT_CHOOSE, IDC_INTERFACE_FONT_RESET},
+            FontGroup{IDC_LOG_FONT_LABEL, IDC_LOG_FONT_CHOOSE, IDC_LOG_FONT_RESET}};
+        for (auto& font : fontGroups) {
+            font.summary = ControlTextSize(GetDlgItem(body, font.label));
+            font.chooseWidth = TextButtonWidth(GetDlgItem(body, font.choose));
+            font.resetWidth = TextButtonWidth(GetDlgItem(body, font.reset));
+        }
+        const auto actions = [&](const FontGroup& font) { return font.chooseWidth + font.resetWidth + gap * 2; };
+        const auto placeFont = [&](const FontGroup& font, int x, int labelWidth) {
+            place(font.label, x, y + (rowHeight - font.summary.cy) / 2, labelWidth, font.summary.cy);
+            const int chooseX = x + labelWidth + gap;
+            place(font.choose, chooseX, y, font.chooseWidth, rowHeight);
+            place(font.reset, chooseX + font.chooseWidth + gap, y, font.resetWidth, rowHeight);
+        };
+        const auto& interfaceFont = fontGroups[0];
+        const auto& logFont = fontGroups[1];
+        const int labelSpace = available - actions(interfaceFont) - actions(logFont) - sectionGap;
+        if (labelSpace >= UiScale(body, 128)) {
+            const int leftWidth = (std::min)(static_cast<int>(interfaceFont.summary.cx),
+                (std::max)(labelSpace / 2, labelSpace - static_cast<int>(logFont.summary.cx)));
+            const int rightWidth = (std::min)(static_cast<int>(logFont.summary.cx), labelSpace - leftWidth);
+            placeFont(interfaceFont, margin, leftWidth);
+            placeFont(logFont, margin + available - rightWidth - actions(logFont), rightWidth);
+            y += rowHeight + sectionGap;
+        } else {
+            for (const auto& font : fontGroups) {
+                const int width = (std::min)(static_cast<int>(font.summary.cx), available - actions(font));
+                if (width < UiScale(body, 64)) {
+                    place(font.label, margin, y + (rowHeight - font.summary.cy) / 2, available, font.summary.cy);
+                    y += rowHeight + gap;
+                    const int chooseX = (std::max)(margin, margin + available - actions(font) + gap);
+                    place(font.choose, chooseX, y, font.chooseWidth, rowHeight);
+                    place(font.reset, chooseX + font.chooseWidth + gap, y, font.resetWidth, rowHeight);
+                } else {
+                    placeFont(font, &font == &interfaceFont ? margin : margin + available - width - actions(font), width);
+                }
+                y += rowHeight + (&font == &interfaceFont ? gap : sectionGap);
             }
-            place(choose, chooseX, y, chooseWidth, rowHeight);
-            place(reset, resetX, y, resetWidth, rowHeight);
-            y += rowHeight + (interfaceFont ? gap : sectionGap);
         }
         label(IDC_LABEL_EXECUTABLE);
         pathRow(IDC_EXECUTABLE, IDC_EXECUTABLE_FRAME, IDC_BROWSE_EXECUTABLE);
@@ -1399,6 +1424,7 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
             ChooseSettingsFont(dialog, interfaceFont ? context->fonts.interfaceFont : context->fonts.logFont,
                 interfaceFont ? kMaxInterfaceFontPoints : kMaxLogFontPoints);
             UpdateFontLabels(*context);
+            LayoutSettingsContent(*context);
         }
         return TRUE;
     case IDC_INTERFACE_FONT_RESET:
@@ -1408,6 +1434,7 @@ INT_PTR SettingsMessage(HWND dialog, UINT message, WPARAM wParam, LPARAM lParam)
                 ? context->fonts.interfaceFont : context->fonts.logFont;
             font = {};
             UpdateFontLabels(*context);
+            LayoutSettingsContent(*context);
         }
         return TRUE;
     case IDC_EXECUTABLE_FRAME:
@@ -1679,6 +1706,15 @@ bool SmokeTestSettingsLayout(HWND owner, const std::filesystem::path& root)
                 GetNextDlgTabItem(window, SettingsControl(window, IDC_BROWSE_DIRECTORY), FALSE) == SettingsControl(window, IDC_CONFIG_DIRECTORY_FIRST) &&
                 GetNextDlgTabItem(window, SettingsControl(window, IDC_CONFIG_DIRECTORY_FIRST), FALSE) == SettingsControl(window, IDC_CHECK_CONFIG) &&
                 SettingsButtonState(window, IDC_CONFIG_DIRECTORY_FIRST) == BST_UNCHECKED;
+            RECT leftFont{}, leftReset{}, rightFont{}, rightReset{}, executableLabel{}, browse{};
+            GetWindowRect(SettingsControl(window, IDC_INTERFACE_FONT_LABEL), &leftFont);
+            GetWindowRect(SettingsControl(window, IDC_INTERFACE_FONT_RESET), &leftReset);
+            GetWindowRect(SettingsControl(window, IDC_LOG_FONT_LABEL), &rightFont);
+            GetWindowRect(SettingsControl(window, IDC_LOG_FONT_RESET), &rightReset);
+            GetWindowRect(SettingsControl(window, IDC_LABEL_EXECUTABLE), &executableLabel);
+            GetWindowRect(SettingsControl(window, IDC_BROWSE_EXECUTABLE), &browse);
+            passed = passed && leftFont.top == rightFont.top && leftReset.top == rightReset.top &&
+                leftFont.left == executableLabel.left && rightReset.right == browse.right && leftReset.right < rightFont.left;
             std::fwprintf(stderr, L"Smoke: ordered multi-select config list, move arrows, and draft path conversion.\n");
             const HWND list = SettingsControl(window, IDC_CONFIG_FILES);
             const HWND up = SettingsControl(window, IDC_MOVE_CONFIG_UP);
