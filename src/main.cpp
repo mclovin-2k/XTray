@@ -329,6 +329,7 @@ public:
         ShowWindow(speed_, SW_HIDE);
         ShowWindow(totalTraffic_, SW_HIDE);
         CreateTooltips();
+        CreateTrayTooltip();
         logWindow_ = child(WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
             ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_NOHIDESEL | ES_DISABLENOSCROLL |
             WS_VSCROLL | WS_TABSTOP);
@@ -467,14 +468,7 @@ public:
         const int logY = filterY + filterHeight + gap;
         int bottom = static_cast<int>(client.bottom) - margin;
         if (!trafficSample_.outbounds.empty()) {
-            const int trafficHeight = 2 * SingleLineControlHeight(speed_);
-            const int trafficY = bottom - trafficHeight;
-            const int totalWidth = TrafficWidth(totalTraffic_, false);
-            const int speedWidth = TrafficWidth(speed_, true);
-            const int totalX = width - margin - totalWidth;
-            move(totalTraffic_, totalX, trafficY, totalWidth, trafficHeight);
-            move(speed_, totalX - Scale(24) - speedWidth, trafficY, speedWidth, trafficHeight);
-            bottom = trafficY - gap;
+            bottom = LayoutTrafficFooter(width - margin, bottom) - gap;
         }
         move(logWindow_, margin, logY, width - margin * 2, (std::max)(1, bottom - logY));
     }
@@ -513,7 +507,7 @@ public:
         } else if (!tray_.IsAdded() && GetTickCount64() >= nextTrayAttempt_) {
             UpdateTray();
         } else if (trafficChanged && tray_.IsAdded()) {
-            tray_.UpdateTooltip(CurrentTrayTooltip());
+            RefreshTrayTooltip();
         }
         const auto pending = settingsValid_ && process_.HasPendingSettings(settings_) ? PendingConfigChange::Settings
             : process_.ConfigFilesChanged() ? PendingConfigChange::Files : PendingConfigChange::None;
@@ -753,6 +747,7 @@ public:
         exiting_ = true;
         KillTimer(window_, 1);
         traffic_.SetLaunch(std::nullopt);
+        CloseTrayTooltip();
         tray_.Remove();
         restartCheck_.Cancel();
         toolWindow_.Close();
@@ -765,10 +760,11 @@ public:
     void Destroyed()
     {
         ready_ = false;
-        if (IsWindow(tooltip_)) {
-            DestroyWindow(tooltip_);
+        for (const HWND tip : {tooltip_, trayTooltip_}) {
+            if (IsWindow(tip)) { DestroyWindow(tip); }
         }
-        tooltip_ = nullptr;
+        tooltip_ = trayTooltip_ = nullptr;
+        trayTooltipActive_ = false;
         themeMonitor_.reset();
         menuTheme_.Detach();
         theme_.Detach();
@@ -780,23 +776,32 @@ public:
 
     void TaskbarCreated()
     {
+        CloseTrayTooltip();
         tray_.Lost();
         if (ready_ && !exiting_) {
             UpdateTray();
         }
     }
 
-    void TrayEvent(WPARAM, LPARAM event)
+    void TrayEvent(WPARAM position, LPARAM event)
     {
         if (!ready_ || exiting_ || HIWORD(event) != kTrayIconId) {
             return;
         }
         switch (LOWORD(event)) {
+        case NIN_POPUPOPEN:
+            OpenTrayTooltip(position);
+            break;
+        case NIN_POPUPCLOSE:
+            CloseTrayTooltip();
+            break;
         case NIN_SELECT:
         case NIN_KEYSELECT:
+            CloseTrayTooltip();
             ShowMain();
             break;
         case NIN_BALLOONUSERCLICK: {
+            CloseTrayTooltip();
             const auto notification = std::exchange(activeExitNotification_, std::nullopt);
             ShowMain();
             if (notification && notification->registration == tray_.Registration()) {
@@ -809,6 +814,7 @@ public:
             activeExitNotification_.reset();
             break;
         case WM_CONTEXTMENU:
+            CloseTrayTooltip();
             ShowTrayMenu();
             break;
         }
@@ -1282,9 +1288,23 @@ private:
 
     int TrafficWidth(HWND control, bool speed) const
     {
-        const auto valueWidth = ControlTextSize(control,
-            speed ? L"99999.9 MiB/s" : L"9999999.99 TiB").cx;
+        const auto values = TrafficValues(trafficSample_.total, speed);
+        const auto valueWidth = (std::max)(ControlTextSize(control, values[0]).cx,
+            ControlTextSize(control, values[1]).cx);
         return TrafficCaptionWidth(control, speed) + Scale(17) + valueWidth;
+    }
+
+    int LayoutTrafficFooter(int right, int bottom) const
+    {
+        const int height = 2 * SingleLineControlHeight(speed_);
+        const int top = bottom - height;
+        const int totalWidth = TrafficWidth(totalTraffic_, false);
+        const int speedWidth = TrafficWidth(speed_, true);
+        const int totalX = right - totalWidth;
+        constexpr UINT placement = SWP_NOACTIVATE | SWP_NOZORDER;
+        SetWindowPos(totalTraffic_, nullptr, totalX, top, totalWidth, height, placement);
+        SetWindowPos(speed_, nullptr, totalX - Scale(10) - speedWidth, top, speedWidth, height, placement);
+        return top;
     }
 
     void DrawTraffic(const DRAWITEMSTRUCT& item, bool speed) const
@@ -1311,7 +1331,7 @@ private:
             DrawTextW(item.hDC, index == 0 ? L"↑" : L"↓", -1, &arrow, flags);
             RECT amount = row;
             amount.left = arrow.right;
-            DrawTextW(item.hDC, values[index].c_str(), -1, &amount, flags);
+            DrawTextW(item.hDC, values[index].c_str(), -1, &amount, flags | (speed ? DT_LEFT : DT_RIGHT));
             OffsetRect(&row, 0, half);
         }
         if (saved != 0) { RestoreDC(item.hDC, saved); }
@@ -1321,7 +1341,13 @@ private:
     {
         const bool visible = !trafficSample_.outbounds.empty();
         const bool wasVisible = (GetWindowLongPtrW(speed_, GWL_STYLE) & WS_VISIBLE) != 0;
-        if (visible != wasVisible) { Layout(); }
+        if (visible != wasVisible) {
+            Layout();
+        } else if (visible && !IsIconic(window_)) {
+            RECT client{};
+            GetClientRect(window_, &client);
+            LayoutTrafficFooter(client.right - Scale(16), client.bottom - Scale(16));
+        }
         for (const bool speed : {true, false}) {
             const HWND control = speed ? speed_ : totalTraffic_;
             std::wstring details;
@@ -1380,6 +1406,104 @@ private:
         return TrayTooltipText(root_, shownState_, pid, traffic);
     }
 
+    bool TrayIconBounds(RECT& bounds) const
+    {
+        NOTIFYICONIDENTIFIER identity{};
+        identity.cbSize = sizeof(identity);
+        identity.hWnd = window_;
+        identity.uID = kTrayIconId;
+        return SUCCEEDED(Shell_NotifyIconGetRect(&identity, &bounds));
+    }
+
+    TOOLINFOW TrayTooltipTool() const
+    {
+        TOOLINFOW tool{};
+        tool.cbSize = TTTOOLINFOW_V2_SIZE;
+        tool.uFlags = TTF_TRACK | TTF_ABSOLUTE;
+        tool.hwnd = window_;
+        tool.uId = kTrayIconId;
+        return tool;
+    }
+
+    void CreateTrayTooltip()
+    {
+        trayTooltip_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE, TOOLTIPS_CLASSW, nullptr,
+            WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX | TTS_NOFADE | TTS_NOANIMATE,
+            CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+            nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (trayTooltip_ == nullptr) { return; }
+
+        auto tool = TrayTooltipTool();
+        tool.lpszText = const_cast<wchar_t*>(L"");
+        if (!SendMessageW(trayTooltip_, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&tool))) {
+            DestroyWindow(trayTooltip_);
+            trayTooltip_ = nullptr;
+        }
+    }
+
+    void PositionTrayTooltip()
+    {
+        MONITORINFO monitor{sizeof(MONITORINFO)};
+        if (!GetMonitorInfoW(MonitorFromRect(&trayTooltipAnchor_, MONITOR_DEFAULTTONEAREST), &monitor)) { return; }
+        auto tool = TrayTooltipTool();
+        const LRESULT size = SendMessageW(trayTooltip_, TTM_GETBUBBLESIZE, 0, reinterpret_cast<LPARAM>(&tool));
+        const LONG width = LOWORD(size), height = HIWORD(size);
+        const RECT& work = monitor.rcWork;
+        const LONG gap = Scale(5);
+        const LONG left = std::clamp(trayTooltipAnchor_.right - width, work.left,
+            (std::max)(work.left, work.right - width));
+        const LONG above = trayTooltipAnchor_.top - gap - height;
+        const LONG top = std::clamp(above >= work.top ? above : trayTooltipAnchor_.bottom + gap,
+            work.top, (std::max)(work.top, work.bottom - height));
+        SendMessageW(trayTooltip_, TTM_TRACKPOSITION, 0, MAKELPARAM(left, top));
+    }
+
+    void SetTrayTooltipText(const std::wstring& text)
+    {
+        if (trayTooltipText_ == text) { return; }
+        trayTooltipText_ = text;
+        auto tool = TrayTooltipTool();
+        tool.lpszText = trayTooltipText_.data();
+        SendMessageW(trayTooltip_, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tool));
+        if (trayTooltipActive_) {
+            PositionTrayTooltip();
+            SendMessageW(trayTooltip_, TTM_UPDATE, 0, 0);
+        }
+    }
+
+    void OpenTrayTooltip(WPARAM point)
+    {
+        if (trayTooltip_ == nullptr || !tray_.IsAdded()) { return; }
+        if (!TrayIconBounds(trayTooltipAnchor_)) {
+            const LONG x = static_cast<short>(LOWORD(point));
+            const LONG y = static_cast<short>(HIWORD(point));
+            trayTooltipAnchor_ = {x, y, x + 1, y + 1};
+        }
+        SendMessageW(trayTooltip_, TTM_SETMAXTIPWIDTH, 0, Scale(400));
+        SetTrayTooltipText(CurrentTrayTooltip());
+        PositionTrayTooltip();
+        auto tool = TrayTooltipTool();
+        SendMessageW(trayTooltip_, TTM_TRACKACTIVATE, TRUE, reinterpret_cast<LPARAM>(&tool));
+        trayTooltipActive_ = true;
+    }
+
+    void CloseTrayTooltip()
+    {
+        if (!trayTooltipActive_) { return; }
+        auto tool = TrayTooltipTool();
+        SendMessageW(trayTooltip_, TTM_TRACKACTIVATE, FALSE, reinterpret_cast<LPARAM>(&tool));
+        trayTooltipActive_ = false;
+    }
+
+    void RefreshTrayTooltip()
+    {
+        if (trayTooltip_ == nullptr) {
+            tray_.UpdateTooltip(CurrentTrayTooltip());
+        } else if (trayTooltipActive_) {
+            SetTrayTooltipText(CurrentTrayTooltip());
+        }
+    }
+
     void UpdateTray()
     {
         if (exiting_ || !ready_) {
@@ -1388,12 +1512,15 @@ private:
         const bool running = shownPid_ != 0 && shownPid_ != MAXDWORD;
         const auto tooltip = CurrentTrayTooltip();
         nextTrayAttempt_ = GetTickCount64() + 2000;
-        if (tray_.Update(window_, icons_[running ? RunningTrayIcon : StoppedTrayIcon], tooltip)) {
+        if (tray_.Update(window_, icons_[running ? RunningTrayIcon : StoppedTrayIcon], tooltip,
+            trayTooltip_ == nullptr)) {
+            if (trayTooltipActive_) { SetTrayTooltipText(tooltip); }
             if (shownTrayFailure_ != TrayFailure::None) {
                 logs_.Tray(Text(L"The tray icon is available again.", L"托盘图标已恢复。"));
             }
             shownTrayFailure_ = TrayFailure::None;
         } else {
+            CloseTrayTooltip();
             if (shownTrayFailure_ != tray_.Failure()) {
                 logs_.Tray(std::wstring(Text(L"The tray icon is unavailable: ", L"托盘图标暂不可用：")) +
                     tray_.FailureText() + Text(
@@ -1589,12 +1716,8 @@ private:
         const HMENU menu = CreateTrayMenu();
         POINT point{};
         GetCursorPos(&point);
-        NOTIFYICONIDENTIFIER identity{};
-        identity.cbSize = sizeof(identity);
-        identity.hWnd = window_;
-        identity.uID = kTrayIconId;
         RECT icon{};
-        if (SUCCEEDED(Shell_NotifyIconGetRect(&identity, &icon)) && !PtInRect(&icon, point)) {
+        if (TrayIconBounds(icon) && !PtInRect(&icon, point)) {
             point = {icon.left + (icon.right - icon.left) / 2, icon.bottom};
         }
         SetForegroundWindow(window_);
@@ -1676,16 +1799,45 @@ private:
         GetWindowRect(totalTraffic_, &totalBounds);
         GetWindowRect(logWindow_, &logBounds);
         const bool aligned = speedBounds.top == totalBounds.top && speedBounds.bottom == totalBounds.bottom &&
-            speedBounds.right < totalBounds.left && logBounds.bottom < speedBounds.top;
+            speedBounds.right + Scale(10) == totalBounds.left &&
+            totalBounds.right == logBounds.right && logBounds.bottom < speedBounds.top;
         const std::wstring trayTraffic = L"\nSpeed " + TrafficText(sample, true) +
             L"\nTotal " + TrafficText(sample, false);
         const auto tooltip = TrayTooltipText(L"C:\\" + std::wstring(200, L'长'), ProcessState::Running, 1234, trayTraffic);
         const bool trayFits = tooltip.size() <= 127 && tooltip.ends_with(trayTraffic);
+        const bool liveTray = SmokeTestLiveTrayTooltip();
         trafficSample_ = {};
         UpdateTrafficDisplay();
         const bool hidden = (GetWindowLongPtrW(speed_, GWL_STYLE) & WS_VISIBLE) == 0 &&
             (GetWindowLongPtrW(totalTraffic_, GWL_STYLE) & WS_VISIBLE) == 0;
-        return units && details && aligned && trayFits && hidden;
+        return units && details && aligned && trayFits && liveTray && hidden;
+    }
+
+    bool SmokeTestLiveTrayTooltip()
+    {
+        std::fwprintf(stderr, L"Smoke: open tray tooltip updates without closing.\n");
+        const DWORD pid = std::exchange(shownPid_, 1234);
+        const auto state = std::exchange(shownState_, ProcessState::Running);
+        TrayEvent(MAKELPARAM(160, 160), MAKELPARAM(NIN_POPUPOPEN, kTrayIconId));
+        const auto text = [this] {
+            std::array<wchar_t, 128> buffer{};
+            auto tool = TrayTooltipTool();
+            tool.lpszText = buffer.data();
+            SendMessageW(trayTooltip_, TTM_GETTEXTW, buffer.size(), reinterpret_cast<LPARAM>(&tool));
+            return std::wstring(buffer.data());
+        };
+        const bool opened = trayTooltipActive_ && IsWindowVisible(trayTooltip_) &&
+            text().find(L"128 B/s") != std::wstring::npos;
+        trafficSample_.total.upload.bytesPerSecond = 1024;
+        RefreshTrayTooltip();
+        const bool updated = trayTooltipActive_ && IsWindowVisible(trayTooltip_) &&
+            text().find(L"1 KiB/s") != std::wstring::npos;
+        TrayEvent(0, MAKELPARAM(NIN_POPUPCLOSE, kTrayIconId));
+        const bool closed = !trayTooltipActive_ && !IsWindowVisible(trayTooltip_);
+        shownPid_ = pid;
+        shownState_ = state;
+        RefreshTrayTooltip();
+        return opened && updated && closed;
     }
 
     bool SmokeTestWindowBranding(bool running)
@@ -3326,7 +3478,10 @@ private:
     HWND copyLogs_ = nullptr, wordWrap_ = nullptr;
     HWND speed_ = nullptr, totalTraffic_ = nullptr;
     std::wstring speedTooltip_, totalTrafficTooltip_;
-    HWND logWindow_ = nullptr, tooltip_ = nullptr;
+    HWND logWindow_ = nullptr, tooltip_ = nullptr, trayTooltip_ = nullptr;
+    RECT trayTooltipAnchor_{};
+    bool trayTooltipActive_ = false;
+    std::wstring trayTooltipText_;
     std::wstring fileTooltip_, directoryTooltip_;
     HFONT font_ = nullptr, logFont_ = nullptr;
     std::array<HICON, IconCount> icons_{};

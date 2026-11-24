@@ -5,7 +5,7 @@
 
 namespace xtray {
 
-bool TrayIcon::Update(HWND window, HICON icon, const std::wstring& tooltip)
+bool TrayIcon::Update(HWND window, HICON icon, const std::wstring& tooltip, bool systemTooltip)
 {
     failure_ = TrayFailure::None;
     if (window == nullptr) {
@@ -23,7 +23,8 @@ bool TrayIcon::Update(HWND window, HICON icon, const std::wstring& tooltip)
     data_.cbSize = sizeof(data_);
     data_.hWnd = window;
     data_.uID = kTrayIconId;
-    data_.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
+    data_.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
+    if (systemTooltip) { data_.uFlags |= NIF_SHOWTIP; }
     data_.uCallbackMessage = kTrayCallbackMessage;
     data_.hIcon = icon;
     wcsncpy_s(data_.szTip, tooltip.c_str(), _TRUNCATE);
@@ -58,7 +59,7 @@ void TrayIcon::UpdateTooltip(const std::wstring& tooltip)
 {
     if (!added_ || tooltip == data_.szTip) { return; }
     auto update = data_;
-    update.uFlags = NIF_TIP | NIF_SHOWTIP;
+    update.uFlags = NIF_TIP | (data_.uFlags & NIF_SHOWTIP);
     wcsncpy_s(update.szTip, tooltip.c_str(), _TRUNCATE);
     if (notify_(NIM_MODIFY, &update)) {
         wcscpy_s(data_.szTip, update.szTip);
