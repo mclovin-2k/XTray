@@ -1,5 +1,6 @@
 #include "traffic_chart.h"
 #include "language.h"
+#include "settings_dialog.h"
 #include "ui_layout.h"
 
 #include <commctrl.h>
