@@ -144,8 +144,17 @@ later does not mean every field simply replaces the earlier value.
   entry when the icon becomes available again.
   XTray keeps logs in memory and does not save historical logs.
   To save Xray logs to files, use [Xray's own logging configuration](https://xtls.github.io/config/log.html).
+- **Traffic:** Below the logs, XTray shows total outbound upload and download
+  rates and cumulative traffic. Hover over either group for the per-outbound
+  breakdown, or hover over the tray icon for totals. In Xray, configure
+  `metrics.listen`, enable `stats`, and turn on the desired outbound counters
+  in `policy.system` (`statsOutboundUplink` and `statsOutboundDownlink`).
+  When a value is unavailable, XTray displays `--` and explains why in the
+  footer tooltip. See [Xray Metrics](https://xtls.github.io/en/config/metrics.html).
 - **Language and appearance:** Settings offers automatic, English or Chinese
   language selection, light/dark/system appearance, and a configurable log limit.
+  Interface and log fonts and sizes can be set separately. Both follow the
+  system font by default, and the log font also applies to Xray tool output.
 
 If Xray fails to start, read the displayed error and Xray output, correct the
 executable path or your configuration, then try again.

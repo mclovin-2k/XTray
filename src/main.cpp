@@ -1349,13 +1349,13 @@ private:
         case TrafficAvailability::ConfigurationUnavailable:
             return Text(L"XTray could not read the merged Xray configuration.", L"无法读取 Xray 的合并配置。");
         case TrafficAvailability::MetricsDisabled:
-            return Text(L"Enable metrics.listen in the Xray configuration.", L"Xray 配置中未设置 metrics.listen。");
+            return Text(L"The Xray configuration has no metrics.listen address.", L"Xray 配置中未设置 metrics.listen。");
         case TrafficAvailability::InvalidMetricsAddress:
             return Text(L"Xray metrics.listen does not contain a valid listening address.", L"Xray 的 metrics.listen 监听地址无效。");
         case TrafficAvailability::StatisticsDisabled:
             return Text(L"Outbound traffic statistics are disabled in Xray.", L"Xray 配置中未开启出站流量统计。");
         case TrafficAvailability::MetricsUnavailable:
-            return Text(L"XTray cannot read the Xray Metrics endpoint. Retrying…", L"无法读取 Xray Metrics 接口，正在重试…");
+            return Text(L"XTray cannot read the Xray Metrics endpoint.", L"无法读取 Xray Metrics 接口。");
         case TrafficAvailability::NoCounters:
             return Text(L"Xray Metrics has not returned any outbound counters.", L"Xray Metrics 未返回出站流量计数。");
         default:
