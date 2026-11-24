@@ -1311,7 +1311,7 @@ private:
             DrawTextW(item.hDC, index == 0 ? L"↑" : L"↓", -1, &arrow, flags);
             RECT amount = row;
             amount.left = arrow.right;
-            DrawTextW(item.hDC, values[index].c_str(), -1, &amount, flags | DT_RIGHT);
+            DrawTextW(item.hDC, values[index].c_str(), -1, &amount, flags);
             OffsetRect(&row, 0, half);
         }
         if (saved != 0) { RestoreDC(item.hDC, saved); }
