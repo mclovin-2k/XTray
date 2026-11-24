@@ -134,7 +134,6 @@ void UpdateDirection(TrafficDirection& direction, TrafficDirection& total,
 std::wstring FormatTraffic(std::optional<double> value, bool speed)
 {
     if (!value) { return L"—"; }
-    if (*value == 0) { return L"0"; }
     static constexpr std::array sizeUnits{L"B", L"KiB", L"MiB", L"GiB", L"TiB"};
     static constexpr std::array speedUnits{L"B/s", L"KiB/s", L"MiB/s"};
     double scaled = *value;
@@ -149,7 +148,6 @@ std::wstring FormatTraffic(std::optional<double> value, bool speed)
         while (number.back() == L'0') { number.pop_back(); }
         if (number.back() == L'.') { number.pop_back(); }
     }
-    if (number == L"0") { return number; }
     return number + L" " + (speed ? speedUnits[unit] : sizeUnits[unit]);
 }
 

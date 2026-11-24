@@ -1659,17 +1659,18 @@ private:
     bool SmokeTestTraffic()
     {
         std::fwprintf(stderr, L"Smoke: outbound traffic footer, native tooltips, and byte units.\n");
-        const bool units = FormatTraffic(0, true) == L"0" &&
+        const bool units = FormatTraffic(0, true) == L"0 B/s" &&
+            FormatTraffic(0, false) == L"0 B" &&
             FormatTraffic(850, true) == L"850 B/s" &&
             FormatTraffic(1536, true) == L"1.5 KiB/s" &&
             FormatTraffic(512, false) == L"512 B" &&
             FormatTraffic(1280, false) == L"1.25 KiB" &&
             FormatTraffic(std::nullopt, true) == L"—";
-        const OutboundTraffic sample{{1024, 128}, {1280, 0}};
+        const OutboundTraffic sample{{1024, 128}, {0, 0}};
         trafficSample_ = {sample, {{L"OutboundProxy", sample}}};
         UpdateTrafficDisplay();
-        const bool details = TooltipText(speed_) == L"OutboundProxy   ↑ 128 B/s   ↓ 0" &&
-            TooltipText(totalTraffic_) == L"OutboundProxy   ↑ 1 KiB   ↓ 1.25 KiB";
+        const bool details = TooltipText(speed_) == L"OutboundProxy   ↑ 128 B/s   ↓ 0 B/s" &&
+            TooltipText(totalTraffic_) == L"OutboundProxy   ↑ 1 KiB   ↓ 0 B";
         RECT speedBounds{}, totalBounds{}, logBounds{};
         GetWindowRect(speed_, &speedBounds);
         GetWindowRect(totalTraffic_, &totalBounds);
