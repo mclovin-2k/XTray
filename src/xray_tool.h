@@ -1,6 +1,6 @@
 #pragma once
 
-#include "settings.h"
+#include "xray_config.h"
 #include "win32.h"
 
 #include <atomic>
@@ -26,14 +26,17 @@ public:
     ~XrayTool();
     XrayTool(const XrayTool&) = delete;
     XrayTool& operator=(const XrayTool&) = delete;
-    bool Start(XrayToolKind kind, Settings settings, bool settingsValid = true);
+    bool Start(XrayToolKind kind, Settings settings, bool settingsValid = true,
+        std::optional<XrayConfigArguments> arguments = std::nullopt);
     void Cancel();
     bool Running() const { return running_.load(); }
     DWORD Pid() const { return pid_.load(); }
     std::optional<XrayToolResult> TakeResult();
 private:
-    void Execute(XrayToolKind kind, const Settings& settings, bool settingsValid);
-    void Worker(XrayToolKind kind, Settings settings, bool settingsValid) noexcept;
+    void Execute(XrayToolKind kind, const Settings& settings, bool settingsValid,
+        std::optional<XrayConfigArguments> arguments);
+    void Worker(XrayToolKind kind, Settings settings, bool settingsValid,
+        std::optional<XrayConfigArguments> arguments) noexcept;
     const std::filesystem::path root_;
     std::atomic<bool> running_ = false, cancel_ = false, ready_ = false;
     std::atomic<DWORD> pid_ = 0;

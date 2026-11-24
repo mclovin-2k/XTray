@@ -55,6 +55,13 @@ XrayRunInfo XrayProcess::RunInfo() const
     return result;
 }
 
+std::optional<XrayLaunchConfiguration> XrayProcess::LaunchConfiguration(DWORD pid) const
+{
+    std::lock_guard lock(infoMutex_);
+    if (pid == 0 || info_.pid != pid || !info_.started || info_.ended) { return std::nullopt; }
+    return XrayLaunchConfiguration{launchSettings_, launchArguments_};
+}
+
 bool XrayProcess::HasPendingSettings(const Settings& settings) const
 {
     std::lock_guard lock(infoMutex_);
@@ -364,6 +371,7 @@ void XrayProcess::StartProcess(Settings settings)
     {
         std::lock_guard lock(infoMutex_);
         launchSettings_ = std::move(settings);
+        launchArguments_ = std::move(configuration);
         configBaseline_ = std::move(baseline);
         info_.pid = information.dwProcessId;
         info_.started = std::chrono::system_clock::now();

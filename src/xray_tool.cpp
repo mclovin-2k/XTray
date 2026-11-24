@@ -1,5 +1,4 @@
 #include "xray_tool.h"
-#include "xray_config.h"
 
 #include <algorithm>
 #include <array>
@@ -40,7 +39,8 @@ void Require(bool success, const wchar_t* operation)
 
 XrayTool::~XrayTool() { Cancel(); }
 
-bool XrayTool::Start(XrayToolKind kind, Settings settings, bool settingsValid)
+bool XrayTool::Start(XrayToolKind kind, Settings settings, bool settingsValid,
+    std::optional<XrayConfigArguments> arguments)
 {
     if (Running()) { return false; }
     if (worker_.joinable()) { worker_.join(); }
@@ -49,7 +49,8 @@ bool XrayTool::Start(XrayToolKind kind, Settings settings, bool settingsValid)
     cancel_ = false;
     running_ = true;
     try {
-        worker_ = std::thread(&XrayTool::Worker, this, kind, std::move(settings), settingsValid);
+        worker_ = std::thread(&XrayTool::Worker, this, kind, std::move(settings), settingsValid,
+            std::move(arguments));
     } catch (...) {
         running_ = false;
         throw;
@@ -71,10 +72,11 @@ std::optional<XrayToolResult> XrayTool::TakeResult()
     return std::move(result_);
 }
 
-void XrayTool::Worker(XrayToolKind kind, Settings settings, bool settingsValid) noexcept
+void XrayTool::Worker(XrayToolKind kind, Settings settings, bool settingsValid,
+    std::optional<XrayConfigArguments> arguments) noexcept
 {
     try {
-        Execute(kind, settings, settingsValid);
+        Execute(kind, settings, settingsValid, std::move(arguments));
     } catch (const std::exception& exception) {
         try {
             result_.error = FromUtf8(exception.what());
@@ -92,7 +94,8 @@ void XrayTool::Worker(XrayToolKind kind, Settings settings, bool settingsValid) 
     running_ = false;
 }
 
-void XrayTool::Execute(XrayToolKind kind, const Settings& settings, bool settingsValid)
+void XrayTool::Execute(XrayToolKind kind, const Settings& settings, bool settingsValid,
+    std::optional<XrayConfigArguments> arguments)
 {
     if (!settingsValid) {
         result_.error = Text(L"Saved settings could not be read. Open File > Settings and save them again.",
@@ -119,7 +122,7 @@ void XrayTool::Execute(XrayToolKind kind, const Settings& settings, bool setting
             : kind == XrayToolKind::Check ? L" run -test" : L" run -dump");
     XrayConfigArguments configuration;
     if (kind != XrayToolKind::Version) {
-        configuration = PrepareXrayConfigArguments(root_, settings);
+        configuration = arguments ? std::move(*arguments) : PrepareXrayConfigArguments(root_, settings);
         command += configuration.arguments;
     }
     if (command.size() >= 32767) {

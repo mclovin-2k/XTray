@@ -21,6 +21,7 @@ public:
     TrayIcon(const TrayIcon&) = delete;
     TrayIcon& operator=(const TrayIcon&) = delete;
     bool Update(HWND window, HICON icon, const std::wstring& tooltip);
+    void UpdateTooltip(const std::wstring& tooltip);
     void Lost() { added_ = false; }
     void Remove();
     void Focus();

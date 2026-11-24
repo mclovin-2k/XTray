@@ -9,6 +9,7 @@
 #include "log_view.h"
 #include "text_view.h"
 #include "xray_process.h"
+#include "xray_traffic.h"
 #include "settings_dialog.h"
 #include "xray_tool_window.h"
 #include "win32.h"
@@ -48,7 +49,7 @@ constexpr ULONGLONG kRestartCheckTimeout = 60000;
 constexpr DWORD kWindowStyle = WS_OVERLAPPEDWINDOW;
 enum ControlId { Run = 2001, Stop, Restart, SettingsButton, FileList, OpenFile,
     OpenFileDirectory, OpenDirectory, Filter, ClearLogs, ScrollToEnd, ShowGui, ExitApp, CheckConfig, PreviewConfig, ShowVersion, CopyLogs, WordWrap, ShowRunInfo,
-    LogKeyword, LogWildcards, LogMatchCase, ClearLogKeyword };
+    LogKeyword, LogWildcards, LogMatchCase, ClearLogKeyword, TrafficSpeed, TrafficTotal };
 enum class PendingConfigChange { None, Settings, Files };
 enum IconId { StoppedTrayIcon, RunningTrayIcon, StoppedStatusIcon, RunningStatusIcon,
     SmallWindowIcon, LargeWindowIcon, IconCount };
@@ -122,11 +123,13 @@ std::wstring XrayStatusText(ProcessState state, DWORD pid)
     return result + L" " + status;
 }
 
-std::wstring TrayTooltipText(const std::filesystem::path& root, ProcessState state, DWORD pid)
+std::wstring TrayTooltipText(const std::filesystem::path& root, ProcessState state, DWORD pid,
+    std::wstring_view traffic = {})
 {
     const std::wstring first = std::wstring(kWindowTitle) + L"\n";
-    const std::wstring last = L"\n" + XrayStatusText(state, pid);
+    std::wstring last = L"\n" + XrayStatusText(state, pid);
     const size_t capacity = std::size(NOTIFYICONDATAW{}.szTip) - 1;
+    if (first.size() + last.size() + traffic.size() < capacity) { last += traffic; }
     const size_t pathLimit = capacity - first.size() - last.size();
     std::wstring directory = root.native();
     if (directory.size() > pathLimit) {
@@ -228,7 +231,7 @@ class Application {
 public:
     Application(std::filesystem::path root, bool smokeTest)
         : root_(std::move(root)), startup_(root_, ExecutablePath()),
-          process_(root_, logs_), restartCheck_(root_), toolWindow_(root_), runInfoWindow_(root_),
+          process_(root_, logs_), traffic_(root_), restartCheck_(root_), toolWindow_(root_), runInfoWindow_(root_),
           restartFailureWindow_(root_), smokeTest_(smokeTest),
           tray_(smokeTest ? SmokeNotifyIcon : Shell_NotifyIconW) {}
     ~Application()
@@ -321,6 +324,10 @@ public:
         clearLogs_ = child(0, L"BUTTON", L"", WS_TABSTOP | BS_ICON, ClearLogs);
         scrollToEnd_ = child(0, L"BUTTON", L"", WS_TABSTOP | BS_ICON | BS_CHECKBOX | BS_PUSHLIKE, ScrollToEnd);
         wordWrap_ = child(0, L"BUTTON", L"", WS_TABSTOP | BS_ICON | BS_AUTOCHECKBOX | BS_PUSHLIKE, WordWrap);
+        speed_ = child(0, L"STATIC", L"", SS_OWNERDRAW | SS_NOTIFY, TrafficSpeed);
+        totalTraffic_ = child(0, L"STATIC", L"", SS_OWNERDRAW | SS_NOTIFY, TrafficTotal);
+        ShowWindow(speed_, SW_HIDE);
+        ShowWindow(totalTraffic_, SW_HIDE);
         CreateTooltips();
         logWindow_ = child(WS_EX_CLIENTEDGE, MSFTEDIT_CLASS, L"",
             ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | ES_NOHIDESEL | ES_DISABLENOSCROLL |
@@ -458,7 +465,18 @@ public:
             toolX += filterHeight + gap;
         }
         const int logY = filterY + filterHeight + gap;
-        move(logWindow_, margin, logY, width - margin * 2, static_cast<int>(client.bottom) - logY - margin);
+        int bottom = static_cast<int>(client.bottom) - margin;
+        if (!trafficSample_.outbounds.empty()) {
+            const int trafficHeight = 2 * SingleLineControlHeight(speed_);
+            const int trafficY = bottom - trafficHeight;
+            const int totalWidth = TrafficWidth(totalTraffic_, false);
+            const int speedWidth = TrafficWidth(speed_, true);
+            const int totalX = width - margin - totalWidth;
+            move(totalTraffic_, totalX, trafficY, totalWidth, trafficHeight);
+            move(speed_, totalX - Scale(24) - speedWidth, trafficY, speedWidth, trafficHeight);
+            bottom = trafficY - gap;
+        }
+        move(logWindow_, margin, logY, width - margin * 2, (std::max)(1, bottom - logY));
     }
 
     void DpiChanged(UINT dpi)
@@ -480,6 +498,7 @@ public:
         const DWORD pid = process_.Pid();
         const bool running = pid != 0;
         const bool statusChanged = state != shownState_ || pid != shownPid_;
+        const bool trafficChanged = PollTraffic(state == ProcessState::Running ? pid : 0);
         if (statusChanged) {
             const auto status = XrayStatusText(state, pid);
             SetWindowTextW(status_, status.c_str());
@@ -493,6 +512,8 @@ public:
             UpdateTray();
         } else if (!tray_.IsAdded() && GetTickCount64() >= nextTrayAttempt_) {
             UpdateTray();
+        } else if (trafficChanged && tray_.IsAdded()) {
+            tray_.UpdateTooltip(CurrentTrayTooltip());
         }
         const auto pending = settingsValid_ && process_.HasPendingSettings(settings_) ? PendingConfigChange::Settings
             : process_.ConfigFilesChanged() ? PendingConfigChange::Files : PendingConfigChange::None;
@@ -627,6 +648,11 @@ public:
                 PostMessageW(window_, kSystemThemeMessage, 0, 0);
             }
         }
+        if (message == WM_DRAWITEM && lParam != 0 && (wParam == TrafficSpeed || wParam == TrafficTotal)) {
+            DrawTraffic(*reinterpret_cast<const DRAWITEMSTRUCT*>(lParam), wParam == TrafficSpeed);
+            result = TRUE;
+            return true;
+        }
         if (wParam == Filter && lParam != 0) {
             if (message == WM_MEASUREITEM) {
                 auto& item = *reinterpret_cast<MEASUREITEMSTRUCT*>(lParam);
@@ -726,6 +752,7 @@ public:
         }
         exiting_ = true;
         KillTimer(window_, 1);
+        traffic_.SetLaunch(std::nullopt);
         tray_.Remove();
         restartCheck_.Cancel();
         toolWindow_.Close();
@@ -889,7 +916,7 @@ public:
             text.find(L"test 中文") != std::wstring::npos) {
             return false;
         }
-        return SmokeTestIconResources() && SmokeTestInstanceText() && SmokeTestUiChanges() && SmokeTestLogButtons() &&
+        return SmokeTestIconResources() && SmokeTestInstanceText() && SmokeTestUiChanges() && SmokeTestTraffic() && SmokeTestLogButtons() &&
             SmokeTestKeywordFilter() && SmokeTestKeywordHighlights() && SmokeTestThemes() && SmokeTestMenus() && SmokeTestXrayTools(window_, root_) &&
             SmokeTestLogon() && SmokeTestTray();
     }
@@ -1125,7 +1152,7 @@ private:
         }
         // Without a Common Controls v6 manifest, TOOLINFO must exclude the v6-only field.
         for (const auto control : {copyLogs_, clearLogs_, scrollToEnd_, wordWrap_, files_, directory_,
-            wildcards_, matchCase_, clearKeyword_}) {
+            wildcards_, matchCase_, clearKeyword_, speed_, totalTraffic_}) {
             TOOLINFOW tool{};
             tool.cbSize = TTTOOLINFOW_V2_SIZE;
             tool.hwnd = GetParent(control);
@@ -1231,14 +1258,135 @@ private:
         UpdateMenus();
     }
 
+    static const wchar_t* TrafficCaption(bool speed)
+    {
+        return speed ? Text(L"Speed", L"速度") : Text(L"Total", L"累计");
+    }
+
+    static std::array<std::wstring, 2> TrafficValues(const OutboundTraffic& traffic, bool speed)
+    {
+        return {FormatTraffic(speed ? traffic.upload.bytesPerSecond : traffic.upload.bytes, speed),
+            FormatTraffic(speed ? traffic.download.bytesPerSecond : traffic.download.bytes, speed)};
+    }
+
+    static std::wstring TrafficText(const OutboundTraffic& traffic, bool speed)
+    {
+        const auto values = TrafficValues(traffic, speed);
+        return L"↑ " + values[0] + L"   ↓ " + values[1];
+    }
+
+    int TrafficCaptionWidth(HWND control, bool speed) const
+    {
+        return ControlTextSize(control, TrafficCaption(speed)).cx + Scale(10);
+    }
+
+    int TrafficWidth(HWND control, bool speed) const
+    {
+        const auto valueWidth = ControlTextSize(control,
+            speed ? L"99999.9 MiB/s" : L"9999999.99 TiB").cx;
+        return TrafficCaptionWidth(control, speed) + Scale(17) + valueWidth;
+    }
+
+    void DrawTraffic(const DRAWITEMSTRUCT& item, bool speed) const
+    {
+        const auto saved = SaveDC(item.hDC);
+        SetDCBrushColor(item.hDC, theme_.Colors().window);
+        FillRect(item.hDC, &item.rcItem, static_cast<HBRUSH>(GetStockObject(DC_BRUSH)));
+        SetBkMode(item.hDC, TRANSPARENT);
+        SetTextColor(item.hDC, theme_.Colors().text);
+        if (font_ != nullptr) { SelectObject(item.hDC, font_); }
+
+        RECT caption = item.rcItem;
+        caption.right = caption.left + TrafficCaptionWidth(item.hwndItem, speed);
+        const UINT flags = DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX;
+        DrawTextW(item.hDC, TrafficCaption(speed), -1, &caption, flags);
+        RECT row = item.rcItem;
+        const LONG half = (row.bottom - row.top) / 2;
+        row.bottom = row.top + half;
+        row.left = caption.right;
+        const auto values = TrafficValues(trafficSample_.total, speed);
+        for (size_t index = 0; index < values.size(); ++index) {
+            RECT arrow = row;
+            arrow.right = arrow.left + Scale(17);
+            DrawTextW(item.hDC, index == 0 ? L"↑" : L"↓", -1, &arrow, flags);
+            RECT amount = row;
+            amount.left = arrow.right;
+            DrawTextW(item.hDC, values[index].c_str(), -1, &amount, flags | DT_RIGHT);
+            OffsetRect(&row, 0, half);
+        }
+        if (saved != 0) { RestoreDC(item.hDC, saved); }
+    }
+
+    void UpdateTrafficDisplay()
+    {
+        const bool visible = !trafficSample_.outbounds.empty();
+        const bool wasVisible = (GetWindowLongPtrW(speed_, GWL_STYLE) & WS_VISIBLE) != 0;
+        if (visible != wasVisible) { Layout(); }
+        for (const bool speed : {true, false}) {
+            const HWND control = speed ? speed_ : totalTraffic_;
+            std::wstring details;
+            std::wstring caption;
+            if (visible) {
+                caption = std::wstring(TrafficCaption(speed)) + L" " + TrafficText(trafficSample_.total, speed);
+                for (const auto& [tag, traffic] : trafficSample_.outbounds) {
+                    if (!details.empty()) { details += L'\n'; }
+                    details += tag + L"   " + TrafficText(traffic, speed);
+                }
+            }
+            if (caption != WindowText(control)) { SetWindowTextW(control, caption.c_str()); }
+            auto& stored = speed ? speedTooltip_ : totalTrafficTooltip_;
+            if (stored != details) {
+                stored = std::move(details);
+                TOOLINFOW tool{};
+                tool.cbSize = TTTOOLINFOW_V2_SIZE;
+                tool.hwnd = window_;
+                tool.uId = reinterpret_cast<UINT_PTR>(control);
+                tool.lpszText = stored.data();
+                SendMessageW(tooltip_, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&tool));
+            }
+            if (wasVisible != visible) { ShowWindow(control, visible ? SW_SHOWNA : SW_HIDE); }
+        }
+        InvalidateRect(speed_, nullptr, FALSE);
+        InvalidateRect(totalTraffic_, nullptr, FALSE);
+    }
+
+    bool PollTraffic(DWORD pid)
+    {
+        if (smokeTest_) { return false; }
+        bool changed = false;
+        if (trafficPid_ != pid) {
+            trafficPid_ = pid;
+            traffic_.SetLaunch(process_.LaunchConfiguration(pid));
+            changed = !trafficSample_.outbounds.empty();
+            trafficSample_ = {};
+        }
+        if (auto sample = traffic_.TakeSample()) {
+            trafficSample_ = std::move(*sample);
+            changed = true;
+        }
+        if (changed) { UpdateTrafficDisplay(); }
+        return changed;
+    }
+
+    std::wstring CurrentTrayTooltip() const
+    {
+        const DWORD pid = shownPid_ != MAXDWORD ? shownPid_ : 0;
+        std::wstring traffic;
+        if (pid != 0 && !trafficSample_.outbounds.empty()) {
+            for (const bool speed : {true, false}) {
+                traffic += L"\n" + std::wstring(TrafficCaption(speed)) + L" " + TrafficText(trafficSample_.total, speed);
+            }
+        }
+        return TrayTooltipText(root_, shownState_, pid, traffic);
+    }
+
     void UpdateTray()
     {
         if (exiting_ || !ready_) {
             return;
         }
-        const auto state = shownState_;
         const bool running = shownPid_ != 0 && shownPid_ != MAXDWORD;
-        const auto tooltip = TrayTooltipText(root_, state, running ? shownPid_ : 0);
+        const auto tooltip = CurrentTrayTooltip();
         nextTrayAttempt_ = GetTickCount64() + 2000;
         if (tray_.Update(window_, icons_[running ? RunningTrayIcon : StoppedTrayIcon], tooltip)) {
             if (shownTrayFailure_ != TrayFailure::None) {
@@ -1502,9 +1650,41 @@ private:
         toolWindow_.RefreshLanguage();
         runInfoWindow_.RefreshLanguage();
         restartFailureWindow_.RefreshLanguage();
+        if (!trafficSample_.outbounds.empty()) { UpdateTrafficDisplay(); }
         shownPid_ = MAXDWORD;
         updatingUi_ = false;
         Layout();
+    }
+
+    bool SmokeTestTraffic()
+    {
+        std::fwprintf(stderr, L"Smoke: outbound traffic footer, native tooltips, and byte units.\n");
+        const bool units = FormatTraffic(0, true) == L"0" &&
+            FormatTraffic(850, true) == L"850 B/s" &&
+            FormatTraffic(1536, true) == L"1.5 KiB/s" &&
+            FormatTraffic(512, false) == L"512 B" &&
+            FormatTraffic(1280, false) == L"1.25 KiB" &&
+            FormatTraffic(std::nullopt, true) == L"—";
+        const OutboundTraffic sample{{1024, 128}, {1280, 0}};
+        trafficSample_ = {sample, {{L"OutboundProxy", sample}}};
+        UpdateTrafficDisplay();
+        const bool details = TooltipText(speed_) == L"OutboundProxy   ↑ 128 B/s   ↓ 0" &&
+            TooltipText(totalTraffic_) == L"OutboundProxy   ↑ 1 KiB   ↓ 1.25 KiB";
+        RECT speedBounds{}, totalBounds{}, logBounds{};
+        GetWindowRect(speed_, &speedBounds);
+        GetWindowRect(totalTraffic_, &totalBounds);
+        GetWindowRect(logWindow_, &logBounds);
+        const bool aligned = speedBounds.top == totalBounds.top && speedBounds.bottom == totalBounds.bottom &&
+            speedBounds.right < totalBounds.left && logBounds.bottom < speedBounds.top;
+        const std::wstring trayTraffic = L"\nSpeed " + TrafficText(sample, true) +
+            L"\nTotal " + TrafficText(sample, false);
+        const auto tooltip = TrayTooltipText(L"C:\\" + std::wstring(200, L'长'), ProcessState::Running, 1234, trayTraffic);
+        const bool trayFits = tooltip.size() <= 127 && tooltip.ends_with(trayTraffic);
+        trafficSample_ = {};
+        UpdateTrafficDisplay();
+        const bool hidden = (GetWindowLongPtrW(speed_, GWL_STYLE) & WS_VISIBLE) == 0 &&
+            (GetWindowLongPtrW(totalTraffic_, GWL_STYLE) & WS_VISIBLE) == 0;
+        return units && details && aligned && trayFits && hidden;
     }
 
     bool SmokeTestWindowBranding(bool running)
@@ -3023,7 +3203,7 @@ private:
         const std::array controls{status_, run_, stop_, restart_, pendingSettings_, fileLabel_,
             files_, openFile_, openFileDirectory_, directoryLabel_, directory_, openDirectory_,
             filterLabel_, filter_, keyword_, wildcards_, matchCase_, clearKeyword_,
-            copyLogs_, clearLogs_, scrollToEnd_, wordWrap_};
+            copyLogs_, clearLogs_, scrollToEnd_, wordWrap_, speed_, totalTraffic_};
         for (const auto control : controls) {
             SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
         }
@@ -3098,6 +3278,9 @@ private:
     StartupRegistration startup_;
     Logs logs_;
     XrayProcess process_;
+    XrayTraffic traffic_;
+    DWORD trafficPid_ = 0;
+    XrayTrafficSample trafficSample_;
     XrayTool restartCheck_;
     struct RestartRequest { Settings settings; DWORD pid; ULONGLONG deadline; };
     struct RestartCheckFailure { DWORD pid; XrayToolResult result; };
@@ -3140,6 +3323,8 @@ private:
     HWND filterLabel_ = nullptr, filter_ = nullptr, scrollToEnd_ = nullptr, clearLogs_ = nullptr;
     HWND keywordFrame_ = nullptr, keyword_ = nullptr, wildcards_ = nullptr, matchCase_ = nullptr, clearKeyword_ = nullptr;
     HWND copyLogs_ = nullptr, wordWrap_ = nullptr;
+    HWND speed_ = nullptr, totalTraffic_ = nullptr;
+    std::wstring speedTooltip_, totalTrafficTooltip_;
     HWND logWindow_ = nullptr, tooltip_ = nullptr;
     std::wstring fileTooltip_, directoryTooltip_;
     HFONT font_ = nullptr, logFont_ = nullptr;

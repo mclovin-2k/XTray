@@ -49,6 +49,7 @@ public:
     ProcessState State() const { return state_.load(); }
     DWORD Pid() const { return pid_.load(); }
     XrayRunInfo RunInfo() const;
+    std::optional<XrayLaunchConfiguration> LaunchConfiguration(DWORD pid) const;
     bool HasPendingSettings(const Settings& settings) const;
     void RequestConfigFileCheck();
     bool ConfigFilesChanged() const;
@@ -70,6 +71,7 @@ private:
     mutable std::mutex infoMutex_;
     XrayRunInfo info_;
     Settings launchSettings_;
+    XrayConfigArguments launchArguments_;
     struct ConfigBaseline { Settings settings; XrayConfigFingerprint fingerprint; };
     std::shared_ptr<const ConfigBaseline> configBaseline_;
     std::condition_variable_any configCheckWake_;

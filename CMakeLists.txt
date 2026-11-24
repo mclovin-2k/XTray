@@ -26,12 +26,13 @@ add_library(XTray.Core STATIC
     src/xray_config.cpp
     src/xray_process.cpp
     src/xray_tool.cpp
+    src/xray_traffic.cpp
     src/settings.cpp
     src/startup.cpp
 )
 target_include_directories(XTray.Core PUBLIC src)
 # These are Windows system libraries; no additional runtime is distributed.
-target_link_libraries(XTray.Core PUBLIC advapi32 bcrypt windowsapp ole32)
+target_link_libraries(XTray.Core PUBLIC advapi32 bcrypt windowsapp ole32 winhttp)
 
 add_library(XTray.Graphics STATIC src/svg_icons.cpp)
 target_include_directories(XTray.Graphics PUBLIC src PRIVATE resources)

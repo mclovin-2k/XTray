@@ -54,6 +54,17 @@ bool TrayIcon::Update(HWND window, HICON icon, const std::wstring& tooltip)
     return added_;
 }
 
+void TrayIcon::UpdateTooltip(const std::wstring& tooltip)
+{
+    if (!added_ || tooltip == data_.szTip) { return; }
+    auto update = data_;
+    update.uFlags = NIF_TIP | NIF_SHOWTIP;
+    wcsncpy_s(update.szTip, tooltip.c_str(), _TRUNCATE);
+    if (notify_(NIM_MODIFY, &update)) {
+        wcscpy_s(data_.szTip, update.szTip);
+    }
+}
+
 bool TrayIcon::ShowWarning(const wchar_t* title, const std::wstring& message)
 {
     if (!added_) {

@@ -16,6 +16,11 @@ struct XrayConfigArguments {
     std::vector<std::wstring> expandedDirectoryFiles;
 };
 
+struct XrayLaunchConfiguration {
+    Settings settings;
+    XrayConfigArguments arguments;
+};
+
 struct XrayConfigFileFingerprint {
     std::filesystem::path path;
     std::optional<std::array<unsigned char, 32>> hash;
