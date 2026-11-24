@@ -1304,7 +1304,7 @@ private:
         const int totalX = right - totalWidth;
         constexpr UINT placement = SWP_NOACTIVATE | SWP_NOZORDER;
         SetWindowPos(totalTraffic_, nullptr, totalX, top, totalWidth, height, placement);
-        SetWindowPos(speed_, nullptr, totalX - Scale(20) - speedWidth, top, speedWidth, height, placement);
+        SetWindowPos(speed_, nullptr, totalX - Scale(30) - speedWidth, top, speedWidth, height, placement);
         return top;
     }
 
@@ -1800,7 +1800,7 @@ private:
         GetWindowRect(totalTraffic_, &totalBounds);
         GetWindowRect(logWindow_, &logBounds);
         const bool aligned = speedBounds.top == totalBounds.top && speedBounds.bottom == totalBounds.bottom &&
-            speedBounds.right + Scale(20) == totalBounds.left &&
+            speedBounds.right + Scale(30) == totalBounds.left &&
             totalBounds.right == logBounds.right && logBounds.bottom < speedBounds.top;
         const std::wstring trayTraffic = L"\nSpeed " + TrafficText(sample, true) +
             L"\nTotal " + TrafficText(sample, false);
