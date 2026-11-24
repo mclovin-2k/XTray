@@ -46,6 +46,7 @@ using namespace xtray;
 constexpr UINT kExitMessage = WM_APP + 43;
 constexpr UINT kRuntimeFailureTestMessage = WM_APP + 49;
 constexpr ULONGLONG kRestartCheckTimeout = 60000;
+constexpr int kTrafficArrowWidth = 14;
 constexpr DWORD kWindowStyle = WS_OVERLAPPEDWINDOW;
 enum ControlId { Run = 2001, Stop, Restart, SettingsButton, FileList, OpenFile,
     OpenFileDirectory, OpenDirectory, Filter, ClearLogs, ScrollToEnd, ShowGui, ExitApp, CheckConfig, PreviewConfig, ShowVersion, CopyLogs, WordWrap, ShowRunInfo,
@@ -1291,7 +1292,7 @@ private:
         const auto values = TrafficValues(trafficSample_.total, speed);
         const auto valueWidth = (std::max)(ControlTextSize(control, values[0]).cx,
             ControlTextSize(control, values[1]).cx);
-        return TrafficCaptionWidth(control, speed) + Scale(17) + valueWidth;
+        return TrafficCaptionWidth(control, speed) + Scale(kTrafficArrowWidth) + valueWidth;
     }
 
     int LayoutTrafficFooter(int right, int bottom) const
@@ -1327,7 +1328,7 @@ private:
         const auto values = TrafficValues(trafficSample_.total, speed);
         for (size_t index = 0; index < values.size(); ++index) {
             RECT arrow = row;
-            arrow.right = arrow.left + Scale(17);
+            arrow.right = arrow.left + Scale(kTrafficArrowWidth);
             DrawTextW(item.hDC, index == 0 ? L"↑" : L"↓", -1, &arrow, flags);
             RECT amount = row;
             amount.left = arrow.right;
