@@ -46,7 +46,7 @@ using namespace xtray;
 constexpr UINT kExitMessage = WM_APP + 43;
 constexpr UINT kRuntimeFailureTestMessage = WM_APP + 49;
 constexpr ULONGLONG kRestartCheckTimeout = 60000;
-constexpr int kTrafficArrowWidth = 14;
+constexpr int kTrafficArrowWidth = 10;
 constexpr DWORD kWindowStyle = WS_OVERLAPPEDWINDOW;
 enum ControlId { Run = 2001, Stop, Restart, SettingsButton, FileList, OpenFile,
     OpenFileDirectory, OpenDirectory, Filter, ClearLogs, ScrollToEnd, ShowGui, ExitApp, CheckConfig, PreviewConfig, ShowVersion, CopyLogs, WordWrap, ShowRunInfo,
